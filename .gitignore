@@ -1,0 +1,37 @@
+# .NET build & publish output
+bin/
+obj/
+*.user
+*.suo
+.vs/
+TestResults/
+*.nupkg
+*.snupkg
+/app/
+installer/Output/
+
+# Compiled binaries, native libraries & packages
+*.exe
+*.dll
+*.pdb
+*.so
+*.dylib
+*.a
+*.lib
+*.o
+*.obj
+*.wasm
+*.onnx
+
+# Local runtime / WebView2 state
+*.db
+*.db-wal
+*.db-shm
+*.WebView2/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+*.log

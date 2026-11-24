@@ -1,0 +1,202 @@
+using System.Collections.Concurrent;
+using Meloberry.Wrapper.Application.Abstractions;
+
+namespace Meloberry.Wrapper.Infrastructure.Workspace;
+
+/// <summary>
+/// Real-time FileSystemWatcher over %LOCALAPPDATA%\Meloberry\apps\ and the Active Workspace
+/// with short burst debouncing to keep the UI and Notification Center synchronized.
+/// </summary>
+public sealed class WorkspaceFileWatcherService : IWorkspaceFileWatcher, IDisposable
+{
+    private readonly IWrapperDataPaths _dataPaths;
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastEventByKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _activeSuppressCounts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _suppressedUntilByScope = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _sync = new();
+
+    private FileSystemWatcher? _appsWatcher;
+    private FileSystemWatcher? _workspaceWatcher;
+    private string? _activeWorkspacePath;
+
+    public event Action<WorkspaceFileChangeEvent>? Changed;
+
+    public WorkspaceFileWatcherService(IWrapperDataPaths dataPaths)
+    {
+        _dataPaths = dataPaths;
+        StartAppsWatcher();
+    }
+
+    public void UpdateActiveWorkspace(string? workspacePath)
+    {
+        string? normalized = null;
+        if (!string.IsNullOrWhiteSpace(workspacePath))
+        {
+            try
+            {
+                var full = Path.GetFullPath(workspacePath.Trim());
+                if (Directory.Exists(full))
+                {
+                    normalized = full;
+                }
+            }
+            catch
+            {
+                normalized = null;
+            }
+        }
+
+        lock (_sync)
+        {
+            if (string.Equals(_activeWorkspacePath, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _workspaceWatcher?.Dispose();
+            _workspaceWatcher = null;
+            _activeWorkspacePath = normalized;
+
+            if (normalized is null)
+            {
+                return;
+            }
+
+            var watcher = new FileSystemWatcher(normalized, "*")
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite
+            };
+            watcher.Created += (_, e) => HandleWorkspaceEvent("created", e.FullPath);
+            watcher.Deleted += (_, e) => HandleWorkspaceEvent("deleted", e.FullPath);
+            watcher.Renamed += (_, e) =>
+            {
+                HandleWorkspaceEvent("deleted", e.OldFullPath);
+                HandleWorkspaceEvent("created", e.FullPath);
+            };
+            watcher.EnableRaisingEvents = true;
+            _workspaceWatcher = watcher;
+        }
+    }
+
+    private void StartAppsWatcher()
+    {
+        Directory.CreateDirectory(_dataPaths.AppsDirectory);
+        var watcher = new FileSystemWatcher(_dataPaths.AppsDirectory, "*.exe")
+        {
+            IncludeSubdirectories = false,
+            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite
+        };
+        watcher.Created += (_, e) => EmitDebounced("apps", "created", e.FullPath);
+        watcher.Deleted += (_, e) => EmitDebounced("apps", "deleted", e.FullPath);
+        watcher.Renamed += (_, e) =>
+        {
+            if (e.OldFullPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                EmitDebounced("apps", "deleted", e.OldFullPath);
+            }
+
+            if (e.FullPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                EmitDebounced("apps", "created", e.FullPath);
+            }
+        };
+        watcher.EnableRaisingEvents = true;
+        _appsWatcher = watcher;
+    }
+
+    private void HandleWorkspaceEvent(string changeKind, string fullPath)
+    {
+        var fileName = Path.GetFileName(fullPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return;
+        }
+
+        if (fullPath.Contains($"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var isWatchedFile =
+            fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(fileName, "AGENTS.md", StringComparison.OrdinalIgnoreCase);
+
+        if (isWatchedFile)
+        {
+            EmitDebounced("workspace", changeKind, fullPath);
+        }
+    }
+
+    public IDisposable SuppressScope(string scope, int postDisposeGraceMs = 1500)
+    {
+        if (string.IsNullOrWhiteSpace(scope))
+        {
+            return NoopDisposable.Instance;
+        }
+
+        _activeSuppressCounts.AddOrUpdate(scope, 1, (_, count) => count + 1);
+        return new SuppressionHandle(this, scope, postDisposeGraceMs);
+    }
+
+    private void EndSuppression(string scope, int postDisposeGraceMs)
+    {
+        if (postDisposeGraceMs > 0)
+        {
+            var until = DateTimeOffset.UtcNow.AddMilliseconds(postDisposeGraceMs);
+            _suppressedUntilByScope.AddOrUpdate(scope, until, (_, prev) => until > prev ? until : prev);
+        }
+
+        _activeSuppressCounts.AddOrUpdate(scope, 0, (_, count) => Math.Max(0, count - 1));
+    }
+
+    private void EmitDebounced(string scope, string changeKind, string fullPath)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if ((_activeSuppressCounts.TryGetValue(scope, out var activeCount) && activeCount > 0) ||
+            (_suppressedUntilByScope.TryGetValue(scope, out var suppressedUntil) && now <= suppressedUntil))
+        {
+            return;
+        }
+
+        var key = $"{scope}|{changeKind}|{fullPath}";
+        if (_lastEventByKey.TryGetValue(key, out var prev) && (now - prev).TotalMilliseconds < 300)
+        {
+            return;
+        }
+
+        _lastEventByKey[key] = now;
+        var fileName = Path.GetFileName(fullPath);
+        Changed?.Invoke(new WorkspaceFileChangeEvent(scope, changeKind, fileName, fullPath, now));
+    }
+
+    private sealed class NoopDisposable : IDisposable
+    {
+        public static readonly NoopDisposable Instance = new();
+        public void Dispose() { }
+    }
+
+    private sealed class SuppressionHandle(WorkspaceFileWatcherService owner, string scope, int postDisposeGraceMs) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                owner.EndSuppression(scope, postDisposeGraceMs);
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_sync)
+        {
+            _appsWatcher?.Dispose();
+            _appsWatcher = null;
+            _workspaceWatcher?.Dispose();
+            _workspaceWatcher = null;
+        }
+    }
+}

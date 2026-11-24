@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PlatformTarget>x64</PlatformTarget>
+    <SelfContained>false</SelfContained>
+    <AssemblyName>mby-pc</AssemblyName>
+    <AssemblyName Condition="'$(Configuration)' == 'Release'">mby-pc-$(Version)</AssemblyName>
+    <PublishDir>..\..\app\</PublishDir>
+    <PublishSingleFile Condition="'$(_IsPublishing)' == 'true'">true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract Condition="'$(_IsPublishing)' == 'true'">true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract Condition="'$(_IsPublishing)' == 'true'">true</IncludeAllContentForSelfExtract>
+    <DebugType Condition="'$(_IsPublishing)' == 'true'">none</DebugType>
+  </PropertyGroup>
+
+  <Target Name="StripWebView2UiWrappers" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.WinForms' or '%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Meloberry.Wrapper.ArchitectureTests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Meloberry.Wrapper.Application\Meloberry.Wrapper.Application.csproj" />
+    <ProjectReference Include="..\Meloberry.Wrapper.Infrastructure\Meloberry.Wrapper.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3240.44" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(NuGetPackageRoot)microsoft.web.webview2\1.0.3240.44\runtimes\win-x64\native\WebView2Loader.dll" Condition="Exists('$(NuGetPackageRoot)microsoft.web.webview2\1.0.3240.44\runtimes\win-x64\native\WebView2Loader.dll')">
+      <LogicalName>WebView2Loader.dll</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

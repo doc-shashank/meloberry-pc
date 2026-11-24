@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="berry">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Meloberry PC</title>
+  <link rel="stylesheet" href="/shell/shell.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <!-- Top 40px Titlebar (Centered 3-Tab Navigation) -->
+    <header id="titlebar" class="titlebar">
+      <div class="titlebar-left">
+        <div class="brand-group" title="Meloberry PC">
+          <div class="brand-logo" aria-hidden="true">M</div>
+          <span class="brand-name">Meloberry PC</span>
+          <span id="versionBadge" class="pill pill-accent">v1.0.0</span>
+        </div>
+      </div>
+
+      <nav class="nav-tabs titlebar-center" aria-label="Primary views">
+        <button class="nav-tab" data-view="setup" id="tabSetup">Setup</button>
+        <button class="nav-tab" data-view="prompt" id="tabPrompt">Prompt Studio</button>
+        <button class="nav-tab" data-view="viewer" id="tabViewer">WebApp Viewer</button>
+      </nav>
+
+      <div class="titlebar-right">
+        <div class="notif-wrap">
+          <button id="btnNotifications" class="tb-btn icon-only-btn" title="Notifications">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+            </svg>
+            <span id="notifBadge" class="notif-badge hidden">0</span>
+          </button>
+
+          <div id="notifPopover" class="notif-popover hidden">
+            <div class="notif-head">
+              <strong>Notifications</strong>
+              <div class="row gap-6">
+                <button id="btnNotifReadAll" class="btn btn-xs btn-ghost">Mark read</button>
+                <button id="btnNotifClear" class="btn btn-xs btn-ghost">Clear</button>
+              </div>
+            </div>
+            <div id="notifList" class="notif-list">
+              <div class="muted" style="padding:10px">No notifications yet.</div>
+            </div>
+          </div>
+        </div>
+
+        <button id="btnOpenSettings" class="tb-btn icon-only-btn" title="Settings &amp; App Updates">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+
+        <div class="win-controls">
+          <button id="btnWinMinimize" class="win-btn" title="Minimize">&#8212;</button>
+          <button id="btnWinMaximize" class="win-btn" title="Maximize / Restore">&#9723;</button>
+          <button id="btnWinClose" class="win-btn win-close" title="Close">&#10005;</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Workspace Stage (Overlay Strip + Sliding Viewport decoupled from reflow) -->
+    <div class="workspace-stage">
+      <div id="topChromeOverlay" class="top-chrome-overlay">
+        <!-- Second Strip: Workspace Actions -->
+        <div id="workspaceStrip" class="workspace-strip">
+          <div class="ws-strip-left">
+            <span class="ws-dot" id="wsStatusDot"></span>
+            <span id="activeWsLabel" class="ws-strip-label">No Active Workspace</span>
+            <span id="agentsReadyPill" class="pill pill-ok hidden">AGENTS.md</span>
+          </div>
+
+          <div class="ws-strip-actions">
+            <div class="menu-wrap" id="resetMenuWrap">
+              <button id="btnResetWorkspace" class="btn btn-h30 btn-ghost" title="Reset Active Workspace">Reset &#9662;</button>
+              <div id="resetMenu" class="dropdown-menu hidden">
+                <button class="dropdown-item active" data-scope="executablesOnly">
+                  <span>Executables only</span>
+                  <small>Remove Meloberry .exe across workspace &amp; subfolders</small>
+                </button>
+                <button class="dropdown-item" data-scope="executablesAndAgentsMd">
+                  <span>Executables + AGENTS.md</span>
+                  <small>Also remove workspace AGENTS.md</small>
+                </button>
+              </div>
+            </div>
+
+            <button id="btnReadyWorkspace" class="btn btn-h30 btn-primary">Ready Workspace</button>
+
+            <div class="menu-wrap" id="promptOptionsWrap">
+              <button id="btnPromptOptions" class="btn btn-h30 btn-ghost">Prompt Options &#9662;</button>
+              <div id="promptOptionsMenu" class="dropdown-menu hidden">
+                <button id="optCopyPlainText" class="dropdown-item">
+                  <span>Copy as Plain Text</span>
+                  <small>Strip Markdown syntax for plain chat paste</small>
+                </button>
+                <button id="optCopyMarkdown" class="dropdown-item">
+                  <span>Copy Markdown</span>
+                  <small>Copy structured prompt Markdown</small>
+                </button>
+                <button id="optSaveMarkdown" class="dropdown-item">
+                  <span>Save as Markdown</span>
+                  <small>Save prompt as .md file</small>
+                </button>
+                <div class="menu-divider"></div>
+                <button id="optExportRawJson" class="dropdown-item">
+                  <span>Export Raw Session JSON</span>
+                  <small>Strict mby JSON blueprint (requires non-empty Qty)</small>
+                </button>
+                <button id="optGenerateTemplate" class="dropdown-item">
+                  <span>Generate Template...</span>
+                  <small>Export raw JSON &amp; run mby apply to create draft session</small>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Outdated Workspace Executables Alert Bar -->
+        <div id="outdatedToolsBar" class="outdated-bar hidden">
+          <span id="outdatedToolsText"></span>
+          <div class="row gap-6">
+            <button id="btnUpdateOutdatedTools" class="btn btn-xs btn-primary">Update Tools</button>
+            <button id="btnDismissOutdated" class="btn btn-xs btn-ghost">Dismiss</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sliding Viewport Wrapper (Android Horizontal Slide Navigation) -->
+      <div class="views-viewport">
+        <!-- View 1: Setup -->
+        <main id="viewSetup" class="view-panel active">
+          <div class="setup-grid">
+            <section class="card">
+              <div class="card-head">
+                <h2>1. Active Workspace</h2>
+                <button id="btnPickWsFolder" class="btn btn-h30 btn-primary">Browse</button>
+              </div>
+              <input id="setupWsPath" type="text" class="input" placeholder="Paste directory here..." />
+              <div id="recentWsSection" class="recent-ws-section hidden">
+                <div class="recent-ws-title">Recent Workspace</div>
+                <div id="recentWsRow" class="chip-row"></div>
+              </div>
+            </section>
+
+          <section class="card">
+            <div class="card-head">
+              <h2>2. Add Apps</h2>
+              <div class="row gap-6">
+                <button id="btnImportCustomExe" class="btn btn-h30 btn-ghost">Import .exe</button>
+                <button id="btnRefreshApps" class="btn btn-h30 btn-ghost">Refresh</button>
+              </div>
+            </div>
+            <div id="appsCartList" class="apps-grid"></div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <h2>3. Add Files and Folder</h2>
+              <div class="row gap-6">
+                <button id="btnStageFiles" class="btn btn-h30 btn-ghost icon-inline">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/>
+                    <path d="M14 2v6h6"/>
+                  </svg>
+                  <span>+ Files</span>
+                </button>
+                <button id="btnStageFolder" class="btn btn-h30 btn-ghost icon-inline">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>
+                  </svg>
+                  <span>+ Folder</span>
+                </button>
+              </div>
+            </div>
+            <div id="stagedItemsList" class="staged-list">
+              <div class="muted">No files or folder added...</div>
+            </div>
+          </section>
+
+          <section class="card init-footer-card">
+            <div class="init-footer-row">
+              <span id="planSummaryText" class="muted"></span>
+              <div class="row gap-8 wrap">
+                <div class="menu-wrap" id="conflictMenuWrap">
+                  <button id="btnConflictDropdown" class="btn btn-h32 btn-ghost">
+                    <span id="conflictBtnLabel">Conflicts: Skip existing</span>
+                    <span>&#9662;</span>
+                  </button>
+                  <div id="conflictMenu" class="dropdown-menu dropdown-up hidden">
+                    <button class="dropdown-item active" data-policy="skipExisting">
+                      <span>Skip existing</span>
+                      <small>Keep files already in the workspace untouched; only copy missing ones.</small>
+                    </button>
+                    <button class="dropdown-item" data-policy="overwriteExisting">
+                      <span>Overwrite</span>
+                      <small>Replace colliding files inside the workspace with your staged copies.</small>
+                    </button>
+                  </div>
+                </div>
+                <button id="btnInitializeWorkspace" class="btn btn-primary btn-h32 btn-pad-lg">Initialize</button>
+              </div>
+            </div>
+            <div id="planConflictsBox" class="warning-box hidden"></div>
+          </section>
+        </div>
+      </main>
+
+      <!-- View 2: Prompt Studio -->
+      <main id="viewPrompt" class="view-panel">
+        <div class="studio-page-grid">
+          <!-- Row 1: Container & Format (left) | Organization (right) -->
+          <div class="studio-row-top">
+            <section class="card">
+              <div class="card-head">
+                <h3>Container &amp; Format</h3>
+                <div class="row gap-6">
+                  <div class="menu-wrap" id="presetMenuWrap">
+                    <button id="btnPresetDropdown" class="btn btn-h30 btn-ghost">
+                      <span id="presetBtnLabel">Preset</span>
+                      <span>&#9662;</span>
+                    </button>
+                    <div id="presetDropdownMenu" class="dropdown-menu hidden"></div>
+                  </div>
+                  <button id="btnSavePreset" class="btn btn-h30 btn-ghost">Save</button>
+                </div>
+              </div>
+
+              <div class="segmented" id="containerTabs">
+                <button class="seg-btn active" data-container="session">Session</button>
+                <button class="seg-btn" data-container="standaloneArticle">Article</button>
+                <button class="seg-btn" data-container="standaloneQuiz">Quiz</button>
+              </div>
+
+              <div class="form-grid">
+                <label class="field">
+                  <span>Title</span>
+                  <input id="promptTitle" type="text" class="input" placeholder="e.g., Chapter 2: Action Potentials" />
+                </label>
+                <label class="field">
+                  <span>Format</span>
+                  <select id="promptFormat" class="select select-h30 full-width">
+                    <option value="markdownDirectory">Markdown Directory</option>
+                    <option value="singleMarkdown">Single Markdown</option>
+                    <option value="json">Strict JSON</option>
+                  </select>
+                </label>
+                <label class="field field-span2">
+                  <span>Description</span>
+                  <input id="promptDescription" type="text" class="input" placeholder="Scope or focus..." />
+                </label>
+              </div>
+            </section>
+
+            <section class="card org-card">
+              <div class="card-head">
+                <h3>Organization</h3>
+                <div class="row gap-6" id="orgAddButtons">
+                  <button id="btnAddOrgArticle" class="btn btn-h30 btn-ghost">+ Add Article</button>
+                  <button id="btnAddOrgQuiz" class="btn btn-h30 btn-ghost">+ Add Quiz</button>
+                </div>
+              </div>
+
+              <div id="orgTrack" class="drag-track"></div>
+
+              <div id="orgSelectedBar" class="org-selected-bar hidden">
+                <span id="orgSelectedBadge" class="pill pill-accent">A1</span>
+                <input id="orgSelectedTitle" type="text" class="input input-sm" placeholder="Component section title..." />
+              </div>
+            </section>
+          </div>
+
+          <!-- Row 2: What do you want in a <session/article/quiz> -->
+          <section class="card">
+            <div class="card-head">
+              <div class="row gap-10 wrap">
+                <h3 id="specCardHeading">What do you want in a <code>article</code></h3>
+                <span id="specSyncStatus" class="sync-status-text"></span>
+              </div>
+              <div class="row gap-8 wrap">
+                <div class="segmented segmented-inline" id="specCardModeTabs">
+                  <button class="seg-btn active" data-specmode="selector">Selector</button>
+                  <button class="seg-btn" data-specmode="organizer">Organizer</button>
+                </div>
+                <button id="btnRefreshSpecs" class="btn btn-h30 btn-ghost">Reload</button>
+              </div>
+            </div>
+
+            <!-- Selector Mode: Custom SVG-icon Add Spec Dropdown + Active Rows -->
+            <div id="specSelectorPane">
+              <div class="row gap-8 wrap mb-8">
+                <div class="menu-wrap" id="selectorSpecDropWrap">
+                  <button id="btnSelectorAddSpecDrop" class="btn btn-h30 btn-ghost">
+                    <span id="selectorAddSpecLabel">+ Add Spec</span>
+                    <span>&#9662;</span>
+                  </button>
+                  <div id="selectorSpecMenu" class="dropdown-menu spec-icon-menu hidden"></div>
+                </div>
+                <span class="shop-group-title" id="selectorGroupTitle">Article Blocks</span>
+              </div>
+              <div id="selectorRowsList" class="shopping-list"></div>
+            </div>
+
+            <!-- Organizer Mode: Persistent SVG-icon Spec Dropdown + Animated Drag Track -->
+            <div id="specOrganizerPane" class="hidden">
+              <div class="row gap-8 wrap mb-8" id="specOrgAddBar">
+                <div class="menu-wrap" id="orgSpecDropWrap">
+                  <button id="btnOrgSpecDrop" class="btn btn-h30 btn-ghost">
+                    <span id="orgSpecChosenDisplay" class="row gap-6"></span>
+                    <span>&#9662;</span>
+                  </button>
+                  <div id="orgSpecMenu" class="dropdown-menu spec-icon-menu hidden"></div>
+                </div>
+                <button id="btnSpecOrgAdd" class="btn btn-h30 btn-primary">+ Add</button>
+                <span class="muted">Drag boxes to reorder exact sequence</span>
+              </div>
+              <div id="specOrgTrack" class="drag-track"></div>
+            </div>
+          </section>
+
+          <!-- Row 3: Study Notes & Attachments (50%) | Prompt Preview (50%) -->
+          <div class="studio-row-bottom">
+            <section class="card notes-card">
+              <div class="card-head">
+                <h3>Study Notes &amp; Attachments</h3>
+                <button id="btnAttachPromptFiles" class="btn btn-h30 btn-ghost">+ Attach</button>
+              </div>
+              <textarea id="promptSourceText" class="textarea fixed-textarea" rows="7" placeholder="Paste study text or instructions..."></textarea>
+              <div id="promptAttachmentsList" class="chip-row hidden"></div>
+              <div class="row gap-12 mt-8 wrap">
+                <label class="check-label"><input id="chkUseMelomg" type="checkbox" checked /> <code>melomg</code> PDF guidance</label>
+              </div>
+            </section>
+
+            <section class="card preview-card">
+              <div class="card-head">
+                <h3>Prompt Preview</h3>
+                <div class="muted" id="promptMetrics">0 chars &middot; ~0 tokens</div>
+              </div>
+
+              <div id="agentsExportBanner" class="agents-banner hidden">
+                <span id="agentsBannerDetail" class="mono">AGENTS.md Ready</span>
+                <div class="row gap-6">
+                  <button id="btnPreviewAgentsMd" class="btn btn-xs btn-ghost">Inspect</button>
+                  <button id="btnBannerOpenWs" class="btn btn-xs btn-ghost">Folder</button>
+                </div>
+              </div>
+
+              <pre id="promptPreviewBox" class="prompt-preview compact-preview"></pre>
+            </section>
+          </div>
+        </div>
+      </main>
+
+      <!-- View 3: Minimal Full-Bleed WebApp Viewer -->
+      <main id="viewViewer" class="view-panel">
+        <div class="viewer-full">
+          <div id="viewerPlaceholder" class="viewer-empty">
+            <!-- Non-clickable stylized Question Mark SVG graphic -->
+            <div class="stylized-q-svg" aria-hidden="true">
+              <svg viewBox="0 0 64 64" width="54" height="54" fill="none">
+                <circle cx="32" cy="32" r="28" stroke="currentColor" stroke-width="2.5" stroke-dasharray="5 4" opacity="0.55"/>
+                <path d="M24 24a8 8 0 0 1 15.3 3.2c0 5.1-7.3 6.2-7.3 11.3" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+                <circle cx="32" cy="46" r="2.3" fill="currentColor"/>
+              </svg>
+            </div>
+            <h3>Select or Build a Study WebApp</h3>
+            <p class="muted">Open any compiled <code>mby</code> folder to launch it offline inside Meloberry PC.</p>
+            <button id="btnEmptyOpenWebApp" class="btn btn-primary btn-h32 mt-8">Open...</button>
+          </div>
+
+          <iframe id="webAppFrame" class="webapp-frame hidden" title="Meloberry Study WebApp"></iframe>
+
+          <!-- Bottom-Left Floating Controls: [ ^ ] [ ? ] -->
+          <div class="viewer-fab-wrap" id="viewerFabWrap">
+            <div id="viewerUpMenu" class="up-menu hidden">
+              <button id="menuOpenWebAppFolder" class="up-menu-item">Open WebApp Folder</button>
+              <div class="up-menu-subwrap" id="recentSubmenuWrap">
+                <button class="up-menu-item has-sub" id="btnSubRecent">
+                  <span>Recent WebApps</span>
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 18l6-6-6-6"/></svg>
+                </button>
+                <div id="recentSubmenu" class="chained-submenu hidden"></div>
+              </div>
+              <div class="up-menu-subwrap hidden" id="activeWsSubmenuWrap">
+                <button class="up-menu-item has-sub" id="btnSubActiveWs">
+                  <span>Active Workspace</span>
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 18l6-6-6-6"/></svg>
+                </button>
+                <div id="activeWsSubmenu" class="chained-submenu hidden"></div>
+              </div>
+              <div class="menu-divider"></div>
+              <button id="menuToggleOverrideTheme" class="up-menu-item up-menu-toggle" type="button" role="switch" aria-checked="true">
+                <span>Override Theme</span>
+                <span id="overrideThemeSwitch" class="mini-switch on" aria-hidden="true"></span>
+              </button>
+            </div>
+
+            <div id="viewerHelpPopover" class="help-popover-fab hidden">
+              <strong>Meloberry WebApp Viewer</strong>
+              <p>Open any folder built with <code>mby build</code> (containing <code>index.html</code> and <code>app.js</code>). Completed quizzes automatically save reports inside <code>&lt;webDir&gt;/reports/</code>.</p>
+            </div>
+
+            <div class="row gap-6">
+              <button id="btnViewerUpTrigger" class="fab-btn" title="WebApp Menu">
+                <svg class="rot-up" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M15 18l-6-6 6-6"/>
+                </svg>
+              </button>
+              <button id="btnViewerHelp" class="fab-btn" title="Viewer Help">?</button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+    </div>
+  </div>
+
+  <!-- Anchored Spec Pencil Notes Popover (Fixed Size) -->
+  <div id="notePopover" class="note-popover hidden">
+    <div class="note-popover-head">
+      <strong id="notePopoverTitle">Custom Instructions</strong>
+      <button id="btnCloseNotePopover" class="btn btn-xs btn-ghost">Done</button>
+    </div>
+    <textarea id="notePopoverText" class="textarea fixed-textarea" rows="4" placeholder="Specific instructions for this spec..."></textarea>
+  </div>
+
+  <!-- Positioned 1.5s Hover Full-Path Tooltip -->
+  <div id="hoverPathTooltip" class="path-tooltip hidden"></div>
+
+  <!-- Settings & Updates Modal -->
+  <div id="settingsModal" class="modal-backdrop hidden">
+    <div class="modal-card modal-lg">
+      <div class="modal-head">
+        <div>
+          <h2>Settings &amp; App Updates</h2>
+          <div class="muted" id="settingsMetaLine">Meloberry PC v1.0.0</div>
+        </div>
+        <button id="btnCloseSettings" class="btn btn-h30 btn-ghost">Close</button>
+      </div>
+
+      <div class="modal-body">
+        <section class="settings-block">
+          <h3>App Self-Update (Inno Setup)</h3>
+          <div class="row gap-8 wrap">
+            <button id="btnCheckSelfUpdate" class="btn btn-h30 btn-primary">Check for App Updates</button>
+            <button id="btnInstallSelfUpdate" class="btn btn-h30 btn-ok hidden">Download &amp; Install Update</button>
+            <span id="selfUpdateStatusText" class="muted">Checks GitHub only when clicked.</span>
+          </div>
+          <div id="selfUpdateProgressWrap" class="progress-wrap hidden">
+            <div class="progress-bar" id="selfUpdateProgressBar"></div>
+          </div>
+          <div class="form-grid mt-8">
+            <label class="field">
+              <span>Self-Update GitHub Owner</span>
+              <input id="setUpdateOwner" type="text" class="input" />
+            </label>
+            <label class="field">
+              <span>Self-Update GitHub Repo</span>
+              <input id="setUpdateRepo" type="text" class="input" />
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-block">
+          <h3>Theme &amp; Paths</h3>
+          <div class="form-grid">
+            <label class="field">
+              <span>Theme</span>
+              <select id="setThemeMode" class="select select-h30 full-width">
+                <option value="berry">Berry</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+                <option value="paper">Paper</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Default Build Output Dir</span>
+              <input id="setDefaultBuildDir" type="text" class="input" placeholder="Defaults to &lt;Workspace&gt;\&lt;id&gt;_web" />
+            </label>
+            <label class="field">
+              <span>Custom <code>mby</code> Override</span>
+              <input id="setMbyOverride" type="text" class="input" placeholder="Auto-resolved" />
+            </label>
+            <label class="field">
+              <span>Custom <code>melomg</code> Override</span>
+              <input id="setMelomgOverride" type="text" class="input" placeholder="Auto-resolved" />
+            </label>
+          </div>
+          <div class="row gap-8 mt-8">
+            <button id="btnSaveSettings" class="btn btn-h30 btn-primary">Save Settings</button>
+            <button id="btnOpenAppsDir" class="btn btn-h30 btn-ghost">Open apps\ Folder</button>
+          </div>
+        </section>
+
+        <section class="settings-block">
+          <h3>Ecosystem Repositories</h3>
+          <div id="ecosystemRepoCards" class="repo-grid"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirmation / AGENTS.md Inspect Modal -->
+  <div id="confirmAgentsModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="confirmModalTitle">Confirm</h3>
+      </div>
+      <div class="modal-body">
+        <p id="confirmModalBody"></p>
+        <pre id="agentsPreviewModalCode" class="prompt-preview modal-pre hidden"></pre>
+      </div>
+      <div class="modal-foot">
+        <button id="btnConfirmModalCancel" class="btn btn-h30 btn-ghost">Cancel</button>
+        <button id="btnConfirmModalProceed" class="btn btn-h30 btn-warn">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+  <script>window.__MBY_TOKEN__ = "__MBY_TOKEN_VALUE__";</script>
+  <script src="/shell/shell.js"></script>
+</body>
+</html>

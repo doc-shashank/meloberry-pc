@@ -1,0 +1,60 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.12.35527.113
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{B7E43A11-9D31-4B21-A531-000000000001}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{B7E43A11-9D31-4B21-A531-000000000002}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Meloberry.Wrapper.Domain", "src\Meloberry.Wrapper.Domain\Meloberry.Wrapper.Domain.csproj", "{B7E43A11-9D31-4B21-A531-100000000001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Meloberry.Wrapper.Application", "src\Meloberry.Wrapper.Application\Meloberry.Wrapper.Application.csproj", "{B7E43A11-9D31-4B21-A531-100000000002}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Meloberry.Wrapper.Infrastructure", "src\Meloberry.Wrapper.Infrastructure\Meloberry.Wrapper.Infrastructure.csproj", "{B7E43A11-9D31-4B21-A531-100000000003}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Meloberry.Wrapper.Desktop", "src\Meloberry.Wrapper.Desktop\Meloberry.Wrapper.Desktop.csproj", "{B7E43A11-9D31-4B21-A531-100000000004}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Meloberry.Wrapper.UnitTests", "tests\Meloberry.Wrapper.UnitTests\Meloberry.Wrapper.UnitTests.csproj", "{B7E43A11-9D31-4B21-A531-200000000001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Meloberry.Wrapper.ArchitectureTests", "tests\Meloberry.Wrapper.ArchitectureTests\Meloberry.Wrapper.ArchitectureTests.csproj", "{B7E43A11-9D31-4B21-A531-200000000002}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B7E43A11-9D31-4B21-A531-100000000001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000002}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000003}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000003}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000004}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000004}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000004}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-100000000004}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-200000000001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-200000000001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-200000000001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-200000000001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-200000000002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-200000000002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B7E43A11-9D31-4B21-A531-200000000002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B7E43A11-9D31-4B21-A531-200000000002}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{B7E43A11-9D31-4B21-A531-100000000001} = {B7E43A11-9D31-4B21-A531-000000000001}
+		{B7E43A11-9D31-4B21-A531-100000000002} = {B7E43A11-9D31-4B21-A531-000000000001}
+		{B7E43A11-9D31-4B21-A531-100000000003} = {B7E43A11-9D31-4B21-A531-000000000001}
+		{B7E43A11-9D31-4B21-A531-100000000004} = {B7E43A11-9D31-4B21-A531-000000000001}
+		{B7E43A11-9D31-4B21-A531-200000000001} = {B7E43A11-9D31-4B21-A531-000000000002}
+		{B7E43A11-9D31-4B21-A531-200000000002} = {B7E43A11-9D31-4B21-A531-000000000002}
+	EndGlobalSection
+EndGlobal
