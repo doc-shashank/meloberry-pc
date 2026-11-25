@@ -66,13 +66,17 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
         }
     }
 
-    public async Task InitializeAsync(string startUrl)
+    public async Task InitializeAsync(string startUrl, string viewerBaseUrl)
     {
         _ = EnsureLoaderDllLoaded(dataPaths);
         Directory.CreateDirectory(dataPaths.WebView2UserDataDirectory);
         var env = await CoreWebView2Environment.CreateAsync(null, dataPaths.WebView2UserDataDirectory);
         _controller = await env.CreateCoreWebView2ControllerAsync(windowHost.Handle);
         _controller.Bounds = windowHost.GetClientBounds();
+        _controller.AllowExternalDrop = false;
+
+        var shellAuthority = new Uri(startUrl).GetLeftPart(UriPartial.Authority);
+        var viewerAuthority = new Uri(viewerBaseUrl).GetLeftPart(UriPartial.Authority);
 
         windowHost.Resized += size =>
         {
@@ -96,8 +100,37 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
         _controller.CoreWebView2.WebMessageReceived += (_, e) => HandleWebMessage(e.TryGetWebMessageAsString());
         _controller.CoreWebView2.NavigationCompleted += (_, _) => PushWindowState(windowHost.IsMaximized);
 
+        _controller.CoreWebView2.NavigationStarting += (_, e) =>
+        {
+            var allowed = Uri.TryCreate(e.Uri, UriKind.Absolute, out var navUri) &&
+                string.Equals(navUri.GetLeftPart(UriPartial.Authority), shellAuthority, StringComparison.OrdinalIgnoreCase);
+            if (!allowed)
+            {
+                e.Cancel = true;
+            }
+        };
+
+        _controller.CoreWebView2.FrameNavigationStarting += (_, e) =>
+        {
+            if (string.Equals(e.Uri, "about:blank", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var allowed = Uri.TryCreate(e.Uri, UriKind.Absolute, out var frameUri) &&
+                string.Equals(frameUri.GetLeftPart(UriPartial.Authority), viewerAuthority, StringComparison.OrdinalIgnoreCase) &&
+                frameUri.AbsolutePath.StartsWith("/viewer/", StringComparison.OrdinalIgnoreCase);
+            if (!allowed)
+            {
+                e.Cancel = true;
+            }
+        };
+
+        _controller.CoreWebView2.NewWindowRequested += (_, e) => e.Handled = true;
+
         _controller.CoreWebView2.Settings.AreDevToolsEnabled = false;
         _controller.CoreWebView2.Settings.IsStatusBarEnabled = false;
+        _controller.CoreWebView2.Settings.AreHostObjectsAllowed = false;
         _controller.CoreWebView2.Navigate(startUrl);
     }
 
@@ -166,13 +199,25 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
             return;
         }
 
-        var tmp = targetPath + ".tmp";
-        using (var fs = File.Create(tmp))
+        var tmp = $"{targetPath}.{Guid.NewGuid():N}.tmp";
+        try
         {
-            stream.CopyTo(fs);
-        }
+            using (var fs = File.Create(tmp))
+            {
+                stream.CopyTo(fs);
+            }
 
-        File.Move(tmp, targetPath, overwrite: true);
+            File.Move(tmp, targetPath, overwrite: true);
+        }
+        catch
+        {
+            if (File.Exists(tmp))
+            {
+                try { File.Delete(tmp); } catch { }
+            }
+
+            throw;
+        }
     }
 
     public void Dispose()

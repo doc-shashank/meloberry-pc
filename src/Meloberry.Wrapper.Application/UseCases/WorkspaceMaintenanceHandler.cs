@@ -48,16 +48,16 @@ public sealed class WorkspaceMaintenanceHandler(
         }
 
         ActiveWorkspaceState? updatedWs = settings.ActiveWorkspace;
-        if (updatedWs is not null &&
-            string.Equals(Path.GetFullPath(updatedWs.WorkspacePath), Path.GetFullPath(wsPath), StringComparison.OrdinalIgnoreCase))
+        if (updatedWs is not null && PathNormalization.AreSameDirectory(updatedWs.WorkspacePath, wsPath))
         {
             var scanned = await appsStore.ScanAppsAsync(updatedWs.WorkspacePath, ct).ConfigureAwait(false);
-            var remainingApps = scanned.Where(a => a.IsPresentInWorkspace).Select(a => a.FileName).ToList();
+            var remainingApps = scanned.Where(a => a.IsPresentInWorkspace).Select(a => a.WorkspaceFileName ?? a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var remainingInstalled = scanned.Where(a => a.IsInstalled && a.IsPresentInWorkspace).Select(a => a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             updatedWs = updatedWs with
             {
                 AgentsMdExportedUtc = res.Value.RemovedAgentsMd ? null : updatedWs.AgentsMdExportedUtc,
                 WorkspaceApps = remainingApps,
-                SelectedAppFileNames = remainingApps
+                SelectedAppFileNames = remainingInstalled
             };
             await settingsStore.SaveAsync(settings with { ActiveWorkspace = updatedWs }, ct).ConfigureAwait(false);
         }
@@ -101,15 +101,15 @@ public sealed class WorkspaceMaintenanceHandler(
         }
 
         ActiveWorkspaceState? updatedWs = settings.ActiveWorkspace;
-        if (updatedWs is not null &&
-            string.Equals(Path.GetFullPath(updatedWs.WorkspacePath), Path.GetFullPath(wsPath), StringComparison.OrdinalIgnoreCase))
+        if (updatedWs is not null && PathNormalization.AreSameDirectory(updatedWs.WorkspacePath, wsPath))
         {
             var scanned = await appsStore.ScanAppsAsync(updatedWs.WorkspacePath, ct).ConfigureAwait(false);
-            var currentApps = scanned.Where(a => a.IsPresentInWorkspace).Select(a => a.FileName).ToList();
+            var currentApps = scanned.Where(a => a.IsPresentInWorkspace).Select(a => a.WorkspaceFileName ?? a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var currentInstalled = scanned.Where(a => a.IsInstalled && a.IsPresentInWorkspace).Select(a => a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             updatedWs = updatedWs with
             {
                 WorkspaceApps = currentApps,
-                SelectedAppFileNames = currentApps
+                SelectedAppFileNames = currentInstalled
             };
             await settingsStore.SaveAsync(settings with { ActiveWorkspace = updatedWs }, ct).ConfigureAwait(false);
         }

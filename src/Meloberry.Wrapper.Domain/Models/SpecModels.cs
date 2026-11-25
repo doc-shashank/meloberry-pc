@@ -87,7 +87,10 @@ public static class SpecCatalogDefaults
             new("scheme", "Scheme", false,
             [
                 new("4opt", "4-opt"),
-                new("5opt", "5-opt"),
+                new("5opt", "5-opt")
+            ]),
+            new("options", "Extra", true,
+            [
                 new("both-false", "Include both-false")
             ])
         ],
@@ -146,11 +149,11 @@ public static class SpecCatalogDefaults
         VirtualLinkTopic,
         new("mcq", "content", "question", "Single or multi-correct MCQ question with optional image.", "{ type:\"mcq\", text:string, isMultiCorrect?:bool, options:[{text?:string,isCorrect?:bool}] }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("mcq")),
         new("flashcard", "content", "question", "Two-sided active-recall flashcard.", "{ type:\"flashcard\", front:{text?:string,imagePath?:string}, back:{text?:string,imagePath?:string} }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("flashcard")),
-        new("fill-blank", "content", "question", "Fill-in-the-blank stem with {{answer}} slots.", "{ type:\"fill-blank\", template:string, blanks:[{answers:string[]}] }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("fill-blank")),
+        new("fill-blank", "content", "question", "Fill-in-the-blank stem with {{primary | alias}} slots.", "{ type:\"fill-blank\", ref?:string, text:string, fuzzy?:bool, caseSensitive?:bool, placeholder?:string, explanation?:string }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("fill-blank")),
         new("assertion-reason", "content", "question", "Assertion-Reason 4- or 5-option clinical reasoning item.", "{ type:\"assertion-reason\", assertion:string, reason:string, answer:string, scheme?:string }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("assertion-reason")),
-        new("spot-error", "content", "question", "Clinical/statement spot-the-error span correction.", "{ type:\"spot-error\", tokens:..., corrections:... }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("spot-error")),
-        new("diff", "content", "question", "Side-by-side comparison / differentiation table drill.", "{ type:\"diff\", prompt:string, leftLabel:string, rightLabel:string, rows:[...] }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("diff")),
-        new("mechanism", "content", "question", "Ordered pathway / mechanism step sequencing.", "{ type:\"mechanism\", prompt:string, steps:[...], branches?:[...] }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("mechanism")),
-        new("relabel", "content", "question", "Image label identification / matching drill.", "{ type:\"relabel\", prompt:string, imagePath:string, pins:[...] }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("relabel"))
+        new("spot-error", "content", "question", "Clinical/statement spot-the-error span correction.", "{ type:\"spot-error\", ref?:string, text:string, imagePath?:string, requireFix?:bool, allowNoError?:bool, noError?:bool, explanation?:string }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("spot-error")),
+        new("diff", "content", "question", "Side-by-side comparison / differentiation table drill.", "{ type:\"diff\", ref?:string, mode:\"fill\"|\"spot-wrong\"|\"rearrange\", title?:string, bank?:bool, fuzzy?:bool, caseSensitive?:bool, allowNoError?:bool, headers:string[], rows:string[][], explanation?:string }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("diff")),
+        new("mechanism", "content", "question", "Ordered pathway / mechanism step sequencing.", "{ type:\"mechanism\", ref?:string, title?:string, steps:[{orderGroup?:int, text:string, isDistractor?:bool}], explanation?:string }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("mechanism")),
+        new("relabel", "content", "question", "Image label identification / matching drill.", "{ type:\"relabel\", ref?:string, imagePath:string, prompt?:string, mode?:\"reveal\"|\"bank\"|\"recall\", style?:\"solid\"|\"blur\"|\"pixelate\"|\"whiteout\", masksPath?:string, include?:string[], boxes?:[{label:string,aliases?:string[],rect?:[x,y,w,h]}], distractors?:string[], explanation?:string }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("relabel"))
     ];
 }

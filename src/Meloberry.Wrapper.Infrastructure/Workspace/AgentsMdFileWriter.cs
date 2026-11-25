@@ -49,10 +49,11 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
             return Result<AgentsMdStatus>.Failure(WrapperErrors.AgentsMdAlreadyExists(agentsMdPath));
         }
 
+        string? tmpPath = null;
         try
         {
             Directory.CreateDirectory(fullWs);
-            var tmpPath = agentsMdPath + ".tmp";
+            tmpPath = $"{agentsMdPath}.{Guid.NewGuid():N}.tmp";
             await File.WriteAllTextAsync(tmpPath, content, ct).ConfigureAwait(false);
             File.Move(tmpPath, agentsMdPath, overwrite: true);
 
@@ -66,6 +67,11 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
         }
         catch (Exception ex)
         {
+            if (tmpPath is not null && File.Exists(tmpPath))
+            {
+                try { File.Delete(tmpPath); } catch { }
+            }
+
             return Result<AgentsMdStatus>.Failure(WrapperErrors.IoFailure($"Failed to write AGENTS.md: {ex.Message}"));
         }
     }

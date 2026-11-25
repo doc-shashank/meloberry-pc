@@ -38,9 +38,9 @@ public sealed class ManagedAppsStoreTests : IDisposable
         Assert.False(File.Exists(Path.Combine(paths.AppsDirectory, "mby-cli-1.9.0.exe")));
         Assert.True(File.Exists(Path.Combine(paths.AppsDirectory, "mby-cli-2.0.0.exe")));
 
-        // Metadata-based universal import: copy real mby-cli under an arbitrary filename and verify detection!
-        var realMby = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "CLI", "app", "mby-cli-2.0.0.exe"));
-        if (File.Exists(realMby))
+        // Metadata-based universal import: copy real mby-cli under an arbitrary filename and verify passive PE detection!
+        var realMby = TestRepoPaths.FindMbyExecutable();
+        if (!string.IsNullOrWhiteSpace(realMby) && File.Exists(realMby))
         {
             var renamed = Path.Combine(importSourceDir, "custom_renamed_cli.exe");
             File.Copy(realMby, renamed, overwrite: true);
@@ -51,19 +51,35 @@ public sealed class ManagedAppsStoreTests : IDisposable
             Assert.StartsWith("mby-cli-", importedRenamed.Value.FileName, StringComparison.OrdinalIgnoreCase);
         }
 
+        // Bug #4: failed SaveDownloadedToolAsync must NOT delete the existing working binary.
+        var missingTempResult = await store.SaveDownloadedToolAsync("mby", "mby-cli-9.9.9.exe", Path.Combine(_tempRoot, "missing.tmp"));
+        Assert.True(missingTempResult.IsFailure);
+        Assert.True(File.Exists(Path.Combine(paths.AppsDirectory, "mby-cli-2.0.0.exe")));
+
         // Uninstall removes from apps\ while leaving workspace copies untouched.
         var wsCopy = Path.Combine(_tempRoot, "ws", "helper-tool.exe");
+        var wsUninstalledMby = Path.Combine(_tempRoot, "ws", "mby.exe");
         Directory.CreateDirectory(Path.GetDirectoryName(wsCopy)!);
         await File.WriteAllBytesAsync(wsCopy, [(byte)'M', (byte)'Z', 0x01]);
+        await File.WriteAllBytesAsync(wsUninstalledMby, [(byte)'M', (byte)'Z', 0x02]);
 
         var unRes = await store.UninstallAppAsync("custom:helper-tool.exe");
         Assert.True(unRes.IsSuccess);
         Assert.False(File.Exists(Path.Combine(paths.AppsDirectory, "helper-tool.exe")));
         Assert.True(File.Exists(wsCopy));
 
-        var scanned = await store.ScanAppsAsync(null);
-        Assert.Contains(scanned, a => a.Kind == ManagedAppKind.Mby && a.Version == "2.0.0" && a.DisplayName == "Meloberry cli");
+        var scanned = await store.ScanAppsAsync(Path.Combine(_tempRoot, "ws"));
+        Assert.Contains(scanned, a => a.Kind == ManagedAppKind.Mby && a.Version == "2.0.0" && a.DisplayName == "Meloberry cli" && a.WorkspaceFileName == "mby.exe");
         Assert.DoesNotContain(scanned, a => a.FileName == "helper-tool.exe");
+
+        // Bug #9: when mby is uninstalled from apps\ but mby.exe is present in workspace, report real filename.
+        await store.UninstallAppAsync("mby");
+        var scannedNoInstall = await store.ScanAppsAsync(Path.Combine(_tempRoot, "ws"));
+        var mbyEntry = scannedNoInstall.Single(a => a.Kind == ManagedAppKind.Mby);
+        Assert.False(mbyEntry.IsInstalled);
+        Assert.True(mbyEntry.IsPresentInWorkspace);
+        Assert.Equal("mby.exe", mbyEntry.FileName);
+        Assert.Equal("mby.exe", mbyEntry.WorkspaceFileName);
     }
 
     public void Dispose()

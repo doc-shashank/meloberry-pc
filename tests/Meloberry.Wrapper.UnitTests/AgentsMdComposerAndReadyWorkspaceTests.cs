@@ -29,20 +29,24 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
                 SelectedAppFileNames: ["mby-cli-2.0.0.exe"],
                 StagedItems: [new StagedCopyItem(Path.Combine(_tempRoot, "ch2.pdf"), StagedCopyKind.File, "ch2.pdf", "ch2.pdf")])));
 
-        var mbyRepoExe = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "CLI", "app", "mby-cli-2.0.0.exe"));
+        var mbyRepoExe = TestRepoPaths.FindMbyExecutable();
         var appsStore = new ManagedAppsStore(paths);
-        if (File.Exists(mbyRepoExe))
+        if (!string.IsNullOrWhiteSpace(mbyRepoExe) && File.Exists(mbyRepoExe))
         {
             await appsStore.ImportLocalExecutableAsync(mbyRepoExe);
         }
 
+        var mbyClient = new ProcessMbyCliClient();
+        var specLoader = new LoadSpecCatalogHandler(appsStore, mbyClient, settingsStore);
         var handler = new ReadyWorkspaceHandler(
             new AgentsMdFileWriter(),
             appsStore,
-            new ProcessMbyCliClient(),
+            mbyClient,
             new ProcessMelomgCliClient(),
-            settingsStore);
+            settingsStore,
+            specLoader);
 
+        var externalAttachment = Path.Combine(_tempRoot, "external_notes.pdf");
         var draft = new PromptDraft(
             Container: ContainerKind.Session,
             Title: "Chapter 2",
@@ -55,7 +59,7 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
                 new ShoppingListSelection("mcq", true, 4),
                 new ShoppingListSelection("link", true, 2)
             ],
-            Attachments: [],
+            Attachments: [new SourceAttachment(externalAttachment, "pdf")],
             WorkingDirectory: workspace);
 
         var first = await handler.ReadyWorkspaceAsync(new ReadyWorkspaceRequest(draft, OverwriteConfirmed: false));
@@ -64,7 +68,10 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
         var exportedText = await File.ReadAllTextAsync(first.Value.OutputPath);
         Assert.Contains("Active Workspace Contract", exportedText);
         Assert.Contains("### `link` (block)", exportedText);
-        if (File.Exists(mbyRepoExe))
+        Assert.Contains("**External Reference Files**", exportedText);
+        Assert.Contains(externalAttachment, exportedText);
+        Assert.DoesNotContain("./external_notes.pdf", exportedText);
+        if (!string.IsNullOrWhiteSpace(mbyRepoExe) && File.Exists(mbyRepoExe))
         {
             Assert.Contains("mcq", first.Value.IncludedTopics);
             Assert.Contains("### `mcq` (question)", exportedText);
@@ -134,6 +141,44 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
         var quizOut = PromptComposer.Compose(emptyQuiz, SpecCatalogDefaults.BuiltInFallbackCatalog);
         Assert.DoesNotContain("| `text` |", quizOut.Markdown);
         Assert.Contains("| `mcq` | 5 | `mixed` | Default fallback (no quiz types selected) |", quizOut.Markdown);
+    }
+
+    [Fact]
+    public void AgentsMdAndPromptComposer_HandleAbsoluteCliPaths_MultilineNotes_AndBacktickFences()
+    {
+        var agentsMd = AgentsMdComposer.Compose(new AgentsMdComposeInput(
+            WorkspacePath: @"C:\ws",
+            Container: ContainerKind.Session,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            WorkspaceMbyFileName: @"C:\Users\Alice\AppData\Local\Meloberry\apps\mby-cli-2.0.0.exe",
+            WorkspaceMelomgFileName: @"C:\Tools With Spaces\meloberry-melomg-2.1.0.exe",
+            ExtraWorkspaceExecutables: [],
+            CopiedFiles: ["ch2.pdf"],
+            CopiedFolders: [],
+            SelectedSpecs: [],
+            MelomgSpecsText: "Uses ```triple``` backticks",
+            IncludeLinkBlock: false));
+
+        Assert.DoesNotContain(@".\C:\", agentsMd);
+        Assert.Contains(@"C:\Users\Alice\AppData\Local\Meloberry\apps\mby-cli-2.0.0.exe", agentsMd);
+        Assert.Contains("& \"C:\\Tools With Spaces\\meloberry-melomg-2.1.0.exe\"", agentsMd);
+        Assert.Contains("````text", agentsMd);
+        Assert.DoesNotContain("``Study Session", agentsMd);
+
+        var prompt = PromptComposer.Compose(new PromptDraft(
+            Container: ContainerKind.StandaloneArticle,
+            Title: "Notes Test",
+            Description: "",
+            AuthoringFormat: AuthoringFormat.SingleMarkdown,
+            SourceText: "Sample:\n```md\nhello\n```",
+            Selections: [new("text", true, 1, "Line 1\nLine 2 | Pipe")],
+            Attachments: [],
+            MbyExecutablePath: "bad|path<>name.exe",
+            WorkingDirectory: @"C:\ws"), SpecCatalogDefaults.BuiltInFallbackCatalog);
+
+        Assert.Contains("| `text` | 1 | — | Line 1 Line 2 \\| Pipe |", prompt.Markdown);
+        Assert.Contains("````text", prompt.Markdown);
+        Assert.DoesNotContain("`Single Markdown File`", prompt.Markdown);
     }
 
     public void Dispose()

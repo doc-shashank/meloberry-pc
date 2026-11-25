@@ -19,12 +19,7 @@ public sealed class ManageLibraryHandler(
             return Result<(string, string, WebAppLibraryEntry)>.Failure(WrapperErrors.InvalidWebAppDir(folderPath));
         }
 
-        string fullDir;
-        try
-        {
-            fullDir = Path.GetFullPath(folderPath.Trim());
-        }
-        catch
+        if (!PathNormalization.TryNormalizeDirectoryPath(folderPath, out var fullDir))
         {
             return Result<(string, string, WebAppLibraryEntry)>.Failure(WrapperErrors.InvalidWebAppDir(folderPath));
         }
@@ -42,7 +37,7 @@ public sealed class ManageLibraryHandler(
             return Result<(string, string, WebAppLibraryEntry)>.Failure(mountRes.Error!);
         }
 
-        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(fullDir));
+        var name = Path.GetFileName(fullDir);
         var entry = new WebAppLibraryEntry(
             Path: fullDir,
             Name: string.IsNullOrWhiteSpace(name) ? fullDir : name,
@@ -51,7 +46,7 @@ public sealed class ManageLibraryHandler(
 
         var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
         var updatedRecents = (settings.RecentWebApps ?? [])
-            .Where(r => !string.Equals(r.Path, fullDir, StringComparison.OrdinalIgnoreCase))
+            .Where(r => !PathNormalization.AreSameDirectory(r.Path, fullDir))
             .Prepend(entry)
             .Take(20)
             .ToList();
@@ -107,13 +102,14 @@ public sealed class WorkspaceActionsHandler(
             return Result<(string, string, WebAppLibraryEntry)>.Failure(WrapperErrors.CliNotFound("mby"));
         }
 
+        var safeWsFolder = $"{Path.GetFileName(workspaceId)}_web";
         var baseOut = !string.IsNullOrWhiteSpace(outputDir)
             ? outputDir!
             : !string.IsNullOrWhiteSpace(settings.DefaultBuildOutputDir)
-                ? settings.DefaultBuildOutputDir!
+                ? Path.Combine(settings.DefaultBuildOutputDir!, safeWsFolder)
                 : !string.IsNullOrWhiteSpace(wsDir)
-                    ? Path.Combine(wsDir, $"{workspaceId}_web")
-                    : Path.Combine(Path.GetTempPath(), "MeloberryBuilds", $"{workspaceId}_web");
+                    ? Path.Combine(wsDir, safeWsFolder)
+                    : Path.Combine(Path.GetTempPath(), "MeloberryBuilds", safeWsFolder);
 
         var buildRes = await mbyClient.BuildWorkspaceAsync(mbyPath, workspaceId, baseOut, wsDir, ct).ConfigureAwait(false);
         if (buildRes.IsFailure)

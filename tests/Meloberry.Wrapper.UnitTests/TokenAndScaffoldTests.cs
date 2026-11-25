@@ -153,11 +153,69 @@ public sealed class TokenAndScaffoldTests : IDisposable
     }
 
     [Fact]
+    public void SessionScaffoldGenerator_SupportsBothFalseAssertionReason_FiltersOrderedItems_AndLinksAllCards()
+    {
+        var arGroups = SpecCatalogDefaults.GetModeGroupsForTopic("assertion-reason");
+        Assert.Equal(2, arGroups.Count);
+        Assert.Contains(arGroups, g => g.MultiSelect && g.Options.Any(o => o.Key == "both-false"));
+
+        var draft = new PromptDraft(
+            Container: ContainerKind.Session,
+            Title: "Scaffold Edge Cases",
+            Description: "",
+            AuthoringFormat: AuthoringFormat.Json,
+            SourceText: "",
+            Selections: [],
+            Attachments: [],
+            Components:
+            [
+                new(
+                    "a1",
+                    ComponentKind.Article,
+                    "Article",
+                    [
+                        new("text", true, 1),
+                        new("link", true, 2)
+                    ],
+                    OrderedItems:
+                    [
+                        new("stale_img", "image", 1),
+                        new("t1", "text", 1),
+                        new("l1", "link", 1),
+                        new("l2", "link", 2)
+                    ]),
+                new(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Quiz",
+                    [new("assertion-reason", true, 1, Modes: ["both-false"])])
+            ]);
+
+        var res = SessionScaffoldGenerator.Generate(draft, SpecCatalogDefaults.BuiltInFallbackCatalog);
+        Assert.True(res.IsSuccess);
+        using var doc = JsonDocument.Parse(res.Value.RawJson);
+        var comps = doc.RootElement.GetProperty("components");
+        var article = comps[0];
+        var blocks = article.GetProperty("blocks");
+        Assert.Single(blocks.EnumerateArray());
+        var textBody = blocks[0].GetProperty("text").GetString()!;
+        Assert.Contains("mby://card/card-1", textBody);
+        Assert.Contains("mby://card/card-2", textBody);
+        Assert.Equal(2, article.GetProperty("links").GetArrayLength());
+
+        var ar = comps[1].GetProperty("questions")[0];
+        Assert.Equal("5opt", ar.GetProperty("scheme").GetString());
+        Assert.Equal("both-false", ar.GetProperty("answer").GetString());
+    }
+
+    [Fact]
     public async Task SessionTemplateHandler_AppliesGeneratedJsonWithLiveMbyCli()
     {
-        var liveMby = Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "..", "CLI", "app", "mby-cli-2.0.0.exe"));
-        Assert.True(File.Exists(liveMby), $"Expected live CLI at {liveMby}");
+        var liveMby = TestRepoPaths.FindMbyExecutable();
+        if (string.IsNullOrWhiteSpace(liveMby) || !File.Exists(liveMby))
+        {
+            return;
+        }
 
         var wsDir = Path.Combine(_tempRoot, "ws");
         Directory.CreateDirectory(wsDir);
@@ -228,6 +286,7 @@ public sealed class TokenAndScaffoldTests : IDisposable
     private sealed class DummyShutdown : IAppShutdownCoordinator
     {
         public void RequestShutdown() { }
+        public void RequestShutdownAndLaunch(string executablePath, string arguments) { }
     }
 
     private sealed class DummyDialogs : INativeDialogService

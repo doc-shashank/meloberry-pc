@@ -55,6 +55,19 @@ public sealed class GitHubDownloadAndSelfUpdateTests : IDisposable
         var badDl = await downloader.DownloadToTempFileAsync(badHashCandidate, _ => { });
         Assert.True(badDl.IsFailure);
         Assert.Equal("Update.VerificationFailed", badDl.Error!.Code);
+        // Bug #15: failed verification must not leak .tmp files.
+        Assert.Empty(Directory.GetFiles(paths.AppsDirectory, "*.tmp"));
+
+        // Bug #15: 1-byte chunked network read must still validate PE MZ header cleanly.
+        var tricklingHandler = new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new OneByteStream(fakeExe))
+        });
+        var trickleHelper = new GitHubHttpClientHelper(new FakeMetaProvider("1.0.0"), tricklingHandler);
+        var trickleDl = await new GitHubToolDownloader(trickleHelper, paths)
+            .DownloadToTempFileAsync(check.Value with { Sha256Hex = $"sha256:{sha}" }, _ => { });
+        Assert.True(trickleDl.IsSuccess);
+        File.Delete(trickleDl.Value);
 
         var okCandidate = check.Value with { Sha256Hex = $"sha256:{sha}" };
         var okDl = await downloader.DownloadToTempFileAsync(okCandidate, _ => { });
@@ -106,6 +119,79 @@ public sealed class GitHubDownloadAndSelfUpdateTests : IDisposable
         Assert.False(GitHubHttpClientHelper.IsAllowedGitHubUri("http://github.com/doc-shashank/meloberry-cli", out _));
         Assert.False(GitHubHttpClientHelper.IsAllowedGitHubUri("https://evil.example.com/mby.exe", out _));
         Assert.True(GitHubHttpClientHelper.IsAllowedGitHubUri("https://objects.githubusercontent.com/file.exe", out _));
+
+        // Bug #24: SemVer prerelease ordering.
+        Assert.True(Meloberry.Wrapper.Domain.Common.SemverComparer.Compare("2.0.0", "2.0.0-beta.1") > 0);
+        Assert.True(Meloberry.Wrapper.Domain.Common.SemverComparer.Compare("2.0.0-beta.1", "2.0.0-alpha.2") > 0);
+        Assert.True(Meloberry.Wrapper.Domain.Common.SemverComparer.Compare("2.0.0-alpha.2", "2.0.0-alpha.10") < 0);
+    }
+
+    [Fact]
+    public async Task SelfUpdateHandler_InvalidatesStaleCheckOnRepoChange_AndRequestsPostShutdownLaunch()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "selfupd_handler"));
+        var settingsStore = new Meloberry.Wrapper.Infrastructure.Persistence.JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(SelfUpdateRepoOwner: "owner-one", SelfUpdateRepoName: "repo-one"));
+
+        var fakeExe = new byte[] { (byte)'M', (byte)'Z', 0x90, 0x00 };
+        var requestedUrls = new List<string>();
+        var handler = new StubHttpMessageHandler(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            requestedUrls.Add(url);
+            if (url.Contains("/releases/latest", StringComparison.Ordinal))
+            {
+                var owner = url.Contains("owner-two", StringComparison.Ordinal) ? "owner-two" : "owner-one";
+                var json = $"{{\"tag_name\":\"v1.2.0\",\"assets\":[{{\"name\":\"mby-pc-setup-1.2.0.exe\",\"browser_download_url\":\"https://github.com/{owner}/repo-one/releases/download/v1.2.0/mby-pc-setup-1.2.0.exe\",\"size\":4}}]}}";
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(json, Encoding.UTF8, "application/json")
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(fakeExe)
+            };
+        });
+
+        var updater = new GitHubSelfUpdater(new GitHubHttpClientHelper(new FakeMetaProvider("1.0.0"), handler), paths);
+        var shutdown = new RecordingShutdown();
+        var selfUpdateHandler = new Meloberry.Wrapper.Application.UseCases.SelfUpdateHandler(
+            updater,
+            new FakeMetaProvider("1.0.0"),
+            settingsStore,
+            shutdown);
+
+        var check1 = await selfUpdateHandler.CheckAsync();
+        Assert.True(check1.IsSuccess);
+        Assert.Equal("owner-one/repo-one", check1.Value.RepoSlug);
+
+        // Change repo owner in settings; DownloadAndInstallAsync must re-check owner-two instead of reusing stale _lastCheck.
+        await settingsStore.SaveAsync(new WrapperSettings(SelfUpdateRepoOwner: "owner-two", SelfUpdateRepoName: "repo-one"));
+        var installRes = await selfUpdateHandler.DownloadAndInstallAsync();
+        Assert.True(installRes.IsSuccess);
+        Assert.Contains(requestedUrls, u => u.Contains("/repos/owner-two/repo-one/releases/latest", StringComparison.Ordinal));
+        Assert.Equal(installRes.Value, shutdown.LaunchExe);
+        Assert.Contains("/SILENT", shutdown.LaunchArgs);
+    }
+
+    private sealed class RecordingShutdown : IAppShutdownCoordinator
+    {
+        public string? LaunchExe { get; private set; }
+        public string? LaunchArgs { get; private set; }
+        public void RequestShutdown() { }
+        public void RequestShutdownAndLaunch(string executablePath, string arguments)
+        {
+            LaunchExe = executablePath;
+            LaunchArgs = arguments;
+        }
+    }
+
+    private sealed class OneByteStream(byte[] data) : MemoryStream(data)
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            base.ReadAsync(buffer.Length > 0 ? buffer[..1] : buffer, cancellationToken);
     }
 
     public void Dispose()

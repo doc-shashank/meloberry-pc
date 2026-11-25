@@ -91,6 +91,7 @@ public interface IGitHubSelfUpdater
 public interface IAppShutdownCoordinator
 {
     void RequestShutdown();
+    void RequestShutdownAndLaunch(string executablePath, string arguments);
 }
 
 /// <summary>Persists wrapper-settings.json atomically.</summary>

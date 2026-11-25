@@ -20,7 +20,8 @@ public sealed class ReadyWorkspaceHandler(
     IManagedAppsStore appsStore,
     IMbyCliClient mbyClient,
     IMelomgCliClient melomgClient,
-    ISettingsStore settingsStore)
+    ISettingsStore settingsStore,
+    LoadSpecCatalogHandler specLoader)
 {
     public async Task<Result<AgentsMdStatus>> GetStatusAsync(string? workspacePathOverride, CancellationToken ct = default)
     {
@@ -53,7 +54,11 @@ public sealed class ReadyWorkspaceHandler(
             return Result<AgentsMdExportResult>.Failure(WrapperErrors.InvalidWorkspaceDir("Select an Active Workspace before calling Ready Workspace."));
         }
 
-        var fullWs = Path.GetFullPath(wsPath);
+        if (!PathNormalization.TryNormalizeDirectoryPath(wsPath, out var fullWs))
+        {
+            return Result<AgentsMdExportResult>.Failure(WrapperErrors.InvalidWorkspaceDir(wsPath));
+        }
+
         var preStatus = await agentsMdWriter.GetStatusAsync(fullWs, ct).ConfigureAwait(false);
         if (preStatus.IsFailure)
         {
@@ -68,17 +73,24 @@ public sealed class ReadyWorkspaceHandler(
 
         // Collect workspace executables and staged/copied files & folders.
         var apps = await appsStore.ScanAppsAsync(fullWs, ct).ConfigureAwait(false);
-        var workspaceMby = apps.FirstOrDefault(a => a.Kind == ManagedAppKind.Mby && a.IsPresentInWorkspace)?.FileName;
-        var workspaceMelomg = apps.FirstOrDefault(a => a.Kind == ManagedAppKind.Melomg && a.IsPresentInWorkspace)?.FileName;
+        var workspaceMby = apps.FirstOrDefault(a => a.Kind == ManagedAppKind.Mby && a.IsPresentInWorkspace)?.WorkspaceFileName;
+        var workspaceMelomg = apps.FirstOrDefault(a => a.Kind == ManagedAppKind.Melomg && a.IsPresentInWorkspace)?.WorkspaceFileName;
         var extraWorkspaceExes = apps
             .Where(a => a.Kind == ManagedAppKind.CustomExecutable && a.IsPresentInWorkspace)
-            .Select(a => a.FileName)
+            .Select(a => a.WorkspaceFileName ?? a.FileName)
             .ToList();
 
         var mbyExePath = await appsStore.ResolveToolExecutableAsync("mby", fullWs, settings.MbyExecutableOverride, ct).ConfigureAwait(false);
         var melomgExePath = await appsStore.ResolveToolExecutableAsync("melomg", fullWs, settings.MelomgExecutableOverride, ct).ConfigureAwait(false);
 
         // Compute targeted spec topics from container + format + enabled shopping list selections.
+        var (liveCatalog, _, _) = await specLoader.LoadAsync(false, ct).ConfigureAwait(false);
+        var catalogByTopic = SpecCatalogDefaults.BuiltInFallbackCatalog.ToDictionary(s => s.Topic, StringComparer.OrdinalIgnoreCase);
+        foreach (var item in liveCatalog)
+        {
+            catalogByTopic[item.Topic] = item;
+        }
+
         var topicSet = new List<string>();
         void AddUnique(string t)
         {
@@ -110,9 +122,7 @@ public sealed class ReadyWorkspaceHandler(
 
         var includeLink = false;
         var allSelections = request.Draft.Components is { Count: > 0 }
-            ? PromptComposer.ResolveEffectiveComponents(
-                request.Draft,
-                SpecCatalogDefaults.BuiltInFallbackCatalog.ToDictionary(s => s.Topic, StringComparer.OrdinalIgnoreCase))
+            ? PromptComposer.ResolveEffectiveComponents(request.Draft, catalogByTopic)
                 .SelectMany(c => c.Selections)
             : request.Draft.Selections.Where(s => s.Enabled);
 
@@ -124,17 +134,22 @@ public sealed class ReadyWorkspaceHandler(
                 continue;
             }
 
-            if (PromptComposer.IsAllowedInContainer(request.Draft.Container, InferCategory(sel.Topic)))
+            var category = catalogByTopic.TryGetValue(sel.Topic, out var meta)
+                ? meta.Category
+                : InferCategory(sel.Topic);
+            if (PromptComposer.IsAllowedInContainer(request.Draft.Container, category))
             {
                 AddUnique(sel.Topic);
             }
         }
 
-        if (request.Draft.Container == ContainerKind.StandaloneQuiz && !topicSet.Any(t => InferCategory(t) == "question"))
+        if (request.Draft.Container == ContainerKind.StandaloneQuiz &&
+            !topicSet.Any(t => (catalogByTopic.TryGetValue(t, out var m) ? m.Category : InferCategory(t)) == "question"))
         {
             AddUnique("mcq");
         }
 
+        var warnings = new List<string>();
         IReadOnlyList<AgentsMdSpecDetail> specDetails = [];
         if (!string.IsNullOrWhiteSpace(mbyExePath))
         {
@@ -142,6 +157,10 @@ public sealed class ReadyWorkspaceHandler(
             if (detailRes.IsSuccess)
             {
                 specDetails = detailRes.Value;
+            }
+            else
+            {
+                warnings.Add($"Failed to fetch live mby schemas: {detailRes.Error!.Description}");
             }
         }
 
@@ -158,17 +177,54 @@ public sealed class ReadyWorkspaceHandler(
             {
                 melomgText = melomgRes.Value;
             }
+            else
+            {
+                warnings.Add($"Failed to fetch live melomg specs: {melomgRes.Error!.Description}");
+            }
         }
 
-        var stagedFiles = (settings.ActiveWorkspace?.StagedItems ?? [])
-            .Where(i => i.Kind == StagedCopyKind.File)
-            .Select(i => i.TargetRelativePath)
-            .Concat(request.Draft.Attachments.Select(a => Path.GetFileName(a.FilePath)))
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var normalizedWsPrefix = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
+        var stagedFiles = new List<string>();
+        if (settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, fullWs))
+        {
+            stagedFiles.AddRange((settings.ActiveWorkspace.StagedItems ?? [])
+                .Where(i => i.Kind == StagedCopyKind.File)
+                .Select(i => i.TargetRelativePath)
+                .Where(x => !string.IsNullOrWhiteSpace(x)));
+        }
 
-        var stagedFolders = (settings.ActiveWorkspace?.StagedItems ?? [])
+        var externalAttachments = new List<string>();
+        foreach (var att in request.Draft.Attachments)
+        {
+            if (string.IsNullOrWhiteSpace(att.FilePath))
+            {
+                continue;
+            }
+
+            try
+            {
+                var fullAtt = Path.GetFullPath(att.FilePath.Trim());
+                if (fullAtt.StartsWith(normalizedWsPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    stagedFiles.Add(Path.GetRelativePath(fullWs, fullAtt).Replace('\\', '/'));
+                }
+                else
+                {
+                    externalAttachments.Add(fullAtt);
+                }
+            }
+            catch
+            {
+                externalAttachments.Add(att.FilePath);
+            }
+        }
+
+        var distinctStagedFiles = stagedFiles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var distinctExternalAttachments = externalAttachments.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        var stagedFolders = (settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, fullWs)
+                ? settings.ActiveWorkspace.StagedItems ?? []
+                : [])
             .Where(i => i.Kind == StagedCopyKind.Folder)
             .Select(i => i.TargetRelativePath)
             .Concat(request.Draft.CopiedFolders ?? [])
@@ -183,11 +239,12 @@ public sealed class ReadyWorkspaceHandler(
             WorkspaceMbyFileName: workspaceMby ?? (!string.IsNullOrWhiteSpace(mbyExePath) ? mbyExePath : null),
             WorkspaceMelomgFileName: workspaceMelomg ?? (!string.IsNullOrWhiteSpace(melomgExePath) ? melomgExePath : null),
             ExtraWorkspaceExecutables: extraWorkspaceExes,
-            CopiedFiles: stagedFiles,
+            CopiedFiles: distinctStagedFiles,
             CopiedFolders: stagedFolders,
             SelectedSpecs: specDetails,
             MelomgSpecsText: melomgText,
-            IncludeLinkBlock: includeLink);
+            IncludeLinkBlock: includeLink,
+            ExternalAttachments: distinctExternalAttachments);
 
         var markdown = AgentsMdComposer.Compose(composeInput);
         var writeRes = await agentsMdWriter.WriteAsync(fullWs, markdown, request.OverwriteConfirmed, ct).ConfigureAwait(false);
@@ -196,8 +253,7 @@ public sealed class ReadyWorkspaceHandler(
             return Result<AgentsMdExportResult>.Failure(writeRes.Error!);
         }
 
-        if (settings.ActiveWorkspace is not null &&
-            string.Equals(settings.ActiveWorkspace.WorkspacePath, fullWs, StringComparison.OrdinalIgnoreCase))
+        if (settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, fullWs))
         {
             var updatedState = settings.ActiveWorkspace with { AgentsMdExportedUtc = DateTimeOffset.UtcNow };
             await settingsStore.SaveAsync(settings with { ActiveWorkspace = updatedState }, ct).ConfigureAwait(false);
@@ -213,7 +269,8 @@ public sealed class ReadyWorkspaceHandler(
             BytesWritten: System.Text.Encoding.UTF8.GetByteCount(markdown),
             ApproximateTokens: AgentsMdComposer.EstimateTokens(markdown),
             IncludedTopics: included,
-            MarkdownPreview: markdown));
+            MarkdownPreview: markdown,
+            Warnings: warnings.Count > 0 ? warnings : null));
     }
 
     private static string InferCategory(string topic) => topic.ToLowerInvariant() switch

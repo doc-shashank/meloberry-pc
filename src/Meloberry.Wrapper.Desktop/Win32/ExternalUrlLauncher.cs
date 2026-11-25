@@ -10,23 +10,12 @@ internal sealed class ExternalUrlLauncher(Win32WindowHost windowHost) : IExterna
 {
     public Result OpenAllowlistedUrl(string url)
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        if (!EcosystemCatalog.TryValidateAllowlistedUrl(url, out var uri) || uri is null)
         {
             return Result.Failure(WrapperErrors.InvalidUrl(url));
         }
 
-        var isAllowedRepo = EcosystemCatalog.Repositories.Any(r =>
-            url.StartsWith(r.RepoUrl, StringComparison.OrdinalIgnoreCase));
-        var isMicrosoftRuntime = string.Equals(uri.Host, "developer.microsoft.com", StringComparison.OrdinalIgnoreCase) ||
-                                 string.Equals(uri.Host, "dotnet.microsoft.com", StringComparison.OrdinalIgnoreCase);
-
-        if (!isAllowedRepo && !isMicrosoftRuntime)
-        {
-            return Result.Failure(WrapperErrors.InvalidUrl(url));
-        }
-
-        var res = Win32Native.ShellExecuteW(windowHost.Handle, "open", uri.ToString(), null, null, Win32Native.SW_SHOW);
+        var res = Win32Native.ShellExecuteW(windowHost.Handle, "open", uri.AbsoluteUri, null, null, Win32Native.SW_SHOW);
         return res.ToInt64() > 32
             ? Result.Success()
             : Result.Failure(WrapperErrors.IoFailure($"ShellExecuteW failed to open URL '{url}'."));

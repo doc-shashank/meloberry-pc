@@ -49,7 +49,7 @@ public sealed class ManagedAppsHandler(
 
         var candidate = check.Value;
         var latestVer = candidate.ExtractedVersion;
-        var isNewer = current is null || CompareSemver(latestVer, installedVer) > 0;
+        var isNewer = current is null || SemverComparer.Compare(latestVer, installedVer) > 0;
         var message = isNewer
             ? $"Update v{latestVer ?? candidate.TagOrRef} available."
             : $"Up to date (v{installedVer}).";
@@ -124,27 +124,5 @@ public sealed class ManagedAppsHandler(
             : settings.MelomgExecutableOverride;
 
         return await appsStore.ResolveToolExecutableAsync(toolKey, wsPath, explicitOverride, ct).ConfigureAwait(false);
-    }
-
-    private static int CompareSemver(string? left, string? right)
-    {
-        return ParseCore(left).CompareTo(ParseCore(right));
-
-        static Version ParseCore(string? raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return new Version(0, 0, 0);
-            }
-
-            var t = raw.Trim().TrimStart('v', 'V');
-            var dash = t.IndexOf('-');
-            if (dash > 0)
-            {
-                t = t[..dash];
-            }
-
-            return Version.TryParse(t, out var v) ? v : new Version(0, 0, 0);
-        }
     }
 }

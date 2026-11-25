@@ -68,6 +68,53 @@ public static class EcosystemCatalog
 
     public static EcosystemRepository? FindByKey(string key) =>
         Repositories.FirstOrDefault(r => string.Equals(r.Key, key, StringComparison.OrdinalIgnoreCase));
+
+    public static bool TryValidateAllowlistedUrl(string? url, out Uri? validatedUri)
+    {
+        validatedUri = null;
+        if (string.IsNullOrWhiteSpace(url) || url.Contains("..", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !uri.IsDefaultPort ||
+            !string.IsNullOrEmpty(uri.UserInfo))
+        {
+            return false;
+        }
+
+        var unescapedPath = Uri.UnescapeDataString(uri.AbsolutePath);
+        if (unescapedPath.Contains("..", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var isAllowedRepo = string.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase) &&
+            Repositories.Any(r =>
+            {
+                var repoPath = new Uri(r.RepoUrl).AbsolutePath.TrimEnd('/');
+                var reqPath = uri.AbsolutePath.TrimEnd('/');
+                return string.Equals(reqPath, repoPath, StringComparison.OrdinalIgnoreCase) ||
+                       uri.AbsolutePath.StartsWith(repoPath + "/", StringComparison.OrdinalIgnoreCase);
+            });
+
+        var isMicrosoftRuntime = string.Equals(uri.Host, "developer.microsoft.com", StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(uri.Host, "dotnet.microsoft.com", StringComparison.OrdinalIgnoreCase);
+
+        if (!isAllowedRepo && !isMicrosoftRuntime)
+        {
+            return false;
+        }
+
+        validatedUri = uri;
+        return true;
+    }
 }
 
 /// <summary>Represents a candidate executable or installer discovered from GitHub Releases or contents.</summary>

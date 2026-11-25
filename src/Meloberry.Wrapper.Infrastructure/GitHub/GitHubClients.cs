@@ -132,6 +132,7 @@ public sealed partial class GitHubHttpClientHelper
             Directory.CreateDirectory(destinationDirectory);
             var safeName = Path.GetFileName(fileName);
             var tmpPath = Path.Combine(destinationDirectory, $"{safeName}.{Guid.NewGuid():N}.tmp");
+            var succeeded = false;
 
             try
             {
@@ -140,6 +141,9 @@ public sealed partial class GitHubHttpClientHelper
                 using (var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
                 {
                     var buffer = new byte[81920];
+                    var peHeader = new byte[2];
+                    var peHeaderRead = 0;
+                    var peVerified = false;
                     long received = 0;
                     int read;
                     while ((read = await networkStream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
@@ -150,9 +154,23 @@ public sealed partial class GitHubHttpClientHelper
                             return Result<string>.Failure(WrapperErrors.UpdateVerificationFailed("Downloaded stream exceeded 250 MB safety cap."));
                         }
 
-                        if (received == read && (read < 2 || buffer[0] != (byte)'M' || buffer[1] != (byte)'Z'))
+                        if (!peVerified)
                         {
-                            return Result<string>.Failure(WrapperErrors.UpdateVerificationFailed($"'{safeName}' does not have a valid Windows PE executable header (MZ)."));
+                            var needed = Math.Min(2 - peHeaderRead, read);
+                            for (var i = 0; i < needed; i++)
+                            {
+                                peHeader[peHeaderRead++] = buffer[i];
+                            }
+
+                            if (peHeaderRead == 2)
+                            {
+                                if (peHeader[0] != (byte)'M' || peHeader[1] != (byte)'Z')
+                                {
+                                    return Result<string>.Failure(WrapperErrors.UpdateVerificationFailed($"'{safeName}' does not have a valid Windows PE executable header (MZ)."));
+                                }
+
+                                peVerified = true;
+                            }
                         }
 
                         await fs.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
@@ -166,9 +184,9 @@ public sealed partial class GitHubHttpClientHelper
                             totalBytes));
                     }
 
-                    if (received < 2)
+                    if (received < 2 || !peVerified)
                     {
-                        return Result<string>.Failure(WrapperErrors.UpdateVerificationFailed($"Downloaded file '{safeName}' is empty."));
+                        return Result<string>.Failure(WrapperErrors.UpdateVerificationFailed($"Downloaded file '{safeName}' is empty or missing PE header."));
                     }
 
                     var actualHash = Convert.ToHexStringLower(hasher.GetHashAndReset());
@@ -185,16 +203,15 @@ public sealed partial class GitHubHttpClientHelper
                     }
                 }
 
+                succeeded = true;
                 return Result<string>.Success(tmpPath);
             }
-            catch
+            finally
             {
-                if (File.Exists(tmpPath))
+                if (!succeeded && File.Exists(tmpPath))
                 {
-                    File.Delete(tmpPath);
+                    try { File.Delete(tmpPath); } catch { }
                 }
-
-                throw;
             }
         }
         catch (Exception ex)
@@ -209,29 +226,8 @@ public sealed partial class GitHubHttpClientHelper
         return m.Success ? m.Groups[1].Value : null;
     }
 
-    public static int CompareSemver(string? left, string? right)
-    {
-        var l = ParseCoreVersion(left);
-        var r = ParseCoreVersion(right);
-        return l.CompareTo(r);
-    }
-
-    private static Version ParseCoreVersion(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return new Version(0, 0, 0);
-        }
-
-        var trimmed = raw.Trim().TrimStart('v', 'V');
-        var dash = trimmed.IndexOf('-');
-        if (dash > 0)
-        {
-            trimmed = trimmed[..dash];
-        }
-
-        return Version.TryParse(trimmed, out var v) ? v : new Version(0, 0, 0);
-    }
+    public static int CompareSemver(string? left, string? right) =>
+        SemverComparer.Compare(left, right);
 }
 
 /// <summary>Downloads `mby` and `melomg` executables from GitHub Releases API or repo `/contents/app` fallback.</summary>
@@ -405,7 +401,13 @@ public sealed class GitHubSelfUpdater(
         string currentVersion,
         CancellationToken ct = default)
     {
-        var slug = $"{owner}/{repo}";
+        if (!Application.UseCases.SettingsAndPresetsHandler.IsValidGitHubIdentifier(owner) ||
+            !Application.UseCases.SettingsAndPresetsHandler.IsValidGitHubIdentifier(repo))
+        {
+            return Result<AppUpdateCheckResult>.Failure(WrapperErrors.InvalidUrl($"https://github.com/{owner}/{repo}"));
+        }
+
+        var slug = $"{owner.Trim()}/{repo.Trim()}";
         var releasePageUrl = $"https://github.com/{slug}/releases";
         var apiUrl = $"https://api.github.com/repos/{slug}/releases/latest";
 
@@ -532,8 +534,20 @@ public sealed class GitHubSelfUpdater(
         }
 
         var finalPath = Path.Combine(paths.UpdatesDirectory, Path.GetFileName(check.AssetFileName));
-        File.Move(tmpRes.Value, finalPath, overwrite: true);
-        return Result<string>.Success(finalPath);
+        try
+        {
+            File.Move(tmpRes.Value, finalPath, overwrite: true);
+            return Result<string>.Success(finalPath);
+        }
+        catch (Exception ex)
+        {
+            if (File.Exists(tmpRes.Value))
+            {
+                try { File.Delete(tmpRes.Value); } catch { }
+            }
+
+            return Result<string>.Failure(WrapperErrors.IoFailure($"Failed to finalize installer download: {ex.Message}"));
+        }
     }
 
     public Result LaunchInstallerSilent(string installerPath)

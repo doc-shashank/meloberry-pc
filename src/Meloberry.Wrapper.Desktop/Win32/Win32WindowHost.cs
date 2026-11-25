@@ -15,9 +15,12 @@ internal sealed class Win32SynchronizationContext(Win32WindowHost host) : Synchr
 /// <summary>Owns the borderless ExtendContent Win32 HWND window, maximized startup, DPI awareness, and shutdown.</summary>
 internal sealed class Win32WindowHost : IAppShutdownCoordinator
 {
+    public const string WindowClassName = "MeloberryPcWrapperWindowClass";
+
     private readonly ConcurrentQueue<Action> _uiQueue = new();
     private readonly Win32Native.WndProc _wndProcDelegate;
     private IntPtr _hwnd;
+    private volatile bool _isDestroyed;
 
     public event Action<Size>? Resized;
     public event Action<bool>? MaximizedChanged;
@@ -30,13 +33,13 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
 
     public IntPtr Handle => _hwnd;
     public bool IsMaximized => _hwnd != IntPtr.Zero && Win32Native.IsZoomed(_hwnd);
+    public (string FileName, string Arguments)? PendingPostShutdownLaunch { get; private set; }
 
     public void Create(string title, int width = 1320, int height = 860)
     {
         Win32Native.SetProcessDpiAwarenessContext(Win32Native.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
         var hInstance = Win32Native.GetModuleHandleW(null);
-        const string className = "MeloberryPcWrapperWindowClass";
 
         var wc = new Win32Native.WNDCLASSEXW
         {
@@ -44,7 +47,7 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
             style = 0x0003,
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate),
             hInstance = hInstance,
-            lpszClassName = className
+            lpszClassName = WindowClassName
         };
         Win32Native.RegisterClassExW(ref wc);
 
@@ -55,7 +58,7 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
 
         _hwnd = Win32Native.CreateWindowExW(
             0,
-            className,
+            WindowClassName,
             title,
             Win32Native.WS_OVERLAPPEDWINDOW,
             x,
@@ -143,27 +146,70 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
 
     public void EnqueueCallback(Action action)
     {
-        _uiQueue.Enqueue(action);
-        if (_hwnd != IntPtr.Zero)
+        if (_isDestroyed)
         {
-            Win32Native.PostMessageW(_hwnd, Win32Native.WM_APP_INVOKE, IntPtr.Zero, IntPtr.Zero);
+            return;
+        }
+
+        _uiQueue.Enqueue(action);
+        var hwnd = _hwnd;
+        if (hwnd != IntPtr.Zero)
+        {
+            _ = Win32Native.PostMessageW(hwnd, Win32Native.WM_APP_INVOKE, IntPtr.Zero, IntPtr.Zero);
         }
     }
 
-    public Task<T> InvokeOnUiThreadAsync<T>(Func<T> func)
+    public Task<T> InvokeOnUiThreadAsync<T>(Func<T> func, CancellationToken ct = default)
     {
-        var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-        EnqueueCallback(() =>
+        if (_isDestroyed || _hwnd == IntPtr.Zero)
         {
+            return Task.FromException<T>(new ObjectDisposedException(nameof(Win32WindowHost)));
+        }
+
+        if (ct.IsCancellationRequested)
+        {
+            return Task.FromCanceled<T>(ct);
+        }
+
+        var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ctr = ct.Register(() => tcs.TrySetCanceled(ct));
+        _ = tcs.Task.ContinueWith(
+            static (_, state) => ((CancellationTokenRegistration)state!).Dispose(),
+            ctr,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        _uiQueue.Enqueue(() =>
+        {
+            if (_isDestroyed)
+            {
+                tcs.TrySetException(new ObjectDisposedException(nameof(Win32WindowHost)));
+                return;
+            }
+
+            if (ct.IsCancellationRequested)
+            {
+                tcs.TrySetCanceled(ct);
+                return;
+            }
+
             try
             {
-                tcs.SetResult(func());
+                tcs.TrySetResult(func());
             }
             catch (Exception ex)
             {
-                tcs.SetException(ex);
+                tcs.TrySetException(ex);
             }
         });
+
+        var hwnd = _hwnd;
+        if (_isDestroyed || hwnd == IntPtr.Zero || !Win32Native.PostMessageW(hwnd, Win32Native.WM_APP_INVOKE, IntPtr.Zero, IntPtr.Zero))
+        {
+            tcs.TrySetException(new ObjectDisposedException(nameof(Win32WindowHost)));
+        }
+
         return tcs.Task;
     }
 
@@ -180,6 +226,12 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
                 Win32Native.PostQuitMessage(0);
             }
         });
+    }
+
+    public void RequestShutdownAndLaunch(string executablePath, string arguments)
+    {
+        PendingPostShutdownLaunch = (executablePath, arguments);
+        _ = Task.Delay(250).ContinueWith(_ => RequestShutdown(), TaskScheduler.Default);
     }
 
     public void RunMessageLoop()
@@ -238,6 +290,13 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
                 return IntPtr.Zero;
 
             case Win32Native.WM_DESTROY:
+                _isDestroyed = true;
+                _hwnd = IntPtr.Zero;
+                while (_uiQueue.TryDequeue(out var pending))
+                {
+                    try { pending(); } catch { }
+                }
+
                 Win32Native.PostQuitMessage(0);
                 return IntPtr.Zero;
 

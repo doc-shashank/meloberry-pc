@@ -36,14 +36,21 @@ internal sealed class NativeFileDialogs(Win32WindowHost windowHost) : INativeDia
 
                 Marshal.ThrowExceptionForHR(hr);
                 dialog.GetResult(out var item);
-                item.GetDisplayName(SIGDN_FILESYSPATH, out var path);
-                return path;
+                try
+                {
+                    item.GetDisplayName(SIGDN_FILESYSPATH, out var path);
+                    return path;
+                }
+                finally
+                {
+                    Marshal.FinalReleaseComObject(item);
+                }
             }
             finally
             {
                 Marshal.FinalReleaseComObject(dialog);
             }
-        });
+        }, ct);
     }
 
     public Task<IReadOnlyList<string>> PickFilesAsync(
@@ -79,25 +86,39 @@ internal sealed class NativeFileDialogs(Win32WindowHost windowHost) : INativeDia
 
                 Marshal.ThrowExceptionForHR(hr);
                 dialog.GetResults(out var array);
-                array.GetCount(out var count);
-                var paths = new List<string>((int)count);
-                for (uint i = 0; i < count; i++)
+                try
                 {
-                    array.GetItemAt(i, out var item);
-                    item.GetDisplayName(SIGDN_FILESYSPATH, out var filePath);
-                    if (!string.IsNullOrWhiteSpace(filePath))
+                    array.GetCount(out var count);
+                    var paths = new List<string>((int)count);
+                    for (uint i = 0; i < count; i++)
                     {
-                        paths.Add(filePath);
+                        array.GetItemAt(i, out var item);
+                        try
+                        {
+                            item.GetDisplayName(SIGDN_FILESYSPATH, out var filePath);
+                            if (!string.IsNullOrWhiteSpace(filePath))
+                            {
+                                paths.Add(filePath);
+                            }
+                        }
+                        finally
+                        {
+                            Marshal.FinalReleaseComObject(item);
+                        }
                     }
-                }
 
-                return paths;
+                    return paths;
+                }
+                finally
+                {
+                    Marshal.FinalReleaseComObject(array);
+                }
             }
             finally
             {
                 Marshal.FinalReleaseComObject(dialog);
             }
-        });
+        }, ct);
     }
 
     public Task<string?> SaveFileAsync(
@@ -129,14 +150,21 @@ internal sealed class NativeFileDialogs(Win32WindowHost windowHost) : INativeDia
 
                 Marshal.ThrowExceptionForHR(hr);
                 dialog.GetResult(out var item);
-                item.GetDisplayName(SIGDN_FILESYSPATH, out var path);
-                return path;
+                try
+                {
+                    item.GetDisplayName(SIGDN_FILESYSPATH, out var path);
+                    return path;
+                }
+                finally
+                {
+                    Marshal.FinalReleaseComObject(item);
+                }
             }
             finally
             {
                 Marshal.FinalReleaseComObject(dialog);
             }
-        });
+        }, ct);
     }
 
     private static void TrySetInitialFolder(IFileDialog dialog, string? initialDir)
@@ -149,7 +177,14 @@ internal sealed class NativeFileDialogs(Win32WindowHost windowHost) : INativeDia
         var iid = typeof(IShellItem).GUID;
         if (SHCreateItemFromParsingName(initialDir, IntPtr.Zero, ref iid, out var folderItem) == 0 && folderItem is not null)
         {
-            dialog.SetFolder(folderItem);
+            try
+            {
+                dialog.SetFolder(folderItem);
+            }
+            finally
+            {
+                Marshal.FinalReleaseComObject(folderItem);
+            }
         }
     }
 
@@ -160,11 +195,18 @@ internal sealed class NativeFileDialogs(Win32WindowHost windowHost) : INativeDia
             return;
         }
 
-        var specs = new[]
-        {
-            new COMDLG_FILTERSPEC { pszName = string.IsNullOrWhiteSpace(label) ? "Files" : label, pszSpec = pattern },
-            new COMDLG_FILTERSPEC { pszName = "All Files (*.*)", pszSpec = "*.*" }
-        };
+        var cleanPattern = pattern.Trim();
+        var cleanLabel = string.IsNullOrWhiteSpace(label) ? "Files" : label;
+        var specs = string.Equals(cleanPattern, "*.*", StringComparison.Ordinal)
+            ? new[]
+            {
+                new COMDLG_FILTERSPEC { pszName = cleanLabel, pszSpec = cleanPattern }
+            }
+            : new[]
+            {
+                new COMDLG_FILTERSPEC { pszName = cleanLabel, pszSpec = cleanPattern },
+                new COMDLG_FILTERSPEC { pszName = "All Files (*.*)", pszSpec = "*.*" }
+            };
         dialog.SetFileTypes((uint)specs.Length, specs);
         dialog.SetFileTypeIndex(1);
     }

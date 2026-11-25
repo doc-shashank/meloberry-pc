@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Models;
@@ -38,7 +39,15 @@ public sealed class SelfUpdateHandler(
 
     public async Task<Result<string>> DownloadAndInstallAsync(CancellationToken ct = default)
     {
-        if (_lastCheck is null || !_lastCheck.UpdateAvailable)
+        var meta = metadataProvider.GetMetadata();
+        var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
+        var owner = string.IsNullOrWhiteSpace(settings.SelfUpdateRepoOwner) ? meta.SelfUpdateRepoOwner : settings.SelfUpdateRepoOwner!;
+        var repo = string.IsNullOrWhiteSpace(settings.SelfUpdateRepoName) ? meta.SelfUpdateRepoName : settings.SelfUpdateRepoName!;
+        var expectedSlug = $"{owner}/{repo}";
+
+        if (_lastCheck is null ||
+            !_lastCheck.UpdateAvailable ||
+            !string.Equals(_lastCheck.RepoSlug, expectedSlug, StringComparison.OrdinalIgnoreCase))
         {
             var recheck = await CheckAsync(ct).ConfigureAwait(false);
             if (recheck.IsFailure)
@@ -62,26 +71,40 @@ public sealed class SelfUpdateHandler(
             return dl;
         }
 
-        _lastProgress = new DownloadProgressSnapshot("self-update", "launching", "Launching Inno Setup updater and closing Meloberry PC...", IsCompleted: true);
-        var launchRes = updater.LaunchInstallerSilent(dl.Value);
-        if (launchRes.IsFailure)
+        if (!File.Exists(dl.Value))
         {
-            _lastProgress = new DownloadProgressSnapshot("self-update", "error", launchRes.Error!.Description, IsCompleted: true, IsError: true);
-            return Result<string>.Failure(launchRes.Error!);
+            var missingErr = new Error("Update.InstallerMissing", $"Installer executable not found: {dl.Value}", ErrorType.Io);
+            _lastProgress = new DownloadProgressSnapshot("self-update", "error", missingErr.Description, IsCompleted: true, IsError: true);
+            return Result<string>.Failure(missingErr);
         }
 
-        shutdownCoordinator.RequestShutdown();
+        _lastProgress = new DownloadProgressSnapshot("self-update", "launching", "Launching Inno Setup updater and closing Meloberry PC...", IsCompleted: true);
+        shutdownCoordinator.RequestShutdownAndLaunch(dl.Value, "/SP- /SILENT /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS");
         return Result<string>.Success(dl.Value);
     }
 }
 
 /// <summary>Updates persisted user settings and custom shopping-list presets.</summary>
-public sealed class SettingsAndPresetsHandler(ISettingsStore settingsStore)
+public sealed partial class SettingsAndPresetsHandler(ISettingsStore settingsStore)
 {
     private static readonly HashSet<string> AllowedThemes = new(StringComparer.OrdinalIgnoreCase)
     {
         "berry", "light", "dark", "paper"
     };
+
+    [GeneratedRegex(@"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$", RegexOptions.CultureInvariant)]
+    private static partial Regex GitHubIdentifierRegex();
+
+    public static bool IsValidGitHubIdentifier(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        return !trimmed.Contains("..", StringComparison.Ordinal) && GitHubIdentifierRegex().IsMatch(trimmed);
+    }
 
     public async Task<WrapperSettings> GetSettingsAsync(CancellationToken ct = default) =>
         await settingsStore.LoadAsync(ct).ConfigureAwait(false);
@@ -96,6 +119,17 @@ public sealed class SettingsAndPresetsHandler(ISettingsStore settingsStore)
         bool? overrideWebAppTheme = null,
         CancellationToken ct = default)
     {
+        var owner = selfUpdateOwner?.Trim() is { Length: > 0 } o ? o : null;
+        var repo = selfUpdateRepo?.Trim() is { Length: > 0 } r ? r : null;
+        if ((owner is not null && !IsValidGitHubIdentifier(owner)) ||
+            (repo is not null && !IsValidGitHubIdentifier(repo)))
+        {
+            return Result<WrapperSettings>.Failure(new Error(
+                "Settings.InvalidGitHubRepo",
+                "GitHub owner and repository names may only contain letters, numbers, '.', '-', or '_'.",
+                ErrorType.Validation));
+        }
+
         var current = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
         var theme = !string.IsNullOrWhiteSpace(themeMode) && AllowedThemes.Contains(themeMode)
             ? themeMode.ToLowerInvariant()
@@ -107,8 +141,8 @@ public sealed class SettingsAndPresetsHandler(ISettingsStore settingsStore)
             MbyExecutableOverride = mbyOverride?.Trim() is { Length: > 0 } m ? m : null,
             MelomgExecutableOverride = melomgOverride?.Trim() is { Length: > 0 } ml ? ml : null,
             DefaultBuildOutputDir = defaultBuildDir?.Trim() is { Length: > 0 } bd ? bd : null,
-            SelfUpdateRepoOwner = selfUpdateOwner?.Trim() is { Length: > 0 } o ? o : null,
-            SelfUpdateRepoName = selfUpdateRepo?.Trim() is { Length: > 0 } r ? r : null,
+            SelfUpdateRepoOwner = owner,
+            SelfUpdateRepoName = repo,
             OverrideWebAppTheme = overrideWebAppTheme ?? current.OverrideWebAppTheme
         };
 

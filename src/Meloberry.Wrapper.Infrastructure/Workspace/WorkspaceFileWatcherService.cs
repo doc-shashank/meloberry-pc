@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Meloberry.Wrapper.Application.Abstractions;
+using Meloberry.Wrapper.Domain.Common;
 
 namespace Meloberry.Wrapper.Infrastructure.Workspace;
 
@@ -30,20 +31,9 @@ public sealed class WorkspaceFileWatcherService : IWorkspaceFileWatcher, IDispos
     public void UpdateActiveWorkspace(string? workspacePath)
     {
         string? normalized = null;
-        if (!string.IsNullOrWhiteSpace(workspacePath))
+        if (PathNormalization.TryNormalizeDirectoryPath(workspacePath, out var full) && Directory.Exists(full))
         {
-            try
-            {
-                var full = Path.GetFullPath(workspacePath.Trim());
-                if (Directory.Exists(full))
-                {
-                    normalized = full;
-                }
-            }
-            catch
-            {
-                normalized = null;
-            }
+            normalized = full;
         }
 
         lock (_sync)
@@ -62,47 +52,63 @@ public sealed class WorkspaceFileWatcherService : IWorkspaceFileWatcher, IDispos
                 return;
             }
 
-            var watcher = new FileSystemWatcher(normalized, "*")
+            try
             {
-                IncludeSubdirectories = true,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite
-            };
-            watcher.Created += (_, e) => HandleWorkspaceEvent("created", e.FullPath);
-            watcher.Deleted += (_, e) => HandleWorkspaceEvent("deleted", e.FullPath);
-            watcher.Renamed += (_, e) =>
+                var watcher = new FileSystemWatcher(normalized, "*")
+                {
+                    IncludeSubdirectories = true,
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite
+                };
+                watcher.Created += (_, e) => HandleWorkspaceEvent("created", e.FullPath);
+                watcher.Deleted += (_, e) => HandleWorkspaceEvent("deleted", e.FullPath);
+                watcher.Renamed += (_, e) =>
+                {
+                    HandleWorkspaceEvent("deleted", e.OldFullPath);
+                    HandleWorkspaceEvent("created", e.FullPath);
+                };
+                watcher.Error += (_, _) => { };
+                watcher.EnableRaisingEvents = true;
+                _workspaceWatcher = watcher;
+            }
+            catch
             {
-                HandleWorkspaceEvent("deleted", e.OldFullPath);
-                HandleWorkspaceEvent("created", e.FullPath);
-            };
-            watcher.EnableRaisingEvents = true;
-            _workspaceWatcher = watcher;
+                _workspaceWatcher = null;
+            }
         }
     }
 
     private void StartAppsWatcher()
     {
-        Directory.CreateDirectory(_dataPaths.AppsDirectory);
-        var watcher = new FileSystemWatcher(_dataPaths.AppsDirectory, "*.exe")
+        try
         {
-            IncludeSubdirectories = false,
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite
-        };
-        watcher.Created += (_, e) => EmitDebounced("apps", "created", e.FullPath);
-        watcher.Deleted += (_, e) => EmitDebounced("apps", "deleted", e.FullPath);
-        watcher.Renamed += (_, e) =>
-        {
-            if (e.OldFullPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            Directory.CreateDirectory(_dataPaths.AppsDirectory);
+            var watcher = new FileSystemWatcher(_dataPaths.AppsDirectory, "*.exe")
             {
-                EmitDebounced("apps", "deleted", e.OldFullPath);
-            }
+                IncludeSubdirectories = false,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite
+            };
+            watcher.Created += (_, e) => EmitDebounced("apps", "created", e.FullPath);
+            watcher.Deleted += (_, e) => EmitDebounced("apps", "deleted", e.FullPath);
+            watcher.Renamed += (_, e) =>
+            {
+                if (e.OldFullPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    EmitDebounced("apps", "deleted", e.OldFullPath);
+                }
 
-            if (e.FullPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-            {
-                EmitDebounced("apps", "created", e.FullPath);
-            }
-        };
-        watcher.EnableRaisingEvents = true;
-        _appsWatcher = watcher;
+                if (e.FullPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    EmitDebounced("apps", "created", e.FullPath);
+                }
+            };
+            watcher.Error += (_, _) => { };
+            watcher.EnableRaisingEvents = true;
+            _appsWatcher = watcher;
+        }
+        catch
+        {
+            _appsWatcher = null;
+        }
     }
 
     private void HandleWorkspaceEvent(string changeKind, string fullPath)
@@ -114,6 +120,12 @@ public sealed class WorkspaceFileWatcherService : IWorkspaceFileWatcher, IDispos
         }
 
         if (fullPath.Contains($"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
+            fileName.EndsWith(".mbytmp", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -166,6 +178,17 @@ public sealed class WorkspaceFileWatcherService : IWorkspaceFileWatcher, IDispos
         }
 
         _lastEventByKey[key] = now;
+        if (_lastEventByKey.Count > 256)
+        {
+            foreach (var old in _lastEventByKey)
+            {
+                if ((now - old.Value).TotalSeconds > 5)
+                {
+                    _lastEventByKey.TryRemove(old.Key, out _);
+                }
+            }
+        }
+
         var fileName = Path.GetFileName(fullPath);
         Changed?.Invoke(new WorkspaceFileChangeEvent(scope, changeKind, fileName, fullPath, now));
     }

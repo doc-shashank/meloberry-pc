@@ -12,8 +12,10 @@ public sealed class LoadSpecCatalogHandler(
     IMbyCliClient mbyClient,
     ISettingsStore settingsStore)
 {
-    private IReadOnlyList<SpecTopicItem>? _cachedLiveCatalog;
-    private string? _cachedExePath;
+    private sealed record SpecCacheEntry(string ExePath, IReadOnlyList<SpecTopicItem> Catalog);
+
+    private readonly SemaphoreSlim _cacheLock = new(1, 1);
+    private volatile SpecCacheEntry? _cache;
 
     public async Task<(IReadOnlyList<SpecTopicItem> Specs, bool IsLiveCli, string? ActiveMbyPath)> LoadAsync(
         bool forceRefresh = false,
@@ -31,28 +33,45 @@ public sealed class LoadSpecCatalogHandler(
             return (SpecCatalogDefaults.BuiltInFallbackCatalog, false, null);
         }
 
+        var existing = _cache;
         if (!forceRefresh &&
-            _cachedLiveCatalog is not null &&
-            string.Equals(_cachedExePath, mbyPath, StringComparison.OrdinalIgnoreCase))
+            existing is not null &&
+            string.Equals(existing.ExePath, mbyPath, StringComparison.OrdinalIgnoreCase))
         {
-            return (_cachedLiveCatalog, true, mbyPath);
+            return (existing.Catalog, true, mbyPath);
         }
 
-        var result = await mbyClient.GetSpecCatalogAsync(mbyPath, settings.ActiveWorkspace?.WorkspacePath, ct).ConfigureAwait(false);
-        if (result.IsFailure)
+        await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            return (SpecCatalogDefaults.BuiltInFallbackCatalog, false, mbyPath);
-        }
+            existing = _cache;
+            if (!forceRefresh &&
+                existing is not null &&
+                string.Equals(existing.ExePath, mbyPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return (existing.Catalog, true, mbyPath);
+            }
 
-        var merged = result.Value.ToList();
-        if (!merged.Any(s => string.Equals(s.Topic, SpecCatalogDefaults.VirtualLinkTopicName, StringComparison.OrdinalIgnoreCase)))
+            var result = await mbyClient.GetSpecCatalogAsync(mbyPath, settings.ActiveWorkspace?.WorkspacePath, ct).ConfigureAwait(false);
+            if (result.IsFailure)
+            {
+                return (SpecCatalogDefaults.BuiltInFallbackCatalog, false, mbyPath);
+            }
+
+            var merged = result.Value.ToList();
+            if (!merged.Any(s => string.Equals(s.Topic, SpecCatalogDefaults.VirtualLinkTopicName, StringComparison.OrdinalIgnoreCase)))
+            {
+                merged.Add(SpecCatalogDefaults.VirtualLinkTopic);
+            }
+
+            IReadOnlyList<SpecTopicItem> snapshot = merged.AsReadOnly();
+            _cache = new SpecCacheEntry(mbyPath, snapshot);
+            return (snapshot, true, mbyPath);
+        }
+        finally
         {
-            merged.Add(SpecCatalogDefaults.VirtualLinkTopic);
+            _cacheLock.Release();
         }
-
-        _cachedLiveCatalog = merged;
-        _cachedExePath = mbyPath;
-        return (merged, true, mbyPath);
     }
 }
 
@@ -72,6 +91,7 @@ public sealed class PromptHandlers(LoadSpecCatalogHandler specLoader)
             return Result<string>.Failure(WrapperErrors.InvalidPath("Save file path cannot be empty."));
         }
 
+        string? tmp = null;
         try
         {
             var full = Path.GetFullPath(filePath);
@@ -81,13 +101,18 @@ public sealed class PromptHandlers(LoadSpecCatalogHandler specLoader)
                 Directory.CreateDirectory(dir);
             }
 
-            var tmp = full + ".tmp";
+            tmp = $"{full}.{Guid.NewGuid():N}.tmp";
             await File.WriteAllTextAsync(tmp, markdown, ct).ConfigureAwait(false);
             File.Move(tmp, full, overwrite: true);
             return Result<string>.Success(full);
         }
         catch (Exception ex)
         {
+            if (tmp is not null && File.Exists(tmp))
+            {
+                try { File.Delete(tmp); } catch { }
+            }
+
             return Result<string>.Failure(WrapperErrors.IoFailure($"Failed to save prompt: {ex.Message}"));
         }
     }

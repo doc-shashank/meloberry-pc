@@ -44,7 +44,8 @@ public sealed record AgentsMdComposeInput(
     IReadOnlyList<string> CopiedFolders,
     IReadOnlyList<AgentsMdSpecDetail> SelectedSpecs,
     string? MelomgSpecsText,
-    bool IncludeLinkBlock);
+    bool IncludeLinkBlock,
+    IReadOnlyList<string>? ExternalAttachments = null);
 
 /// <summary>Result returned after exporting AGENTS.md into the Active Workspace.</summary>
 public sealed record AgentsMdExportResult(
@@ -53,4 +54,5 @@ public sealed record AgentsMdExportResult(
     int BytesWritten,
     int ApproximateTokens,
     IReadOnlyList<string> IncludedTopics,
-    string MarkdownPreview);
+    string MarkdownPreview,
+    IReadOnlyList<string>? Warnings = null);

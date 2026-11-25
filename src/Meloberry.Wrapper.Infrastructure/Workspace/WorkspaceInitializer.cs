@@ -58,59 +58,82 @@ public sealed class WorkspaceInitializer(
         }
 
         var (fullWs, operations, skippedIdentical, _) = planRes.Value;
-        Directory.CreateDirectory(fullWs);
-
+        string? wsMbyPath = null;
+        string? wsMelomgPath = null;
         var copiedApps = new List<string>();
         var copiedFiles = new List<string>();
         var copiedFolderSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var copiedRelativePaths = new List<string>();
         var skipped = skippedIdentical;
         var overwritten = 0;
-        string? wsMbyPath = null;
-        string? wsMelomgPath = null;
 
-        foreach (var op in operations)
+        try
         {
-            ct.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(fullWs);
 
-            var destExists = File.Exists(op.DestinationPath);
-            if (destExists && conflictPolicy == ConflictPolicy.SkipExisting)
+            foreach (var op in operations)
             {
-                skipped++;
-                RecordWorkspaceToolPath(op.DestinationPath, ref wsMbyPath, ref wsMelomgPath);
+                ct.ThrowIfCancellationRequested();
+
+                var destExists = File.Exists(op.DestinationPath);
+                if (destExists && conflictPolicy == ConflictPolicy.SkipExisting)
+                {
+                    skipped++;
+                    RecordWorkspaceToolPath(op.DestinationPath, ref wsMbyPath, ref wsMelomgPath);
+                    copiedRelativePaths.Add(op.RelativeTargetPath);
+                    continue;
+                }
+
+                if (destExists)
+                {
+                    overwritten++;
+                }
+
+                var destDir = Path.GetDirectoryName(op.DestinationPath);
+                if (!string.IsNullOrWhiteSpace(destDir))
+                {
+                    Directory.CreateDirectory(destDir);
+                }
+
+                var tmp = $"{op.DestinationPath}.{Guid.NewGuid():N}.mbytmp";
+                try
+                {
+                    File.Copy(op.SourcePath, tmp, overwrite: true);
+                    File.Move(tmp, op.DestinationPath, overwrite: true);
+                }
+                catch
+                {
+                    if (File.Exists(tmp))
+                    {
+                        try { File.Delete(tmp); } catch { }
+                    }
+
+                    throw;
+                }
+
                 copiedRelativePaths.Add(op.RelativeTargetPath);
-                continue;
+                if (op.IsExecutable)
+                {
+                    copiedApps.Add(op.RelativeTargetPath);
+                    RecordWorkspaceToolPath(op.DestinationPath, ref wsMbyPath, ref wsMelomgPath);
+                }
+                else if (op.Kind == StagedCopyKind.Folder && !string.IsNullOrWhiteSpace(op.RootFolderName))
+                {
+                    copiedFolderSet.Add(op.RootFolderName!);
+                }
+                else
+                {
+                    copiedFiles.Add(op.RelativeTargetPath);
+                }
             }
-
-            if (destExists)
-            {
-                overwritten++;
-            }
-
-            var destDir = Path.GetDirectoryName(op.DestinationPath);
-            if (!string.IsNullOrWhiteSpace(destDir))
-            {
-                Directory.CreateDirectory(destDir);
-            }
-
-            var tmp = op.DestinationPath + ".mbytmp";
-            File.Copy(op.SourcePath, tmp, overwrite: true);
-            File.Move(tmp, op.DestinationPath, overwrite: true);
-
-            copiedRelativePaths.Add(op.RelativeTargetPath);
-            if (op.IsExecutable)
-            {
-                copiedApps.Add(op.RelativeTargetPath);
-                RecordWorkspaceToolPath(op.DestinationPath, ref wsMbyPath, ref wsMelomgPath);
-            }
-            else if (op.Kind == StagedCopyKind.Folder && !string.IsNullOrWhiteSpace(op.RootFolderName))
-            {
-                copiedFolderSet.Add(op.RootFolderName!);
-            }
-            else
-            {
-                copiedFiles.Add(op.RelativeTargetPath);
-            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Result<WorkspaceInitResult>.Failure(WrapperErrors.IoFailure($"Failed to copy workspace items: {ex.Message}"));
         }
 
         // Also detect already-identical workspace exes that were skipped above.
@@ -219,7 +242,16 @@ public sealed class WorkspaceInitializer(
                 continue;
             }
 
-            var fullSrc = Path.GetFullPath(item.SourcePath);
+            string fullSrc;
+            try
+            {
+                fullSrc = Path.GetFullPath(item.SourcePath.Trim());
+            }
+            catch
+            {
+                return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                    WrapperErrors.InvalidPath(item.SourcePath));
+            }
             if (item.Kind == StagedCopyKind.File)
             {
                 if (!File.Exists(fullSrc))

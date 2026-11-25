@@ -95,6 +95,20 @@ public sealed class WorkspaceMaintenanceTests : IDisposable
 
         var after = await handler.DetectOutdatedToolsAsync(ws);
         Assert.Empty(after);
+
+        // Bug #8: unversioned mby.exe identical to apps\ copy must NOT trigger an infinite outdated loop.
+        var paths3 = new WrapperDataPaths(Path.Combine(_tempRoot, "data3"));
+        Directory.CreateDirectory(paths3.AppsDirectory);
+        var unversionedBytes = new byte[] { (byte)'M', (byte)'Z', 0x55, 0x66 };
+        await File.WriteAllBytesAsync(Path.Combine(paths3.AppsDirectory, "mby.exe"), unversionedBytes);
+        var ws3 = Path.Combine(_tempRoot, "ws3");
+        Directory.CreateDirectory(ws3);
+        await File.WriteAllBytesAsync(Path.Combine(ws3, "mby.exe"), unversionedBytes);
+
+        var maint3 = new WorkspaceMaintenanceService(paths3, new ManagedAppsStore(paths3));
+        var outdated3 = await maint3.DetectOutdatedToolsAsync(ws3);
+        Assert.True(outdated3.IsSuccess);
+        Assert.Empty(outdated3.Value);
     }
 
     public void Dispose()

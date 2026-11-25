@@ -1,5 +1,6 @@
 (() => {
   const token = window.__MBY_TOKEN__ || "";
+  try { delete window.__MBY_TOKEN__; } catch { window.__MBY_TOKEN__ = ""; }
 
   const DOWNLOAD_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
   const PENCIL_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>';
@@ -48,6 +49,7 @@
   const state = {
     metadata: { version: "1.0.0", selfUpdateRepoOwner: "doc-shashank", selfUpdateRepoName: "meloberry-pc" },
     appsDirectory: "",
+    viewerOrigin: "",
     settings: { themeMode: "berry", overrideWebAppTheme: true, recentWebApps: [] },
     apps: [],
     appUpdateChecks: {},
@@ -67,6 +69,7 @@
     discoveredMbyProjects: [],
     notifications: [],
     eventSource: null,
+    previewSeq: 0,
     prompt: {
       container: "session",
       title: "",
@@ -78,6 +81,7 @@
       agentsMdExported: false,
       components: [],
       selectedComponentId: null,
+      containerCache: { session: null, standaloneArticle: null, standaloneQuiz: null },
       specCardMode: "selector",
       organizerChosenTopic: null
     },
@@ -89,8 +93,7 @@
     dragSpecOrgIndex: null,
     lastAddedOrgId: null,
     lastAddedSpecOrgId: null,
-    lastAddedSelectorTopic: null,
-    viewerOriginalTheme: null
+    lastAddedSelectorTopic: null
   };
 
   function postWindowCommand(type) {
@@ -232,36 +235,18 @@
 
   function applyViewerThemeOverride() {
     const frame = document.getElementById("webAppFrame");
-    if (!frame || frame.classList.contains("hidden")) return;
-    try {
-      const doc = frame.contentDocument;
-      const docEl = doc && doc.documentElement;
-      if (!doc || !docEl) return;
-
-      const styleId = "mby-wrapper-theme-fallback";
-      let fallbackEl = doc.getElementById(styleId);
-      const isOverrideOn = state.settings.overrideWebAppTheme !== false;
-
-      if (isOverrideOn) {
-        const targetTheme = state.settings.themeMode || "berry";
-        if (!fallbackEl && doc.head) {
-          fallbackEl = doc.createElement("style");
-          fallbackEl.id = styleId;
-          fallbackEl.textContent = PAPER_THEME_FALLBACK_CSS;
-          doc.head.appendChild(fallbackEl);
-        }
-        docEl.setAttribute("data-theme", targetTheme);
-      } else {
-        if (fallbackEl) fallbackEl.remove();
-        if (state.viewerOriginalTheme !== null && state.viewerOriginalTheme !== undefined && state.viewerOriginalTheme !== "") {
-          docEl.setAttribute("data-theme", state.viewerOriginalTheme);
-        } else {
-          docEl.removeAttribute("data-theme");
-        }
-      }
-    } catch {
-      // Frame not yet accessible or unloaded.
-    }
+    if (!frame || frame.classList.contains("hidden") || !frame.contentWindow || !state.viewerOrigin) return;
+    const isOverrideOn = state.settings.overrideWebAppTheme !== false;
+    const targetTheme = state.settings.themeMode || "berry";
+    frame.contentWindow.postMessage(
+      {
+        type: "mby-theme-override",
+        override: isOverrideOn,
+        theme: targetTheme,
+        fallbackCss: PAPER_THEME_FALLBACK_CSS
+      },
+      state.viewerOrigin
+    );
   }
 
   function startRealtimeEvents() {
@@ -278,7 +263,9 @@
       const isExe = (info.fileName || "").toLowerCase().endsWith(".exe");
 
       if (info.scope === "apps") {
-        await refreshApps();
+        await refreshApps(false);
+        renderAppsCart();
+        refreshPromptOptionsAvailability();
         await loadSpecs(true);
         if (info.changeKind === "deleted" && isExe) {
           addNotification("Manually Removed", `${info.fileName} was removed from apps\\`, "warn");
@@ -295,7 +282,7 @@
 
           const st = await api("GET", `/api/workspace/agents-md/status?workspacePath=${encodeURIComponent(aws.workspacePath)}`);
           state.agentsMdStatus = st.ok ? st.data : null;
-          await refreshApps();
+          await refreshApps(false);
           restoreActiveWorkspaceUi();
           await refreshPromptPreview();
 
@@ -321,6 +308,7 @@
     const d = res.data;
     state.metadata = d.metadata || state.metadata;
     state.appsDirectory = d.appsDirectory || "";
+    state.viewerOrigin = d.viewerOrigin || "";
     state.settings = d.settings || {};
     if (state.settings.overrideWebAppTheme === undefined) {
       state.settings.overrideWebAppTheme = true;
@@ -368,6 +356,32 @@
     return parts.length ? parts[parts.length - 1] : trimmed;
   }
 
+  function pruneSelectedAppNames() {
+    const installedSet = new Set(state.apps.filter(a => a.isInstalled).map(a => a.fileName));
+    for (const name of Array.from(state.selectedAppNames)) {
+      if (!installedSet.has(name)) {
+        state.selectedAppNames.delete(name);
+      }
+    }
+  }
+
+  function selectUpgradedApp(appEntry) {
+    if (!appEntry || !appEntry.fileName) return;
+    if (appEntry.kind === "mby" || appEntry.kind === "melomg") {
+      const isMby = appEntry.kind === "mby";
+      for (const name of Array.from(state.selectedAppNames)) {
+        const lower = name.toLowerCase();
+        const matchesKind = isMby
+          ? (lower === "mby.exe" || lower.startsWith("mby-cli"))
+          : (lower === "melomg.exe" || lower.startsWith("meloberry-melomg"));
+        if (matchesKind) {
+          state.selectedAppNames.delete(name);
+        }
+      }
+    }
+    state.selectedAppNames.add(appEntry.fileName);
+  }
+
   function restoreActiveWorkspaceUi() {
     const aws = state.settings.activeWorkspace;
     const dot = document.getElementById("wsStatusDot");
@@ -379,7 +393,7 @@
       label.textContent = formatTruncatedWorkspace(aws.workspacePath);
       label.title = aws.workspacePath;
       dot.classList.toggle("ready", !!aws.isInitialized);
-      state.selectedAppNames = new Set(aws.selectedAppFileNames || aws.workspaceApps || []);
+      state.selectedAppNames = new Set(aws.selectedAppFileNames || []);
       state.stagedItems = [...(aws.stagedItems || [])];
 
       const agentsExists = !!(state.agentsMdStatus && state.agentsMdStatus.exists);
@@ -396,6 +410,8 @@
         .forEach(a => state.selectedAppNames.add(a.fileName));
     }
 
+    pruneSelectedAppNames();
+    renderAppsCart();
     renderStagedItems();
     refreshPromptOptionsAvailability();
   }
@@ -464,7 +480,7 @@
 
       const st = await api("GET", `/api/workspace/agents-md/status?workspacePath=${encodeURIComponent(wsState.workspacePath)}`);
       state.agentsMdStatus = st.ok ? st.data : null;
-      await refreshApps();
+      await refreshApps(false);
       restoreActiveWorkspaceUi();
       renderRecentWorkspaces();
       renderOutdatedBanner();
@@ -474,12 +490,15 @@
     }
   }
 
-  async function refreshApps() {
+  async function refreshApps(render = true) {
     const res = await api("GET", "/api/apps");
     if (res.ok) {
       state.apps = res.data.apps || [];
-      renderAppsCart();
-      refreshPromptOptionsAvailability();
+      pruneSelectedAppNames();
+      if (render) {
+        renderAppsCart();
+        refreshPromptOptionsAvailability();
+      }
     }
   }
 
@@ -645,7 +664,7 @@
     if (res.ok) {
       progBar.style.width = "100%";
       delete state.appUpdateChecks[toolKey];
-      state.selectedAppNames.add(res.data.fileName);
+      selectUpgradedApp(res.data);
       await refreshApps();
       if (toolKey === "mby") await loadSpecs(true);
       toast(`Installed ${res.data.fileName}`, "ok");
@@ -776,7 +795,7 @@
     const outRes = await api("GET", `/api/workspace/outdated?workspacePath=${encodeURIComponent(wsPath)}`);
     state.outdatedTools = outRes.ok ? (outRes.data.outdatedTools || []) : [];
 
-    await refreshApps();
+    await refreshApps(false);
     await loadSpecs(true);
     restoreActiveWorkspaceUi();
     renderOutdatedBanner();
@@ -845,7 +864,7 @@
       const outRes = await api("GET", `/api/workspace/outdated?workspacePath=${encodeURIComponent(plan.workspacePath)}`);
       state.outdatedTools = outRes.ok ? (outRes.data.outdatedTools || []) : [];
 
-      await refreshApps();
+      await refreshApps(false);
       restoreActiveWorkspaceUi();
       renderOutdatedBanner();
       await refreshPromptPreview();
@@ -991,6 +1010,7 @@
   }
 
   function applyPresetObj(preset) {
+    state.prompt.containerCache = { session: null, standaloneArticle: null, standaloneQuiz: null };
     if (!preset) {
       ensureComponentsForContainer();
       renderOrganizationCard();
@@ -1216,8 +1236,21 @@
       cnt.placeholder = "Qty";
       cnt.value = sel.desiredCount || "";
       cnt.oninput = () => {
-        const val = parseInt(cnt.value, 10);
-        sel.desiredCount = Number.isFinite(val) && val > 0 ? val : null;
+        const raw = cnt.value.trim();
+        if (raw === "") {
+          sel.desiredCount = null;
+          refreshPromptPreview();
+          return;
+        }
+        const parsed = parseInt(raw, 10);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          sel.desiredCount = null;
+          refreshPromptPreview();
+          return;
+        }
+        const val = Math.min(99, parsed);
+        if (val !== parsed) cnt.value = String(val);
+        sel.desiredCount = val;
         syncOrderedItemsFromSelections(comp);
         refreshPromptPreview();
       };
@@ -1248,12 +1281,21 @@
               if (g.multiSelect) {
                 const i = sel.modes.indexOf(opt.key);
                 if (i >= 0) sel.modes.splice(i, 1);
-                else sel.modes.push(opt.key);
+                else {
+                  sel.modes.push(opt.key);
+                  if (spec.topic.toLowerCase() === "assertion-reason" && opt.key === "both-false") {
+                    sel.modes = sel.modes.filter(m => m !== "4opt");
+                    if (!sel.modes.includes("5opt")) sel.modes.push("5opt");
+                  }
+                }
               } else {
                 const siblingKeys = g.options.map(o => o.key);
                 const wasActive = sel.modes.includes(opt.key);
                 sel.modes = sel.modes.filter(m => !siblingKeys.includes(m));
                 if (!wasActive) sel.modes.push(opt.key);
+                if (spec.topic.toLowerCase() === "assertion-reason" && opt.key === "4opt" && !wasActive) {
+                  sel.modes = sel.modes.filter(m => m !== "both-false");
+                }
               }
               renderSpecSelectorPane(comp);
               refreshPromptPreview();
@@ -1366,6 +1408,7 @@
       item.onclick = () => {
         state.prompt.organizerChosenTopic = spec.topic;
         menu.classList.add("hidden");
+        menu.querySelectorAll(".dropdown-item").forEach(b => b.classList.toggle("active", b === item));
         document.getElementById("orgSpecChosenDisplay").innerHTML =
           `<span class="spec-icon-wrap">${getSpecIcon(spec.topic)}</span><span>${escapeHtml(spec.topic)}</span>`;
       };
@@ -1484,8 +1527,15 @@
     }));
 
     const flatSelections = activeComps.flatMap(c => c.selections);
-    const wsMby = state.apps.find(a => a.kind === "mby" && a.isInstalled);
-    const wsMel = state.apps.find(a => a.kind === "melomg" && a.isInstalled);
+    const wsMby = state.apps.find(a => a.kind === "mby");
+    const wsMel = state.apps.find(a => a.kind === "melomg");
+    const mbyOverride = state.settings.mbyExecutableOverride && state.settings.mbyExecutableOverride.trim();
+    const melOverride = state.settings.melomgExecutableOverride && state.settings.melomgExecutableOverride.trim();
+
+    const resolvedMbyPath = mbyOverride
+      || (wsPath && wsMby && wsMby.isPresentInWorkspace ? `${wsPath}\\${wsMby.workspaceFileName || wsMby.fileName}` : (wsMby && wsMby.isInstalled ? wsMby.fullPath : null));
+    const resolvedMelomgPath = melOverride
+      || (wsPath && wsMel && wsMel.isPresentInWorkspace ? `${wsPath}\\${wsMel.workspaceFileName || wsMel.fileName}` : (wsMel && wsMel.isInstalled ? wsMel.fullPath : null));
 
     return {
       container: state.prompt.container,
@@ -1500,8 +1550,8 @@
       lazyCliDiscovery: !state.prompt.agentsMdExported,
       agentsMdExported: state.prompt.agentsMdExported,
       workingDirectory: wsPath,
-      mbyExecutablePath: wsPath && wsMby && wsMby.isPresentInWorkspace ? `${wsPath}\\${wsMby.fileName}` : (wsMby ? wsMby.fullPath : null),
-      melomgExecutablePath: wsPath && wsMel && wsMel.isPresentInWorkspace ? `${wsPath}\\${wsMel.fileName}` : (wsMel ? wsMel.fullPath : null),
+      mbyExecutablePath: resolvedMbyPath,
+      melomgExecutablePath: resolvedMelomgPath,
       copiedFolders,
       components: activeComps
     };
@@ -1547,7 +1597,9 @@
 
   async function refreshPromptPreview() {
     refreshPromptOptionsAvailability();
+    const seq = ++state.previewSeq;
     const res = await api("POST", "/api/prompt/compose", buildPromptDraftPayload());
+    if (seq !== state.previewSeq) return;
     if (res.ok) {
       state.composedPrompt = res.data;
       document.getElementById("promptPreviewBox").textContent = res.data.markdown;
@@ -1619,6 +1671,9 @@
     await refreshPromptPreview();
     if (wasUninitialized) {
       toast("Workspace might not have been initialized", "warn");
+    }
+    if (Array.isArray(res.data.warnings) && res.data.warnings.length > 0) {
+      res.data.warnings.forEach(w => toast(w, "warn"));
     }
     toast(`Exported AGENTS.md (~${res.data.approximateTokens} tokens).`, "ok");
   }
@@ -1737,7 +1792,7 @@
       const frame = document.getElementById("webAppFrame");
       document.getElementById("viewerPlaceholder").classList.add("hidden");
       frame.classList.remove("hidden");
-      frame.src = res.data.url;
+      frame.src = `${res.data.url}?v=${Date.now()}`;
       switchView("viewer");
       if (res.data.entry) {
         const list = (state.settings.recentWebApps || []).filter(x => x.path.toLowerCase() !== res.data.entry.path.toLowerCase());
@@ -1756,7 +1811,7 @@
       const frame = document.getElementById("webAppFrame");
       document.getElementById("viewerPlaceholder").classList.add("hidden");
       frame.classList.remove("hidden");
-      frame.src = res.data.url;
+      frame.src = `${res.data.url}?v=${Date.now()}`;
       refreshViewerDiscovery();
       toast(`Built & opened ${workspaceId}`, "ok");
     } else {
@@ -1892,7 +1947,10 @@
   };
 
   // Outdated banner
-  document.getElementById("btnDismissOutdated").onclick = () => document.getElementById("outdatedToolsBar").classList.add("hidden");
+  document.getElementById("btnDismissOutdated").onclick = () => {
+    document.getElementById("outdatedToolsBar").classList.add("hidden");
+    updateChromeOffset();
+  };
   document.getElementById("btnUpdateOutdatedTools").onclick = async () => {
     const aws = state.settings.activeWorkspace;
     if (!aws || !aws.workspacePath) return;
@@ -1905,7 +1963,7 @@
     if (res.data.activeWorkspace) state.settings.activeWorkspace = res.data.activeWorkspace;
     state.outdatedTools = [];
     renderOutdatedBanner();
-    await refreshApps();
+    await refreshApps(false);
     restoreActiveWorkspaceUi();
     await loadSpecs(true);
     await refreshPromptPreview();
@@ -1930,7 +1988,7 @@
   document.getElementById("btnImportCustomExe").onclick = async () => {
     const r = await api("POST", "/api/apps/import", {});
     if (r.ok && !r.data.cancelled) {
-      state.selectedAppNames.add(r.data.fileName);
+      selectUpgradedApp(r.data);
       await refreshApps();
       await loadSpecs(true);
       toast(`Imported ${r.data.fileName}`, "ok");
@@ -1984,9 +2042,27 @@
   // Prompt Studio controls
   document.querySelectorAll("#containerTabs .seg-btn").forEach(btn => {
     btn.onclick = () => {
-      state.prompt.container = btn.dataset.container;
+      const prev = state.prompt.container;
+      const next = btn.dataset.container;
+      if (prev === next) return;
+
+      state.prompt.containerCache[prev] = {
+        components: state.prompt.components.map(cloneComponent),
+        selectedComponentId: state.prompt.selectedComponentId
+      };
+
+      state.prompt.container = next;
       document.querySelectorAll("#containerTabs .seg-btn").forEach(b => b.classList.toggle("active", b === btn));
-      ensureComponentsForContainer();
+
+      const cached = state.prompt.containerCache[next];
+      if (cached && Array.isArray(cached.components) && cached.components.length > 0) {
+        state.prompt.components = cached.components.map(cloneComponent);
+        state.prompt.selectedComponentId = cached.selectedComponentId;
+      } else {
+        state.prompt.components = state.prompt.components.map(cloneComponent);
+        ensureComponentsForContainer();
+      }
+
       renderOrganizationCard();
       renderPromptStudioSpecArea();
       refreshPromptPreview();
@@ -2069,7 +2145,8 @@
     if (!topic) return;
     const comp = getActiveComponent();
     const sel = findOrInitSelection(comp, topic);
-    const nextCount = sel.enabled ? (sel.desiredCount || 0) + 1 : 1;
+    const currentCount = (comp.orderedItems || []).filter(i => i.topic.toLowerCase() === topic.toLowerCase()).length;
+    const nextCount = currentCount + 1;
     sel.enabled = true;
     sel.desiredCount = nextCount;
     const newId = `${topic}_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
@@ -2134,16 +2211,6 @@
   }
 
   document.getElementById("webAppFrame").addEventListener("load", () => {
-    const frame = document.getElementById("webAppFrame");
-    if (!frame || frame.classList.contains("hidden")) return;
-    try {
-      const docEl = frame.contentDocument && frame.contentDocument.documentElement;
-      if (docEl) {
-        state.viewerOriginalTheme = docEl.getAttribute("data-theme");
-      }
-    } catch {
-      state.viewerOriginalTheme = null;
-    }
     applyViewerThemeOverride();
   });
 

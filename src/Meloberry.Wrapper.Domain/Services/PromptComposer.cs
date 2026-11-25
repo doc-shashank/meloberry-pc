@@ -212,7 +212,13 @@ public static class PromptComposer
                     var modes = item.Modes is { Count: > 0 }
                         ? string.Join(", ", item.Modes.Select(m => $"`{m}`"))
                         : "—";
-                    var notes = string.IsNullOrWhiteSpace(item.Notes) ? "—" : item.Notes.Trim().Replace("|", "\\|");
+                    var notes = string.IsNullOrWhiteSpace(item.Notes)
+                        ? "—"
+                        : item.Notes.Trim()
+                            .Replace("\r\n", " ", StringComparison.Ordinal)
+                            .Replace("\r", " ", StringComparison.Ordinal)
+                            .Replace("\n", " ", StringComparison.Ordinal)
+                            .Replace("|", "\\|", StringComparison.Ordinal);
                     sb.AppendLine($"| `{item.Topic}` | {qty} | {modes} | {notes} |");
                 }
             }
@@ -253,10 +259,11 @@ public static class PromptComposer
             {
                 if (catalogByTopic.TryGetValue(topic, out var spec) && !string.IsNullOrWhiteSpace(spec.CompactSignature))
                 {
+                    var fence = AgentsMdComposer.MakeCodeFence(spec.CompactSignature);
                     sb.AppendLine($"- **`{spec.Topic}`** ({spec.Command}):");
-                    sb.AppendLine("```text");
+                    sb.AppendLine($"{fence}text");
                     sb.AppendLine(spec.CompactSignature.Trim());
-                    sb.AppendLine("```");
+                    sb.AppendLine(fence);
                 }
             }
         }
@@ -306,10 +313,11 @@ public static class PromptComposer
 
         if (!string.IsNullOrWhiteSpace(draft.SourceText))
         {
+            var notesFence = AgentsMdComposer.MakeCodeFence(draft.SourceText);
             sb.AppendLine("### Study Notes");
-            sb.AppendLine("```text");
+            sb.AppendLine($"{notesFence}text");
             sb.AppendLine(draft.SourceText.Trim());
-            sb.AppendLine("```");
+            sb.AppendLine(notesFence);
             sb.AppendLine();
         }
         else if (!hasAttachments)
@@ -319,7 +327,7 @@ public static class PromptComposer
         }
 
         sb.AppendLine("## Verification & Deliverables");
-        sb.AppendLine($"1. Author strict valid content in `{FormatAuthoringLabel(draft.AuthoringFormat)}`.");
+        sb.AppendLine($"1. Author strict valid content in {FormatAuthoringLabel(draft.AuthoringFormat)}.");
         sb.AppendLine($"2. Validate and compile to `./dist_web`: `{mbyInvocation} build <input> -o ./dist_web --verify --json`.");
         sb.AppendLine($"3. Verify headless telemetry (`{mbyInvocation} analyze ./dist_web --headless --json`) and export `.mbypkg` if persisting (`{mbyInvocation} pkg export <wsId> android ./out.mbypkg --json`).");
 
@@ -378,11 +386,18 @@ public static class PromptComposer
 
         if (!string.IsNullOrWhiteSpace(workingDir))
         {
-            var fullExe = Path.GetFullPath(exePath);
-            var fullDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workingDir)) + Path.DirectorySeparatorChar;
-            if (fullExe.StartsWith(fullDir, StringComparison.OrdinalIgnoreCase))
+            try
             {
-                return ".\\" + Path.GetRelativePath(workingDir, fullExe);
+                var fullExe = Path.GetFullPath(exePath);
+                var fullDir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workingDir)) + Path.DirectorySeparatorChar;
+                if (fullExe.StartsWith(fullDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ".\\" + Path.GetRelativePath(workingDir, fullExe);
+                }
+            }
+            catch
+            {
+                // Fall back to original executable string on invalid path characters.
             }
         }
 

@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Threading.Channels;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Application.UseCases;
 using Meloberry.Wrapper.Domain.Common;
@@ -15,11 +16,12 @@ using Meloberry.Wrapper.Domain.Models;
 namespace Meloberry.Wrapper.Infrastructure.Server;
 
 /// <summary>
-/// Pure BCL HttpListener host serving the embedded Shell UI, token-protected REST APIs,
-/// path-confined compiled WebApps (/viewer/&lt;slotId&gt;/), and same-origin analysis capture.
+/// Pure BCL dual-port HttpListener host: ShellPort serves the embedded Shell UI, SSE, and token-protected REST APIs;
+/// ViewerPort serves isolated third-party WebApps (/viewer/&lt;slotId&gt;/) and origin-checked POST /api/analysis.
 /// </summary>
 public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposable
 {
+    private const int MaxBodyBytes = 10 * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -69,10 +71,12 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
     private readonly SettingsAndPresetsHandler _settingsPresets;
 
     private readonly string _token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(24));
-    private readonly ConcurrentDictionary<Guid, HttpListenerResponse> _sseClients = new();
+    private readonly ConcurrentDictionary<Guid, Channel<byte[]>> _sseClients = new();
     private HttpListener? _listener;
+    private HttpListener? _viewerListener;
     private CancellationTokenSource? _cts;
     private Task? _acceptLoop;
+    private Task? _viewerAcceptLoop;
     private int _disposed;
 
     public LocalHttpWrapperServer(
@@ -120,7 +124,9 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
     }
 
     public int Port { get; private set; }
+    public int ViewerPort { get; private set; }
     public string BaseUrl => $"http://127.0.0.1:{Port}/";
+    public string ViewerBaseUrl => $"http://127.0.0.1:{ViewerPort}/";
     public string AuthToken => _token;
 
     public void Start()
@@ -135,18 +141,24 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
         _listener.Start();
 
+        ViewerPort = FindFreeTcpPort();
+        _viewerListener = new HttpListener();
+        _viewerListener.Prefixes.Add($"http://127.0.0.1:{ViewerPort}/");
+        _viewerListener.Start();
+
         _cts = new CancellationTokenSource();
-        _acceptLoop = Task.Run(() => AcceptLoopAsync(_cts.Token));
+        _acceptLoop = Task.Run(() => AcceptLoopAsync(_listener, isViewerHost: false, _cts.Token));
+        _viewerAcceptLoop = Task.Run(() => AcceptLoopAsync(_viewerListener, isViewerHost: true, _cts.Token));
     }
 
-    private async Task AcceptLoopAsync(CancellationToken ct)
+    private async Task AcceptLoopAsync(HttpListener listener, bool isViewerHost, CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested && _listener is { IsListening: true })
+        while (!ct.IsCancellationRequested && listener.IsListening)
         {
             HttpListenerContext ctx;
             try
             {
-                ctx = await _listener.GetContextAsync().ConfigureAwait(false);
+                ctx = await listener.GetContextAsync().ConfigureAwait(false);
             }
             catch (ObjectDisposedException)
             {
@@ -157,7 +169,52 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                 break;
             }
 
-            _ = Task.Run(() => HandleRequestAsync(ctx, ct), ct);
+            _ = Task.Run(() => isViewerHost
+                ? HandleViewerRequestAsync(ctx, ct)
+                : HandleRequestAsync(ctx, ct), ct);
+        }
+    }
+
+    private async Task HandleViewerRequestAsync(HttpListenerContext ctx, CancellationToken ct)
+    {
+        try
+        {
+            var req = ctx.Request;
+            var hostHeader = req.Headers["Host"];
+            if (!IsValidLocalHost(hostHeader, ViewerPort))
+            {
+                await WriteJsonErrorAsync(ctx.Response, 403, "Security.InvalidHost", "Forbidden Host header.", ct).ConfigureAwait(false);
+                return;
+            }
+
+            var path = req.Url?.AbsolutePath ?? "/";
+            var method = req.HttpMethod.ToUpperInvariant();
+
+            if (path.StartsWith("/viewer/", StringComparison.OrdinalIgnoreCase) && method is "GET" or "HEAD")
+            {
+                await ServeMountedWebAppAsync(ctx.Response, path, ct).ConfigureAwait(false);
+                return;
+            }
+
+            if (path == "/api/analysis" && method == "POST")
+            {
+                await HandleAnalysisPostAsync(req, ctx.Response, ct).ConfigureAwait(false);
+                return;
+            }
+
+            ctx.Response.StatusCode = 404;
+            ctx.Response.Close();
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                await WriteJsonErrorAsync(ctx.Response, 500, "Server.Unhandled", ex.Message, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Response already closed.
+            }
         }
     }
 
@@ -194,18 +251,6 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                 return;
             }
 
-            if (path.StartsWith("/viewer/", StringComparison.OrdinalIgnoreCase))
-            {
-                await ServeMountedWebAppAsync(ctx.Response, path, ct).ConfigureAwait(false);
-                return;
-            }
-
-            if (path == "/api/analysis" && method == "POST")
-            {
-                await HandleAnalysisPostAsync(req, ctx.Response, ct).ConfigureAwait(false);
-                return;
-            }
-
             if (path == "/api/events" && method == "GET")
             {
                 var queryToken = req.QueryString["token"];
@@ -219,7 +264,8 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                 return;
             }
 
-            if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+            if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(path, "/api/analysis", StringComparison.OrdinalIgnoreCase))
             {
                 var provided = req.Headers["X-Mby-Token"];
                 if (!string.Equals(provided, _token, StringComparison.Ordinal))
@@ -275,6 +321,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                 {
                     metadata = meta,
                     appsDirectory = _dataPaths.AppsDirectory,
+                    viewerOrigin = ViewerBaseUrl.TrimEnd('/'),
                     settings,
                     apps,
                     agentsMdStatus = agentsStatus,
@@ -621,22 +668,18 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                     return;
                 }
 
-                var saveTarget = body.FilePath;
+                var settings = await _settingsStore.LoadAsync(ct).ConfigureAwait(false);
+                var saveTarget = await _dialogs.SaveFileAsync(
+                    "Save Prompt Markdown",
+                    "PROMPT.md",
+                    "Markdown File (*.md)",
+                    "md",
+                    settings.ActiveWorkspace?.WorkspacePath,
+                    ct).ConfigureAwait(false);
                 if (string.IsNullOrWhiteSpace(saveTarget))
                 {
-                    var settings = await _settingsStore.LoadAsync(ct).ConfigureAwait(false);
-                    saveTarget = await _dialogs.SaveFileAsync(
-                        "Save Prompt Markdown",
-                        "PROMPT.md",
-                        "Markdown File (*.md)",
-                        "md",
-                        settings.ActiveWorkspace?.WorkspacePath,
-                        ct).ConfigureAwait(false);
-                    if (string.IsNullOrWhiteSpace(saveTarget))
-                    {
-                        await WriteJsonAsync(resp, 200, new { cancelled = true }, ct).ConfigureAwait(false);
-                        return;
-                    }
+                    await WriteJsonAsync(resp, 200, new { cancelled = true }, ct).ConfigureAwait(false);
+                    return;
                 }
 
                 var res = await _promptHandlers.SavePromptAsync(saveTarget, body.Markdown ?? string.Empty, ct).ConfigureAwait(false);
@@ -698,7 +741,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                 await WriteJsonAsync(resp, 200, new
                 {
                     slotId = res.Value.SlotId,
-                    url = res.Value.Url,
+                    url = $"{ViewerBaseUrl.TrimEnd('/')}{res.Value.Url}",
                     entry = res.Value.Entry
                 }, ct).ConfigureAwait(false);
                 return;
@@ -723,7 +766,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                 await WriteJsonAsync(resp, 200, new
                 {
                     slotId = res.Value.SlotId,
-                    url = res.Value.Url,
+                    url = $"{ViewerBaseUrl.TrimEnd('/')}{res.Value.Url}",
                     entry = res.Value.Entry
                 }, ct).ConfigureAwait(false);
                 return;
@@ -794,7 +837,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                 var body = await ReadJsonAsync<DialogFilesRequest>(req, ct).ConfigureAwait(false);
                 var files = await _dialogs.PickFilesAsync(
                     body?.Title ?? "Select Files",
-                    body?.FilterLabel ?? "All Study Files (*.pdf;*.md;*.txt;*.json;*.png;*.jpg)|*.*",
+                    body?.FilterLabel ?? "All Study Files (*.pdf;*.md;*.txt;*.json;*.png;*.jpg)",
                     body?.FilterPattern ?? "*.*",
                     body?.AllowMultiple ?? true,
                     body?.InitialDir,
@@ -863,19 +906,34 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
     private async Task HandleAnalysisPostAsync(HttpListenerRequest req, HttpListenerResponse resp, CancellationToken ct)
     {
         var origin = req.Headers["Origin"];
+        var referer = req.Headers["Referer"];
+        var isOriginValid = false;
+
         if (!string.IsNullOrWhiteSpace(origin))
         {
-            if (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri) ||
-                !string.Equals(originUri.Host, "127.0.0.1", StringComparison.Ordinal) ||
-                originUri.Port != Port)
-            {
-                await WriteJsonErrorAsync(resp, 403, "Security.InvalidOrigin", "Cross-origin /api/analysis denied.", ct).ConfigureAwait(false);
-                return;
-            }
+            isOriginValid = Uri.TryCreate(origin, UriKind.Absolute, out var originUri) &&
+                string.Equals(originUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(originUri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(originUri.Host, "localhost", StringComparison.OrdinalIgnoreCase)) &&
+                originUri.Port == ViewerPort;
+        }
+        else if (!string.IsNullOrWhiteSpace(referer))
+        {
+            isOriginValid = Uri.TryCreate(referer, UriKind.Absolute, out var refUri) &&
+                string.Equals(refUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(refUri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(refUri.Host, "localhost", StringComparison.OrdinalIgnoreCase)) &&
+                refUri.Port == ViewerPort &&
+                refUri.AbsolutePath.StartsWith("/viewer/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (!isOriginValid)
+        {
+            await WriteJsonErrorAsync(resp, 403, "Security.InvalidOrigin", "Cross-origin or untrusted /api/analysis denied.", ct).ConfigureAwait(false);
+            return;
         }
 
         string? slotId = null;
-        var referer = req.Headers["Referer"];
         if (!string.IsNullOrWhiteSpace(referer))
         {
             var match = ViewerRefererRegex().Match(referer);
@@ -885,8 +943,13 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
             }
         }
 
-        using var reader = new StreamReader(req.InputStream, Encoding.UTF8);
-        var rawBody = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+        var (tooLarge, rawBody) = await ReadBoundedUtf8BodyAsync(req, MaxBodyBytes, ct).ConfigureAwait(false);
+        if (tooLarge)
+        {
+            await WriteJsonErrorAsync(resp, 413, "Request.PayloadTooLarge", "Analysis payload exceeds 10 MB limit.", ct).ConfigureAwait(false);
+            return;
+        }
+
         string? reportJson = null;
         string? markdown = null;
 
@@ -949,11 +1012,56 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
 
         var ext = Path.GetExtension(target);
         resp.ContentType = MimeTypes.GetValueOrDefault(ext, "application/octet-stream");
+        resp.Headers["Cache-Control"] = "no-store";
         resp.StatusCode = 200;
+
+        if (string.Equals(relPath, "index.html", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(ext, ".html", StringComparison.OrdinalIgnoreCase))
+        {
+            var html = await File.ReadAllTextAsync(target, Encoding.UTF8, ct).ConfigureAwait(false);
+            var bridge = BuildViewerThemeBridgeScript(Port);
+            var bodyClose = html.LastIndexOf("</body>", StringComparison.OrdinalIgnoreCase);
+            html = bodyClose >= 0 ? html.Insert(bodyClose, bridge) : html + bridge;
+            var bytes = Encoding.UTF8.GetBytes(html);
+            await resp.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+            resp.Close();
+            return;
+        }
+
         await using var fs = File.OpenRead(target);
         await fs.CopyToAsync(resp.OutputStream, ct).ConfigureAwait(false);
         resp.Close();
     }
+
+    private static string BuildViewerThemeBridgeScript(int shellPort) => $$"""
+<script>
+(() => {
+  const allowed127 = "http://127.0.0.1:{{shellPort}}";
+  const allowedLocal = "http://localhost:{{shellPort}}";
+  const origTheme = document.documentElement.getAttribute("data-theme");
+  window.addEventListener("message", ev => {
+    if (ev.origin !== allowed127 && ev.origin !== allowedLocal) return;
+    const d = ev.data;
+    if (!d || d.type !== "mby-theme-override") return;
+    const styleId = "mby-wrapper-theme-fallback";
+    let el = document.getElementById(styleId);
+    if (d.override) {
+      if (!el && document.head && d.fallbackCss) {
+        el = document.createElement("style");
+        el.id = styleId;
+        el.textContent = String(d.fallbackCss);
+        document.head.appendChild(el);
+      }
+      if (d.theme) document.documentElement.setAttribute("data-theme", String(d.theme));
+    } else {
+      if (el) el.remove();
+      if (origTheme !== null && origTheme !== "") document.documentElement.setAttribute("data-theme", origTheme);
+      else document.documentElement.removeAttribute("data-theme");
+    }
+  });
+})();
+</script>
+""";
 
     private async Task ServeEmbeddedShellHtmlAsync(HttpListenerResponse resp, CancellationToken ct)
     {
@@ -961,6 +1069,8 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         html = html.Replace("__MBY_TOKEN_VALUE__", _token, StringComparison.Ordinal);
         var bytes = Encoding.UTF8.GetBytes(html);
         resp.ContentType = "text/html; charset=utf-8";
+        resp.Headers["X-Frame-Options"] = "DENY";
+        resp.Headers["Content-Security-Policy"] = "frame-ancestors 'none'";
         resp.StatusCode = 200;
         await resp.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
         resp.Close();
@@ -988,11 +1098,45 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         return reader.ReadToEnd();
     }
 
+    private static async Task<(bool TooLarge, string Body)> ReadBoundedUtf8BodyAsync(
+        HttpListenerRequest req,
+        int maxBytes,
+        CancellationToken ct)
+    {
+        if (req.ContentLength64 > maxBytes)
+        {
+            return (true, string.Empty);
+        }
+
+        using var ms = new MemoryStream();
+        var buffer = new byte[16384];
+        long total = 0;
+        int read;
+        while ((read = await req.InputStream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        {
+            total += read;
+            if (total > maxBytes)
+            {
+                return (true, string.Empty);
+            }
+
+            ms.Write(buffer, 0, read);
+        }
+
+        return (false, Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length));
+    }
+
     private static async Task<T?> ReadJsonAsync<T>(HttpListenerRequest req, CancellationToken ct)
     {
         try
         {
-            return await JsonSerializer.DeserializeAsync<T>(req.InputStream, JsonOptions, ct).ConfigureAwait(false);
+            var (tooLarge, body) = await ReadBoundedUtf8BodyAsync(req, MaxBodyBytes, ct).ConfigureAwait(false);
+            if (tooLarge || string.IsNullOrWhiteSpace(body))
+            {
+                return default;
+            }
+
+            return JsonSerializer.Deserialize<T>(body, JsonOptions);
         }
         catch
         {
@@ -1052,7 +1196,13 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         resp.StatusCode = 200;
 
         var id = Guid.NewGuid();
-        _sseClients[id] = resp;
+        var channel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(128)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false
+        });
+        _sseClients[id] = channel;
 
         try
         {
@@ -1062,10 +1212,27 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
 
             while (!ct.IsCancellationRequested)
             {
-                await Task.Delay(15000, ct).ConfigureAwait(false);
-                var ping = Encoding.UTF8.GetBytes(": ping\n\n");
-                await resp.OutputStream.WriteAsync(ping, ct).ConfigureAwait(false);
-                await resp.OutputStream.FlushAsync(ct).ConfigureAwait(false);
+                while (channel.Reader.TryRead(out var frame))
+                {
+                    await resp.OutputStream.WriteAsync(frame, ct).ConfigureAwait(false);
+                    await resp.OutputStream.FlushAsync(ct).ConfigureAwait(false);
+                }
+
+                using var pingCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pingCts.CancelAfter(TimeSpan.FromSeconds(15));
+                try
+                {
+                    if (!await channel.Reader.WaitToReadAsync(pingCts.Token).ConfigureAwait(false))
+                    {
+                        break;
+                    }
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    var ping = Encoding.UTF8.GetBytes(": ping\n\n");
+                    await resp.OutputStream.WriteAsync(ping, ct).ConfigureAwait(false);
+                    await resp.OutputStream.FlushAsync(ct).ConfigureAwait(false);
+                }
             }
         }
         catch
@@ -1075,6 +1242,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         finally
         {
             _sseClients.TryRemove(id, out _);
+            channel.Writer.TryComplete();
             try { resp.Close(); } catch { }
         }
     }
@@ -1086,18 +1254,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
 
         foreach (var kv in _sseClients)
         {
-            try
-            {
-                kv.Value.OutputStream.Write(frame, 0, frame.Length);
-                kv.Value.OutputStream.Flush();
-            }
-            catch
-            {
-                if (_sseClients.TryRemove(kv.Key, out var dead))
-                {
-                    try { dead.Close(); } catch { }
-                }
-            }
+            kv.Value.Writer.TryWrite(frame);
         }
     }
 
@@ -1133,7 +1290,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
 
         foreach (var kv in _sseClients)
         {
-            try { kv.Value.Close(); } catch { }
+            kv.Value.Writer.TryComplete();
         }
         _sseClients.Clear();
 
@@ -1143,11 +1300,24 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         }
 
         _listener?.Close();
+        _viewerListener?.Close();
         if (_acceptLoop is not null)
         {
             try
             {
                 await _acceptLoop.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Shutdown completed.
+            }
+        }
+
+        if (_viewerAcceptLoop is not null)
+        {
+            try
+            {
+                await _viewerAcceptLoop.ConfigureAwait(false);
             }
             catch
             {
@@ -1168,7 +1338,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         IReadOnlyList<StagedCopyItem>? StagedItems,
         ConflictPolicy ConflictPolicy = ConflictPolicy.SkipExisting);
     private sealed record ResetWorkspaceApiRequest(string? WorkspacePath, WorkspaceResetScope Scope = WorkspaceResetScope.ExecutablesOnly);
-    private sealed record SavePromptApiRequest(string? FilePath, string? Markdown);
+    private sealed record SavePromptApiRequest(string? Markdown);
     private sealed record SaveJsonApiRequest(string? RawJson, string? DefaultName);
     private sealed record BuildWorkspaceApiRequest(string WorkspaceId, string? OutputDir);
     private sealed record ExportPkgApiRequest(string WorkspaceId, string? Target, string? OutputPath);

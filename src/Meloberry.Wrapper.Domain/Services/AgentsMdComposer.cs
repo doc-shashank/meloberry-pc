@@ -94,12 +94,8 @@ public static class AgentsMdComposer
         ArgumentNullException.ThrowIfNull(input);
 
         var sb = new StringBuilder();
-        var mbyCmd = !string.IsNullOrWhiteSpace(input.WorkspaceMbyFileName)
-            ? $".\\{input.WorkspaceMbyFileName}"
-            : "mby";
-        var melomgCmd = !string.IsNullOrWhiteSpace(input.WorkspaceMelomgFileName)
-            ? $".\\{input.WorkspaceMelomgFileName}"
-            : "melomg";
+        var mbyCmd = FormatCliCommand(input.WorkspaceMbyFileName, "mby");
+        var melomgCmd = FormatCliCommand(input.WorkspaceMelomgFileName, "melomg");
 
         sb.AppendLine("# AGENTS.md — Meloberry Active Workspace Contract");
         sb.AppendLine();
@@ -113,6 +109,47 @@ public static class AgentsMdComposer
         AppendMelomgSpecsSection(sb, input, melomgCmd);
 
         return sb.ToString().TrimEnd() + Environment.NewLine;
+    }
+
+    internal static string FormatCliCommand(string? pathOrFileName, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(pathOrFileName))
+        {
+            return fallback;
+        }
+
+        var trimmed = pathOrFileName.Trim();
+        if (Path.IsPathRooted(trimmed))
+        {
+            return trimmed.Contains(' ') ? $"& \"{trimmed}\"" : trimmed;
+        }
+
+        return $".\\{trimmed}";
+    }
+
+    internal static string MakeCodeFence(string? content)
+    {
+        if (string.IsNullOrEmpty(content))
+        {
+            return "```";
+        }
+
+        var maxRun = 0;
+        var run = 0;
+        foreach (var ch in content)
+        {
+            if (ch == '`')
+            {
+                run++;
+                if (run > maxRun) maxRun = run;
+            }
+            else
+            {
+                run = 0;
+            }
+        }
+
+        return new string('`', Math.Max(3, maxRun + 1));
     }
 
     private static void AppendToolsetAndFilesSection(
@@ -132,7 +169,7 @@ public static class AgentsMdComposer
 
         foreach (var extraExe in input.ExtraWorkspaceExecutables.Where(x => !string.IsNullOrWhiteSpace(x)))
         {
-            sb.AppendLine($"- **Additional Tool**: `.\\{extraExe}`");
+            sb.AppendLine($"- **Additional Tool**: `{FormatCliCommand(extraExe, extraExe)}`");
         }
 
         if (input.CopiedFiles.Count > 0)
@@ -143,6 +180,11 @@ public static class AgentsMdComposer
         if (input.CopiedFolders.Count > 0)
         {
             sb.AppendLine("- **Workspace Subfolders**: " + string.Join(", ", input.CopiedFolders.Select(f => $"`./{f}/`")));
+        }
+
+        if (input.ExternalAttachments is { Count: > 0 })
+        {
+            sb.AppendLine("- **External Reference Files**: " + string.Join(", ", input.ExternalAttachments.Select(f => $"`{f}`")));
         }
 
         sb.AppendLine();
@@ -179,8 +221,8 @@ public static class AgentsMdComposer
     {
         sb.AppendLine("## 3. Target Container & Build Commands");
         sb.AppendLine();
-        sb.AppendLine($"- **Target Container**: `{PromptComposer.FormatContainerLabel(input.Container)}`");
-        sb.AppendLine($"- **Authoring Format**: `{PromptComposer.FormatAuthoringLabel(input.AuthoringFormat)}`");
+        sb.AppendLine($"- **Target Container**: {PromptComposer.FormatContainerLabel(input.Container)}");
+        sb.AppendLine($"- **Authoring Format**: {PromptComposer.FormatAuthoringLabel(input.AuthoringFormat)}");
 
         if (!string.IsNullOrWhiteSpace(input.WorkspaceMelomgFileName))
         {
@@ -226,9 +268,10 @@ public static class AgentsMdComposer
 
             if (!string.IsNullOrWhiteSpace(spec.CompactSignature))
             {
-                sb.AppendLine("```text");
+                var sigFence = MakeCodeFence(spec.CompactSignature);
+                sb.AppendLine($"{sigFence}text");
                 sb.AppendLine(spec.CompactSignature.Trim());
-                sb.AppendLine("```");
+                sb.AppendLine(sigFence);
             }
 
             if (spec.Fields.Count > 0)
@@ -262,11 +305,12 @@ public static class AgentsMdComposer
 
             if (!string.IsNullOrWhiteSpace(spec.ExampleJson))
             {
+                var exFence = MakeCodeFence(spec.ExampleJson);
                 sb.AppendLine("<details><summary>Example JSON</summary>");
                 sb.AppendLine();
-                sb.AppendLine("```json");
+                sb.AppendLine($"{exFence}json");
                 sb.AppendLine(spec.ExampleJson.Trim());
-                sb.AppendLine("```");
+                sb.AppendLine(exFence);
                 sb.AppendLine("</details>");
             }
 
@@ -275,12 +319,13 @@ public static class AgentsMdComposer
 
         if (input.IncludeLinkBlock)
         {
+            var linkFence = MakeCodeFence(SpecCatalogDefaults.VirtualLinkTopic.CompactSignature);
             sb.AppendLine($"### `{SpecCatalogDefaults.VirtualLinkTopicName}` (block)");
             sb.AppendLine($"{SpecCatalogDefaults.VirtualLinkTopic.Summary}  ");
             sb.AppendLine($"Command: `{SpecCatalogDefaults.VirtualLinkTopic.Command}`");
-            sb.AppendLine("```text");
+            sb.AppendLine($"{linkFence}text");
             sb.AppendLine(SpecCatalogDefaults.VirtualLinkTopic.CompactSignature);
-            sb.AppendLine("```");
+            sb.AppendLine(linkFence);
             sb.AppendLine();
         }
     }
@@ -296,9 +341,10 @@ public static class AgentsMdComposer
         sb.AppendLine();
         if (!string.IsNullOrWhiteSpace(input.MelomgSpecsText))
         {
-            sb.AppendLine("```text");
+            var melFence = MakeCodeFence(input.MelomgSpecsText);
+            sb.AppendLine($"{melFence}text");
             sb.AppendLine(input.MelomgSpecsText.Trim());
-            sb.AppendLine("```");
+            sb.AppendLine(melFence);
         }
         else
         {

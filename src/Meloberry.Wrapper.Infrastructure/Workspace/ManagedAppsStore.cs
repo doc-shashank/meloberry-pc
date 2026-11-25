@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
@@ -26,11 +24,23 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             .ToList();
 
         var workspaceExeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? wsMbyPath = null;
+        string? wsMelomgPath = null;
         if (!string.IsNullOrWhiteSpace(activeWorkspacePath) && Directory.Exists(activeWorkspacePath))
         {
-            foreach (var wsExe in Directory.GetFiles(activeWorkspacePath, "*.exe", SearchOption.TopDirectoryOnly))
+            foreach (var wsExe in Directory.GetFiles(activeWorkspacePath, "*.exe", SearchOption.TopDirectoryOnly)
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
             {
-                workspaceExeNames.Add(Path.GetFileName(wsExe));
+                var wsName = Path.GetFileName(wsExe);
+                workspaceExeNames.Add(wsName);
+                if (IsMbyFileName(wsName))
+                {
+                    wsMbyPath = SelectNewerBinary(wsMbyPath, wsExe);
+                }
+                else if (IsMelomgFileName(wsName))
+                {
+                    wsMelomgPath = SelectNewerBinary(wsMelomgPath, wsExe);
+                }
             }
         }
 
@@ -63,7 +73,7 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
                 displayName: "Meloberry cli",
                 defaultFileName: "mby-cli.exe",
                 installedPath: mbyPath,
-                workspaceExeNames: workspaceExeNames,
+                matchedWsFileName: wsMbyPath is not null ? Path.GetFileName(wsMbyPath) : null,
                 repoKey: EcosystemCatalog.Mby.Key,
                 description: EcosystemCatalog.Mby.Description),
             BuildManagedSlot(
@@ -72,7 +82,7 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
                 displayName: "Meloberry melomg",
                 defaultFileName: "meloberry-melomg.exe",
                 installedPath: melomgPath,
-                workspaceExeNames: workspaceExeNames,
+                matchedWsFileName: wsMelomgPath is not null ? Path.GetFileName(wsMelomgPath) : null,
                 repoKey: EcosystemCatalog.Melomg.Key,
                 description: EcosystemCatalog.Melomg.Description)
         };
@@ -80,6 +90,7 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
         foreach (var custom in customExes)
         {
             var fileName = Path.GetFileName(custom);
+            var presentInWs = workspaceExeNames.Contains(fileName);
             entries.Add(new ManagedAppEntry(
                 Id: $"custom:{fileName.ToLowerInvariant()}",
                 Kind: ManagedAppKind.CustomExecutable,
@@ -88,9 +99,10 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
                 FullPath: custom,
                 Version: ExtractVersion(custom),
                 IsInstalled: true,
-                IsPresentInWorkspace: workspaceExeNames.Contains(fileName),
+                IsPresentInWorkspace: presentInWs,
                 RepoKey: null,
-                Description: "Imported local executable."));
+                Description: "Imported local executable.",
+                WorkspaceFileName: presentInWs ? fileName : null));
         }
 
         return Task.FromResult<IReadOnlyList<ManagedAppEntry>>(entries);
@@ -123,20 +135,32 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             return Result<ManagedAppEntry>.Failure(WrapperErrors.UpdateVerificationFailed($"'{fullSource}' is not a valid Windows PE executable (missing MZ header)."));
         }
 
-        var (managedKey, resolvedFileName) = await IdentifyExecutableMetadataAsync(fullSource, ct).ConfigureAwait(false);
+        var (managedKey, resolvedFileName) = IdentifyExecutableMetadata(fullSource);
         Directory.CreateDirectory(paths.AppsDirectory);
         var destPath = Path.Combine(paths.AppsDirectory, resolvedFileName);
+
+        if (!string.Equals(fullSource, destPath, StringComparison.OrdinalIgnoreCase))
+        {
+            var tmp = $"{destPath}.{Guid.NewGuid():N}.tmp";
+            try
+            {
+                File.Copy(fullSource, tmp, overwrite: true);
+                File.Move(tmp, destPath, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                if (File.Exists(tmp))
+                {
+                    try { File.Delete(tmp); } catch { }
+                }
+
+                return Result<ManagedAppEntry>.Failure(WrapperErrors.IoFailure($"Failed to import '{resolvedFileName}': {ex.Message}"));
+            }
+        }
 
         if (managedKey is not null)
         {
             DeleteSupersededManagedBinaries(managedKey, keepFileName: resolvedFileName);
-        }
-
-        if (!string.Equals(fullSource, destPath, StringComparison.OrdinalIgnoreCase))
-        {
-            var tmp = destPath + ".tmp";
-            File.Copy(fullSource, tmp, overwrite: true);
-            File.Move(tmp, destPath, overwrite: true);
         }
 
         return await BuildEntryForSavedFileAsync(managedKey, destPath, ct).ConfigureAwait(false);
@@ -158,9 +182,17 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
         Directory.CreateDirectory(paths.AppsDirectory);
         var destPath = Path.Combine(paths.AppsDirectory, safeName);
 
+        try
+        {
+            File.Move(tempFilePath, destPath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            return Result<ManagedAppEntry>.Failure(WrapperErrors.IoFailure($"Failed to install '{safeName}': {ex.Message}"));
+        }
+
         DeleteSupersededManagedBinaries(toolKey, keepFileName: safeName);
 
-        File.Move(tempFilePath, destPath, overwrite: true);
         return await BuildEntryForSavedFileAsync(toolKey, destPath, ct).ConfigureAwait(false);
     }
 
@@ -206,9 +238,16 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             return Task.FromResult(Result<string>.Failure(WrapperErrors.CliNotFound(idOrFileName)));
         }
 
-        foreach (var target in targets)
+        try
         {
-            File.Delete(target);
+            foreach (var target in targets)
+            {
+                File.Delete(target);
+            }
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(Result<string>.Failure(WrapperErrors.IoFailure($"Failed to uninstall '{idOrFileName}': {ex.Message}")));
         }
 
         return Task.FromResult(Result<string>.Success(Path.GetFileName(targets[0])));
@@ -256,61 +295,49 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
         return null;
     }
 
-    private static async Task<(string? ManagedKey, string FileName)> IdentifyExecutableMetadataAsync(string fullSource, CancellationToken ct)
+    private static (string? ManagedKey, string FileName) IdentifyExecutableMetadata(string fullSource)
     {
         var originalFileName = Path.GetFileName(fullSource);
         string? detectedKey = null;
         string? detectedVersion = null;
 
-        // 1. Probe PE FileVersionInfo metadata first (zero process overhead).
+        // Passive PE FileVersionInfo metadata inspection only (never execute untrusted imported binaries).
         try
         {
             var vi = FileVersionInfo.GetVersionInfo(fullSource);
-            if (!string.IsNullOrWhiteSpace(vi.ProductName))
+            if ((!string.IsNullOrWhiteSpace(vi.ProductName) && vi.ProductName.Contains("Meloberry CLI", StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(vi.InternalName) && vi.InternalName.StartsWith("mby-cli", StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(vi.OriginalFilename) && vi.OriginalFilename.StartsWith("mby-cli", StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(vi.FileDescription) && vi.FileDescription.StartsWith("mby-cli", StringComparison.OrdinalIgnoreCase)))
             {
-                if (vi.ProductName.Contains("Meloberry CLI", StringComparison.OrdinalIgnoreCase))
-                {
-                    detectedKey = "mby";
-                }
-                else if (vi.ProductName.Contains("Meloberry Melomg", StringComparison.OrdinalIgnoreCase) ||
-                         string.Equals(vi.CompanyName, "melomg", StringComparison.OrdinalIgnoreCase))
-                {
-                    detectedKey = "melomg";
-                }
+                detectedKey = "mby";
+            }
+            else if ((!string.IsNullOrWhiteSpace(vi.ProductName) && vi.ProductName.Contains("Meloberry Melomg", StringComparison.OrdinalIgnoreCase)) ||
+                     string.Equals(vi.CompanyName, "melomg", StringComparison.OrdinalIgnoreCase) ||
+                     (!string.IsNullOrWhiteSpace(vi.InternalName) && vi.InternalName.StartsWith("meloberry-melomg", StringComparison.OrdinalIgnoreCase)) ||
+                     (!string.IsNullOrWhiteSpace(vi.OriginalFilename) && vi.OriginalFilename.StartsWith("meloberry-melomg", StringComparison.OrdinalIgnoreCase)))
+            {
+                detectedKey = "melomg";
             }
 
-            if (!string.IsNullOrWhiteSpace(vi.ProductVersion))
+            var rawVer = !string.IsNullOrWhiteSpace(vi.ProductVersion) ? vi.ProductVersion : vi.FileVersion;
+            if (!string.IsNullOrWhiteSpace(rawVer))
             {
-                var plus = vi.ProductVersion.IndexOf('+');
-                var v = plus > 0 ? vi.ProductVersion[..plus] : vi.ProductVersion;
-                if (SemverRegex().IsMatch(v))
+                var plus = rawVer.IndexOf('+');
+                var v = plus > 0 ? rawVer[..plus] : rawVer;
+                var match = SemverRegex().Match(v);
+                if (match.Success)
                 {
-                    detectedVersion = SemverRegex().Match(v).Groups[1].Value;
+                    detectedVersion = match.Groups[1].Value;
                 }
             }
         }
         catch
         {
-            // Ignore unreadable version info.
+            // Ignore unreadable PE version info.
         }
 
-        // 2. Execute `--version` with MBY_AGENT=1 for authoritative tool & version identification
-        //    whenever PE metadata wasn't conclusive (e.g., renamed .exe).
-        if (detectedKey is null || string.IsNullOrWhiteSpace(detectedVersion))
-        {
-            var cliProbe = await TryProbeCliVersionAsync(fullSource, ct).ConfigureAwait(false);
-            if (cliProbe.ToolKey is not null)
-            {
-                detectedKey = cliProbe.ToolKey;
-            }
-
-            if (!string.IsNullOrWhiteSpace(cliProbe.Version))
-            {
-                detectedVersion = cliProbe.Version;
-            }
-        }
-
-        // 3. Fallback filename check (preserves unit test dummy PE binaries).
+        // Fallback filename check.
         detectedKey ??= IsMbyFileName(originalFileName) ? "mby" : IsMelomgFileName(originalFileName) ? "melomg" : null;
 
         if (detectedKey is null)
@@ -332,70 +359,6 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             ? $"mby-cli{verSuffix}.exe"
             : $"meloberry-melomg{verSuffix}.exe";
         return (detectedKey, canonical);
-    }
-
-    private static async Task<(string? ToolKey, string? Version)> TryProbeCliVersionAsync(string exePath, CancellationToken ct)
-    {
-        try
-        {
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = exePath,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-            psi.Environment["MBY_AGENT"] = "1";
-            psi.ArgumentList.Add("--version");
-
-            using var proc = new Process { StartInfo = psi };
-            if (!proc.Start())
-            {
-                return (null, null);
-            }
-
-            var outTask = proc.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-            var errTask = proc.StandardError.ReadToEndAsync(timeoutCts.Token);
-            await proc.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
-            var stdout = await outTask.ConfigureAwait(false);
-            _ = await errTask.ConfigureAwait(false);
-
-            if (proc.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
-            {
-                return (null, null);
-            }
-
-            using var doc = JsonDocument.Parse(stdout);
-            if (!doc.RootElement.TryGetProperty("data", out var data))
-            {
-                return (null, null);
-            }
-
-            string? key = null;
-            if (data.TryGetProperty("executableName", out var exeEl) &&
-                string.Equals(exeEl.GetString(), "mby", StringComparison.OrdinalIgnoreCase))
-            {
-                key = "mby";
-            }
-            else if (data.TryGetProperty("tool", out var toolEl) &&
-                     string.Equals(toolEl.GetString(), "melomg", StringComparison.OrdinalIgnoreCase))
-            {
-                key = "melomg";
-            }
-
-            var ver = data.TryGetProperty("version", out var verEl) ? verEl.GetString() : null;
-            return (key, ver);
-        }
-        catch
-        {
-            return (null, null);
-        }
     }
 
     private async Task<Result<ManagedAppEntry>> BuildEntryForSavedFileAsync(string? toolKey, string destPath, CancellationToken ct)
@@ -429,7 +392,7 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             var matchesGroup = isMby ? IsMbyFileName(name) : IsMelomgFileName(name);
             if (matchesGroup)
             {
-                File.Delete(existing);
+                try { File.Delete(existing); } catch { }
             }
         }
     }
@@ -440,14 +403,14 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
         string displayName,
         string defaultFileName,
         string? installedPath,
-        HashSet<string> workspaceExeNames,
+        string? matchedWsFileName,
         string repoKey,
         string description)
     {
-        var fileName = installedPath is not null ? Path.GetFileName(installedPath) : defaultFileName;
-        var inWorkspace = installedPath is not null
-            ? workspaceExeNames.Contains(fileName)
-            : workspaceExeNames.Any(n => kind == ManagedAppKind.Mby ? IsMbyFileName(n) : IsMelomgFileName(n));
+        var fileName = installedPath is not null
+            ? Path.GetFileName(installedPath)
+            : matchedWsFileName ?? defaultFileName;
+        var inWorkspace = matchedWsFileName is not null;
 
         return new ManagedAppEntry(
             Id: id,
@@ -459,7 +422,8 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             IsInstalled: installedPath is not null,
             IsPresentInWorkspace: inWorkspace,
             RepoKey: repoKey,
-            Description: description);
+            Description: description,
+            WorkspaceFileName: matchedWsFileName);
     }
 
     internal static bool IsMbyFileName(string fileName) =>
@@ -477,14 +441,13 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             return candidatePath;
         }
 
-        var curVer = ParseVersionSafe(ExtractVersion(currentPath));
-        var newVer = ParseVersionSafe(ExtractVersion(candidatePath));
-        if (newVer > curVer)
+        var cmp = SemverComparer.Compare(ExtractVersion(candidatePath), ExtractVersion(currentPath));
+        if (cmp > 0)
         {
             return candidatePath;
         }
 
-        if (newVer == curVer && File.GetLastWriteTimeUtc(candidatePath) > File.GetLastWriteTimeUtc(currentPath))
+        if (cmp == 0 && File.GetLastWriteTimeUtc(candidatePath) > File.GetLastWriteTimeUtc(currentPath))
         {
             return candidatePath;
         }
@@ -492,7 +455,7 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
         return currentPath;
     }
 
-    private static string? ExtractVersion(string fullPath)
+    internal static string? ExtractVersion(string fullPath)
     {
         var match = SemverRegex().Match(Path.GetFileNameWithoutExtension(fullPath));
         if (match.Success)
@@ -503,10 +466,13 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
         try
         {
             var info = FileVersionInfo.GetVersionInfo(fullPath);
-            if (!string.IsNullOrWhiteSpace(info.ProductVersion))
+            var rawVer = !string.IsNullOrWhiteSpace(info.ProductVersion) ? info.ProductVersion : info.FileVersion;
+            if (!string.IsNullOrWhiteSpace(rawVer))
             {
-                var plus = info.ProductVersion.IndexOf('+');
-                return plus > 0 ? info.ProductVersion[..plus] : info.ProductVersion;
+                var plus = rawVer.IndexOf('+');
+                var cleaned = plus > 0 ? rawVer[..plus] : rawVer;
+                var peMatch = SemverRegex().Match(cleaned);
+                return peMatch.Success ? peMatch.Groups[1].Value : cleaned;
             }
         }
         catch
@@ -515,18 +481,6 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
         }
 
         return null;
-    }
-
-    private static Version ParseVersionSafe(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return new Version(0, 0, 0);
-        }
-
-        var dash = raw.IndexOf('-');
-        var core = dash > 0 ? raw[..dash] : raw;
-        return Version.TryParse(core, out var v) ? v : new Version(0, 0, 0);
     }
 
     private static async Task<bool> HasPeHeaderAsync(string path, CancellationToken ct)

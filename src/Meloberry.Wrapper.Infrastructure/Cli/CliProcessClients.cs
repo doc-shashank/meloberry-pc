@@ -10,12 +10,16 @@ namespace Meloberry.Wrapper.Infrastructure.Cli;
 
 internal static class CliProcessRunner
 {
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(120);
+
     public static async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
         string exePath,
         IReadOnlyList<string> args,
         string? workingDir,
-        CancellationToken ct)
+        CancellationToken ct,
+        TimeSpan? timeout = null)
     {
+        var effectiveTimeout = timeout ?? DefaultTimeout;
         var psi = new ProcessStartInfo
         {
             FileName = exePath,
@@ -39,15 +43,47 @@ internal static class CliProcessRunner
         }
 
         using var proc = new Process { StartInfo = psi };
-        if (!proc.Start())
+        try
         {
-            return (-1, string.Empty, $"Failed to start '{exePath}'.");
+            if (!proc.Start())
+            {
+                return (-1, string.Empty, $"Failed to start '{exePath}'.");
+            }
+        }
+        catch (Exception ex)
+        {
+            return (-1, string.Empty, $"Failed to start '{exePath}': {ex.Message}");
         }
 
-        var outTask = proc.StandardOutput.ReadToEndAsync(ct);
-        var errTask = proc.StandardError.ReadToEndAsync(ct);
-        await proc.WaitForExitAsync(ct).ConfigureAwait(false);
-        return (proc.ExitCode, await outTask.ConfigureAwait(false), await errTask.ConfigureAwait(false));
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(effectiveTimeout);
+
+        try
+        {
+            var outTask = proc.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var errTask = proc.StandardError.ReadToEndAsync(timeoutCts.Token);
+            await proc.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+            return (proc.ExitCode, await outTask.ConfigureAwait(false), await errTask.ConfigureAwait(false));
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!proc.HasExited)
+                {
+                    proc.Kill(entireProcessTree: true);
+                }
+            }
+            catch
+            {
+                // Best-effort process tree termination.
+            }
+
+            var reason = ct.IsCancellationRequested
+                ? "CLI command was cancelled."
+                : $"CLI command timed out after {(int)effectiveTimeout.TotalSeconds}s.";
+            return (-1, string.Empty, reason);
+        }
     }
 
     public static string ExtractErrorMessage(string stdout, string stderr)
@@ -255,11 +291,17 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
             using var doc = JsonDocument.Parse(res.StdOut);
             var data = doc.RootElement.GetProperty("data");
             var outDir = GetNullableString(data, "outputDirectory") ?? outputDir;
-            return Result<string>.Success(Path.GetFullPath(outDir));
+            var resolved = !Path.IsPathRooted(outDir) && !string.IsNullOrWhiteSpace(workingDir)
+                ? Path.GetFullPath(outDir, workingDir)
+                : Path.GetFullPath(outDir);
+            return Result<string>.Success(resolved);
         }
         catch
         {
-            return Result<string>.Success(Path.GetFullPath(outputDir));
+            var resolvedFallback = !Path.IsPathRooted(outputDir) && !string.IsNullOrWhiteSpace(workingDir)
+                ? Path.GetFullPath(outputDir, workingDir)
+                : Path.GetFullPath(outputDir);
+            return Result<string>.Success(resolvedFallback);
         }
     }
 

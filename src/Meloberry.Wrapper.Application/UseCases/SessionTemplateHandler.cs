@@ -42,14 +42,11 @@ public sealed class SessionTemplateHandler(
             ? draft.WorkingDirectory!
             : settings.ActiveWorkspace?.WorkspacePath;
 
-        if (string.IsNullOrWhiteSpace(wsPath))
+        if (!PathNormalization.TryNormalizeDirectoryPath(wsPath, out var fullWs))
         {
             return Result<GenerateTemplateResult>.Failure(
                 WrapperErrors.InvalidWorkspaceDir("Select an Active Workspace before generating a draft template."));
         }
-
-        var fullWs = Path.GetFullPath(wsPath);
-        Directory.CreateDirectory(fullWs);
 
         var mbyPath = await managedApps.ResolveExecutableAsync("mby", fullWs, ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(mbyPath))
@@ -64,21 +61,35 @@ public sealed class SessionTemplateHandler(
         }
 
         var scaffold = scaffoldRes.Value;
-        if (scaffold.RequiresPlaceholderImage)
-        {
-            var assetsDir = Path.Combine(fullWs, "assets");
-            Directory.CreateDirectory(assetsDir);
-            var placeholderPath = Path.Combine(assetsDir, "placeholder.png");
-            if (!File.Exists(placeholderPath))
-            {
-                await File.WriteAllBytesAsync(placeholderPath, PlaceholderPngBytes, ct).ConfigureAwait(false);
-            }
-        }
-
         var jsonPath = Path.Combine(fullWs, scaffold.SuggestedFileName);
-        var tmpJson = jsonPath + ".tmp";
-        await File.WriteAllTextAsync(tmpJson, scaffold.RawJson, ct).ConfigureAwait(false);
-        File.Move(tmpJson, jsonPath, overwrite: true);
+        string? tmpJson = null;
+        try
+        {
+            Directory.CreateDirectory(fullWs);
+            if (scaffold.RequiresPlaceholderImage)
+            {
+                var assetsDir = Path.Combine(fullWs, "assets");
+                Directory.CreateDirectory(assetsDir);
+                var placeholderPath = Path.Combine(assetsDir, "placeholder.png");
+                if (!File.Exists(placeholderPath))
+                {
+                    await File.WriteAllBytesAsync(placeholderPath, PlaceholderPngBytes, ct).ConfigureAwait(false);
+                }
+            }
+
+            tmpJson = $"{jsonPath}.{Guid.NewGuid():N}.tmp";
+            await File.WriteAllTextAsync(tmpJson, scaffold.RawJson, ct).ConfigureAwait(false);
+            File.Move(tmpJson, jsonPath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            if (tmpJson is not null && File.Exists(tmpJson))
+            {
+                try { File.Delete(tmpJson); } catch { }
+            }
+
+            return Result<GenerateTemplateResult>.Failure(WrapperErrors.IoFailure($"Failed to write template files: {ex.Message}"));
+        }
 
         var applyRes = await mbyClient.ApplySpecJsonAsync(mbyPath, jsonPath, fullWs, ct).ConfigureAwait(false);
         if (applyRes.IsFailure)

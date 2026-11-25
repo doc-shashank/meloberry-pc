@@ -40,3 +40,4 @@ Name: "{autodesktop}\Meloberry PC"; Filename: "{app}\mby-pc.exe"; Tasks: desktop
 
 [Run]
 Filename: "{app}\mby-pc.exe"; Description: "{cm:LaunchProgram,Meloberry PC}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\mby-pc.exe"; Flags: nowait skipifnotsilent

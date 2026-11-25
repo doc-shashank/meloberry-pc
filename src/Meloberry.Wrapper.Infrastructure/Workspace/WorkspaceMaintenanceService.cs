@@ -1,8 +1,8 @@
+using System.Security.Cryptography;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
-using Meloberry.Wrapper.Infrastructure.GitHub;
 
 namespace Meloberry.Wrapper.Infrastructure.Workspace;
 
@@ -88,45 +88,51 @@ public sealed class WorkspaceMaintenanceService(
         var fullRoot = Path.TrimEndingDirectorySeparator(plan.WorkspacePath) + Path.DirectorySeparatorChar;
         var removed = new List<string>();
 
-        foreach (var rel in plan.ExecutablesToRemove)
+        try
         {
-            var candidate = Path.GetFullPath(Path.Combine(plan.WorkspacePath, rel.Replace('/', Path.DirectorySeparatorChar)));
-            if (!candidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+            foreach (var rel in plan.ExecutablesToRemove)
             {
-                return Result<WorkspaceResetResult>.Failure(WrapperErrors.InvalidPath(candidate));
+                var candidate = Path.GetFullPath(Path.Combine(plan.WorkspacePath, rel.Replace('/', Path.DirectorySeparatorChar)));
+                if (!candidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Result<WorkspaceResetResult>.Failure(WrapperErrors.InvalidPath(candidate));
+                }
+
+                if (File.Exists(candidate))
+                {
+                    File.Delete(candidate);
+                    removed.Add(rel);
+                }
             }
 
-            if (File.Exists(candidate))
+            var removedAgents = false;
+            if (!string.IsNullOrWhiteSpace(plan.AgentsMdToRemove))
             {
-                File.Delete(candidate);
-                removed.Add(rel);
+                var agentsTarget = Path.GetFullPath(Path.Combine(plan.WorkspacePath, "AGENTS.md"));
+                if (agentsTarget.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(agentsTarget))
+                {
+                    File.Delete(agentsTarget);
+                    removedAgents = true;
+                }
             }
+
+            return Result<WorkspaceResetResult>.Success(new WorkspaceResetResult(plan.WorkspacePath, removed, removedAgents));
         }
-
-        var removedAgents = false;
-        if (!string.IsNullOrWhiteSpace(plan.AgentsMdToRemove))
+        catch (Exception ex)
         {
-            var agentsTarget = Path.GetFullPath(Path.Combine(plan.WorkspacePath, "AGENTS.md"));
-            if (agentsTarget.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(agentsTarget))
-            {
-                File.Delete(agentsTarget);
-                removedAgents = true;
-            }
+            return Result<WorkspaceResetResult>.Failure(WrapperErrors.IoFailure($"Reset failed: {ex.Message}"));
         }
-
-        return Result<WorkspaceResetResult>.Success(new WorkspaceResetResult(plan.WorkspacePath, removed, removedAgents));
     }
 
     public async Task<Result<IReadOnlyList<OutdatedWorkspaceTool>>> DetectOutdatedToolsAsync(
         string workspacePath,
         CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(workspacePath))
+        if (!PathNormalization.TryNormalizeDirectoryPath(workspacePath, out var fullWs))
         {
             return Result<IReadOnlyList<OutdatedWorkspaceTool>>.Failure(WrapperErrors.InvalidWorkspaceDir(workspacePath));
         }
 
-        var fullWs = Path.GetFullPath(workspacePath.Trim());
         if (!Directory.Exists(fullWs))
         {
             return Result<IReadOnlyList<OutdatedWorkspaceTool>>.Success([]);
@@ -144,8 +150,13 @@ public sealed class WorkspaceMaintenanceService(
 
             if (latestMby is not null && ManagedAppsStore.IsMbyFileName(name))
             {
-                var wsVer = GitHubHttpClientHelper.ExtractVersionFromText(name) ?? "0.0.0";
-                if (GitHubHttpClientHelper.CompareSemver(latestMby.Version, wsVer) > 0)
+                if (latestMby.FullPath is not null && await AreFilesIdenticalAsync(file, latestMby.FullPath, ct).ConfigureAwait(false))
+                {
+                    continue;
+                }
+
+                var wsVer = ManagedAppsStore.ExtractVersion(file) ?? "0.0.0";
+                if (SemverComparer.Compare(latestMby.Version, wsVer) > 0)
                 {
                     outdated.Add(new OutdatedWorkspaceTool(
                         ToolKey: "mby",
@@ -160,8 +171,13 @@ public sealed class WorkspaceMaintenanceService(
             }
             else if (latestMelomg is not null && ManagedAppsStore.IsMelomgFileName(name))
             {
-                var wsVer = GitHubHttpClientHelper.ExtractVersionFromText(name) ?? "0.0.0";
-                if (GitHubHttpClientHelper.CompareSemver(latestMelomg.Version, wsVer) > 0)
+                if (latestMelomg.FullPath is not null && await AreFilesIdenticalAsync(file, latestMelomg.FullPath, ct).ConfigureAwait(false))
+                {
+                    continue;
+                }
+
+                var wsVer = ManagedAppsStore.ExtractVersion(file) ?? "0.0.0";
+                if (SemverComparer.Compare(latestMelomg.Version, wsVer) > 0)
                 {
                     outdated.Add(new OutdatedWorkspaceTool(
                         ToolKey: "melomg",
@@ -189,50 +205,103 @@ public sealed class WorkspaceMaintenanceService(
             return Result<WorkspaceToolUpdateResult>.Failure(detectRes.Error!);
         }
 
-        var fullWs = Path.GetFullPath(workspacePath.Trim());
-        var fullRoot = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
+        if (!PathNormalization.TryNormalizeDirectoryPath(workspacePath, out var fullWs))
+        {
+            return Result<WorkspaceToolUpdateResult>.Failure(WrapperErrors.InvalidWorkspaceDir(workspacePath));
+        }
+
+        var fullRoot = fullWs + Path.DirectorySeparatorChar;
         var apps = await appsStore.ScanAppsAsync(null, ct).ConfigureAwait(false);
 
         var removed = new List<string>();
-        var toolKeysToCopy = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var item in detectRes.Value)
-        {
-            var fullTarget = Path.GetFullPath(item.WorkspaceFullPath);
-            if (!fullTarget.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
-            {
-                return Result<WorkspaceToolUpdateResult>.Failure(WrapperErrors.InvalidPath(fullTarget));
-            }
-
-            if (File.Exists(fullTarget))
-            {
-                File.Delete(fullTarget);
-                removed.Add(item.WorkspaceRelativePath);
-            }
-
-            toolKeysToCopy.Add(item.ToolKey);
-        }
-
         var copiedNew = new List<string>();
-        foreach (var key in toolKeysToCopy)
+        var keptPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var toolKeysToCopy = detectRes.Value.Select(i => i.ToolKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        try
         {
-            var kind = string.Equals(key, "melomg", StringComparison.OrdinalIgnoreCase)
-                ? ManagedAppKind.Melomg
-                : ManagedAppKind.Mby;
-            var latest = apps.FirstOrDefault(a => a.Kind == kind && a.IsInstalled && !string.IsNullOrWhiteSpace(a.FullPath));
-            if (latest?.FullPath is null || !File.Exists(latest.FullPath))
+            // Copy latest binaries FIRST so an I/O failure never leaves the workspace without tools.
+            foreach (var key in toolKeysToCopy)
             {
-                continue;
+                var kind = string.Equals(key, "melomg", StringComparison.OrdinalIgnoreCase)
+                    ? ManagedAppKind.Melomg
+                    : ManagedAppKind.Mby;
+                var latest = apps.FirstOrDefault(a => a.Kind == kind && a.IsInstalled && !string.IsNullOrWhiteSpace(a.FullPath));
+                if (latest?.FullPath is null || !File.Exists(latest.FullPath))
+                {
+                    continue;
+                }
+
+                var destPath = Path.GetFullPath(Path.Combine(fullWs, latest.FileName));
+                var tmpPath = $"{destPath}.{Guid.NewGuid():N}.mbytmp";
+                try
+                {
+                    File.Copy(latest.FullPath, tmpPath, overwrite: true);
+                    File.Move(tmpPath, destPath, overwrite: true);
+                }
+                catch
+                {
+                    if (File.Exists(tmpPath))
+                    {
+                        try { File.Delete(tmpPath); } catch { }
+                    }
+                    throw;
+                }
+
+                keptPaths.Add(destPath);
+                copiedNew.Add(latest.FileName);
             }
 
-            var destPath = Path.Combine(fullWs, latest.FileName);
-            var tmpPath = destPath + ".mbytmp";
-            File.Copy(latest.FullPath, tmpPath, overwrite: true);
-            File.Move(tmpPath, destPath, overwrite: true);
-            copiedNew.Add(latest.FileName);
-        }
+            foreach (var item in detectRes.Value)
+            {
+                var fullTarget = Path.GetFullPath(item.WorkspaceFullPath);
+                if (!fullTarget.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Result<WorkspaceToolUpdateResult>.Failure(WrapperErrors.InvalidPath(fullTarget));
+                }
 
-        return Result<WorkspaceToolUpdateResult>.Success(new WorkspaceToolUpdateResult(fullWs, removed, copiedNew));
+                if (keptPaths.Contains(fullTarget))
+                {
+                    removed.Add(item.WorkspaceRelativePath);
+                    continue;
+                }
+
+                if (File.Exists(fullTarget))
+                {
+                    File.Delete(fullTarget);
+                    removed.Add(item.WorkspaceRelativePath);
+                }
+            }
+
+            return Result<WorkspaceToolUpdateResult>.Success(new WorkspaceToolUpdateResult(fullWs, removed, copiedNew));
+        }
+        catch (Exception ex)
+        {
+            return Result<WorkspaceToolUpdateResult>.Failure(WrapperErrors.IoFailure($"Failed to update workspace tools: {ex.Message}"));
+        }
+    }
+
+    private static async Task<bool> AreFilesIdenticalAsync(string fileA, string fileB, CancellationToken ct)
+    {
+        try
+        {
+            var infoA = new FileInfo(fileA);
+            var infoB = new FileInfo(fileB);
+            if (!infoA.Exists || !infoB.Exists || infoA.Length != infoB.Length)
+            {
+                return false;
+            }
+
+            await using var streamA = File.OpenRead(fileA);
+            await using var streamB = File.OpenRead(fileB);
+            var hashA = await SHA256.HashDataAsync(streamA, ct).ConfigureAwait(false);
+            var hashB = await SHA256.HashDataAsync(streamB, ct).ConfigureAwait(false);
+            return hashA.AsSpan().SequenceEqual(hashB);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static IEnumerable<string> EnumerateWorkspaceExes(string workspaceRoot)

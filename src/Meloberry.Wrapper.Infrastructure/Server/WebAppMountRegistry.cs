@@ -15,12 +15,11 @@ public sealed class WebAppMountRegistry : IWebAppMountRegistry
 
     public Result<string> Mount(string webAppDir)
     {
-        if (string.IsNullOrWhiteSpace(webAppDir) || !Directory.Exists(webAppDir))
+        if (!PathNormalization.TryNormalizeDirectoryPath(webAppDir, out var full) || !Directory.Exists(full))
         {
             return Result<string>.Failure(WrapperErrors.InvalidWebAppDir(webAppDir));
         }
 
-        var full = Path.GetFullPath(webAppDir);
         foreach (var kv in _slots)
         {
             if (string.Equals(kv.Value, full, StringComparison.OrdinalIgnoreCase))

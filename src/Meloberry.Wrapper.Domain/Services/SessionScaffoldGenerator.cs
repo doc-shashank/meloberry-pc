@@ -116,6 +116,7 @@ public static class SessionScaffoldGenerator
         var sequence = BuildInstanceSequence(comp);
         var blocks = new List<object>();
         var links = new List<object>();
+        var linkIds = new List<string>();
         var selLookup = comp.Selections.Where(s => s.Enabled).ToDictionary(s => s.Topic, StringComparer.OrdinalIgnoreCase);
 
         foreach (var inst in sequence)
@@ -127,21 +128,13 @@ public static class SessionScaffoldGenerator
             if (string.Equals(inst.Topic, SpecCatalogDefaults.VirtualLinkTopicName, StringComparison.OrdinalIgnoreCase))
             {
                 var cardId = $"card-{links.Count + 1}";
+                linkIds.Add(cardId);
                 links.Add(new Dictionary<string, object?>
                 {
                     ["id"] = cardId,
                     ["title"] = $"Reference Card {links.Count + 1}",
                     ["text"] = "Hover card explanation placeholder."
                 });
-                if (blocks.Count == 0)
-                {
-                    blocks.Add(new Dictionary<string, object?>
-                    {
-                        ["kind"] = "text",
-                        ["text"] = $"Hover over [Reference {links.Count}](mby://card/{cardId}) for details."
-                    });
-                }
-
                 continue;
             }
 
@@ -202,6 +195,26 @@ public static class SessionScaffoldGenerator
                 ["kind"] = "text",
                 ["text"] = "## Draft Section\n\nReplace with study prose."
             });
+        }
+
+        if (linkIds.Count > 0)
+        {
+            var refsLine = string.Join(", ", linkIds.Select((id, i) => $"[Reference {i + 1}](mby://card/{id})"));
+            var firstTextBlock = blocks
+                .OfType<Dictionary<string, object?>>()
+                .FirstOrDefault(b => b.TryGetValue("kind", out var k) && string.Equals(k as string, "text", StringComparison.OrdinalIgnoreCase));
+            if (firstTextBlock is not null && firstTextBlock.TryGetValue("text", out var existingObj) && existingObj is string existingText)
+            {
+                firstTextBlock["text"] = $"{existingText}\n\nReferences: {refsLine}.";
+            }
+            else
+            {
+                blocks.Add(new Dictionary<string, object?>
+                {
+                    ["kind"] = "text",
+                    ["text"] = $"Hover over {refsLine} for details."
+                });
+            }
         }
 
         var article = new Dictionary<string, object?>
@@ -268,10 +281,9 @@ public static class SessionScaffoldGenerator
                     break;
 
                 case "assertion-reason":
-                    var scheme = modes.Contains("5opt", StringComparer.OrdinalIgnoreCase) ? "5opt" : "4opt";
-                    var answer = modes.Contains("both-false", StringComparer.OrdinalIgnoreCase) && scheme == "5opt"
-                        ? "both-false"
-                        : "both-explain";
+                    var hasBothFalse = modes.Contains("both-false", StringComparer.OrdinalIgnoreCase);
+                    var scheme = hasBothFalse || modes.Contains("5opt", StringComparer.OrdinalIgnoreCase) ? "5opt" : "4opt";
+                    var answer = hasBothFalse ? "both-false" : "both-explain";
                     questions.Add(new Dictionary<string, object?>
                     {
                         ["type"] = "assertion-reason",
@@ -417,7 +429,29 @@ public static class SessionScaffoldGenerator
     {
         if (comp.OrderedItems is { Count: > 0 })
         {
-            return comp.OrderedItems.ToList();
+            var allowedTopics = comp.Selections
+                .Where(s => s.Enabled)
+                .Select(s => s.Topic)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var filtered = new List<OrderedSpecInstance>();
+            var counters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var inst in comp.OrderedItems)
+            {
+                if (!allowedTopics.Contains(inst.Topic))
+                {
+                    continue;
+                }
+
+                var nextNum = counters.TryGetValue(inst.Topic, out var cur) ? cur + 1 : 1;
+                counters[inst.Topic] = nextNum;
+                filtered.Add(inst with { InstanceNumber = nextNum });
+            }
+
+            if (filtered.Count > 0 || allowedTopics.Count == 0)
+            {
+                return filtered;
+            }
         }
 
         var list = new List<OrderedSpecInstance>();

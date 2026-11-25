@@ -44,10 +44,11 @@ public sealed class JsonSettingsStore(IWrapperDataPaths paths) : ISettingsStore
     public async Task<Result> SaveAsync(WrapperSettings settings, CancellationToken ct = default)
     {
         await _lock.WaitAsync(ct).ConfigureAwait(false);
+        string? tmp = null;
         try
         {
             Directory.CreateDirectory(paths.BaseDirectory);
-            var tmp = paths.SettingsFilePath + ".tmp";
+            tmp = $"{paths.SettingsFilePath}.{Guid.NewGuid():N}.tmp";
             var json = JsonSerializer.Serialize(settings, JsonOptions);
             await File.WriteAllTextAsync(tmp, json, ct).ConfigureAwait(false);
             File.Move(tmp, paths.SettingsFilePath, overwrite: true);
@@ -55,6 +56,11 @@ public sealed class JsonSettingsStore(IWrapperDataPaths paths) : ISettingsStore
         }
         catch (Exception ex)
         {
+            if (tmp is not null && File.Exists(tmp))
+            {
+                try { File.Delete(tmp); } catch { }
+            }
+
             return Result.Failure(WrapperErrors.IoFailure($"Failed to save wrapper settings: {ex.Message}"));
         }
         finally
@@ -85,19 +91,28 @@ public sealed class WebAppAnalysisStore : IWebAppAnalysisStore
             Directory.CreateDirectory(reportsDir);
             var stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff");
             var jsonPath = Path.Combine(reportsDir, $"{stamp}.analysis.json");
+            var mdPath = Path.Combine(reportsDir, $"{stamp}.analysis.md");
+            if (File.Exists(jsonPath) || File.Exists(mdPath))
+            {
+                var uniqueStamp = $"{stamp}_{Guid.NewGuid().ToString("N")[..6]}";
+                jsonPath = Path.Combine(reportsDir, $"{uniqueStamp}.analysis.json");
+                mdPath = Path.Combine(reportsDir, $"{uniqueStamp}.analysis.md");
+            }
 
+            string? savedPath = null;
             if (!string.IsNullOrWhiteSpace(reportJson))
             {
                 await File.WriteAllTextAsync(jsonPath, reportJson, ct).ConfigureAwait(false);
+                savedPath = jsonPath;
             }
 
             if (!string.IsNullOrWhiteSpace(markdown))
             {
-                var mdPath = Path.Combine(reportsDir, $"{stamp}.analysis.md");
                 await File.WriteAllTextAsync(mdPath, markdown, ct).ConfigureAwait(false);
+                savedPath ??= mdPath;
             }
 
-            return Result<string>.Success(jsonPath);
+            return Result<string>.Success(savedPath!);
         }
         catch (Exception ex)
         {
@@ -110,9 +125,25 @@ public sealed class WebAppAnalysisStore : IWebAppAnalysisStore
         try
         {
             var reportsDir = Path.Combine(webAppDir, "reports");
-            return Directory.Exists(reportsDir)
-                ? Directory.GetFiles(reportsDir, "*.analysis.json", SearchOption.TopDirectoryOnly).Length
-                : 0;
+            if (!Directory.Exists(reportsDir))
+            {
+                return 0;
+            }
+
+            var stems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in Directory.EnumerateFiles(reportsDir, "*.analysis.json", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileName(file);
+                stems.Add(name[..^".analysis.json".Length]);
+            }
+
+            foreach (var file in Directory.EnumerateFiles(reportsDir, "*.analysis.md", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileName(file);
+                stems.Add(name[..^".analysis.md".Length]);
+            }
+
+            return stems.Count;
         }
         catch
         {

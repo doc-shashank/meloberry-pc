@@ -19,7 +19,8 @@ public sealed record ManagedAppEntry(
     bool IsInstalled,
     bool IsPresentInWorkspace,
     string? RepoKey = null,
-    string? Description = null);
+    string? Description = null,
+    string? WorkspaceFileName = null);
 
 /// <summary>Type of user-staged source asset to copy into the Active Workspace.</summary>
 public enum StagedCopyKind

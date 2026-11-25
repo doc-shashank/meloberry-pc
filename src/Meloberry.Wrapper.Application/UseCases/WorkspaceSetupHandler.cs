@@ -13,47 +13,47 @@ public sealed class WorkspaceSetupHandler(
 {
     public async Task<Result<ActiveWorkspaceState>> SelectWorkspaceAsync(string workspacePath, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(workspacePath))
+        if (!PathNormalization.TryNormalizeDirectoryPath(workspacePath, out var fullPath))
         {
             return Result<ActiveWorkspaceState>.Failure(WrapperErrors.InvalidWorkspaceDir(workspacePath));
         }
 
-        string fullPath;
-        try
-        {
-            fullPath = Path.GetFullPath(workspacePath.Trim());
-        }
-        catch (Exception ex)
-        {
-            return Result<ActiveWorkspaceState>.Failure(WrapperErrors.InvalidWorkspaceDir($"{workspacePath} ({ex.Message})"));
-        }
-
         var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
         var recent = (settings.RecentWorkspaces ?? [])
-            .Where(p => !string.Equals(p, fullPath, StringComparison.OrdinalIgnoreCase))
+            .Where(p => !PathNormalization.AreSameDirectory(p, fullPath))
             .Prepend(fullPath)
             .Take(10)
             .ToList();
 
-        var existingAppsInWs = await ScanWorkspaceExecutablesAsync(fullPath, ct).ConfigureAwait(false);
+        var isSameWorkspace = PathNormalization.AreSameDirectory(settings.ActiveWorkspace?.WorkspacePath, fullPath);
+        var scanned = await appsStore.ScanAppsAsync(fullPath, ct).ConfigureAwait(false);
+        var existingAppsInWs = scanned
+            .Where(a => a.IsPresentInWorkspace)
+            .Select(a => a.WorkspaceFileName ?? a.FileName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var installedNames = scanned
+            .Where(a => a.IsInstalled)
+            .Select(a => a.FileName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var installedInWs = scanned
+            .Where(a => a.IsInstalled && a.IsPresentInWorkspace)
+            .Select(a => a.FileName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var selectedApps = isSameWorkspace && settings.ActiveWorkspace?.SelectedAppFileNames is { } prevSelected
+            ? prevSelected.Where(n => installedNames.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            : installedInWs;
+
         var state = new ActiveWorkspaceState(
             WorkspacePath: fullPath,
-            IsInitialized: settings.ActiveWorkspace is not null
-                && string.Equals(settings.ActiveWorkspace.WorkspacePath, fullPath, StringComparison.OrdinalIgnoreCase)
-                && settings.ActiveWorkspace.IsInitialized,
-            LastInitializedUtc: string.Equals(settings.ActiveWorkspace?.WorkspacePath, fullPath, StringComparison.OrdinalIgnoreCase)
-                ? settings.ActiveWorkspace?.LastInitializedUtc
-                : null,
-            AgentsMdExportedUtc: string.Equals(settings.ActiveWorkspace?.WorkspacePath, fullPath, StringComparison.OrdinalIgnoreCase)
-                ? settings.ActiveWorkspace?.AgentsMdExportedUtc
-                : null,
-            SelectedAppFileNames: settings.ActiveWorkspace?.SelectedAppFileNames ?? existingAppsInWs,
-            StagedItems: string.Equals(settings.ActiveWorkspace?.WorkspacePath, fullPath, StringComparison.OrdinalIgnoreCase)
-                ? settings.ActiveWorkspace?.StagedItems
-                : [],
-            LastCopiedRelativePaths: string.Equals(settings.ActiveWorkspace?.WorkspacePath, fullPath, StringComparison.OrdinalIgnoreCase)
-                ? settings.ActiveWorkspace?.LastCopiedRelativePaths
-                : [],
+            IsInitialized: isSameWorkspace && settings.ActiveWorkspace!.IsInitialized,
+            LastInitializedUtc: isSameWorkspace ? settings.ActiveWorkspace?.LastInitializedUtc : null,
+            AgentsMdExportedUtc: isSameWorkspace ? settings.ActiveWorkspace?.AgentsMdExportedUtc : null,
+            SelectedAppFileNames: selectedApps,
+            StagedItems: isSameWorkspace ? settings.ActiveWorkspace?.StagedItems : [],
+            LastCopiedRelativePaths: isSameWorkspace ? settings.ActiveWorkspace?.LastCopiedRelativePaths : [],
             WorkspaceApps: existingAppsInWs);
 
         var updated = settings with
@@ -97,25 +97,35 @@ public sealed class WorkspaceSetupHandler(
 
         var result = initRes.Value;
         var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
-        var fullPath = Path.GetFullPath(result.WorkspacePath);
+        var fullPath = PathNormalization.NormalizeDirectoryPath(result.WorkspacePath);
         var recent = (settings.RecentWorkspaces ?? [])
-            .Where(p => !string.Equals(p, fullPath, StringComparison.OrdinalIgnoreCase))
+            .Where(p => !PathNormalization.AreSameDirectory(p, fullPath))
             .Prepend(fullPath)
             .Take(10)
             .ToList();
 
         var existingAgentsMd = File.Exists(Path.Combine(fullPath, "AGENTS.md"));
-        var prevAgentsUtc = string.Equals(settings.ActiveWorkspace?.WorkspacePath, fullPath, StringComparison.OrdinalIgnoreCase) && existingAgentsMd
+        var prevAgentsUtc = PathNormalization.AreSameDirectory(settings.ActiveWorkspace?.WorkspacePath, fullPath) && existingAgentsMd
             ? settings.ActiveWorkspace?.AgentsMdExportedUtc
             : null;
 
-        var workspaceApps = await ScanWorkspaceExecutablesAsync(fullPath, ct).ConfigureAwait(false);
+        var scanned = await appsStore.ScanAppsAsync(fullPath, ct).ConfigureAwait(false);
+        var workspaceApps = scanned
+            .Where(a => a.IsPresentInWorkspace)
+            .Select(a => a.WorkspaceFileName ?? a.FileName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var installedNames = scanned
+            .Where(a => a.IsInstalled)
+            .Select(a => a.FileName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         var state = new ActiveWorkspaceState(
             WorkspacePath: fullPath,
             IsInitialized: true,
             LastInitializedUtc: DateTimeOffset.UtcNow,
             AgentsMdExportedUtc: prevAgentsUtc,
-            SelectedAppFileNames: selectedAppFileNames.ToList(),
+            SelectedAppFileNames: selectedAppFileNames.Where(n => installedNames.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
             StagedItems: stagedItems.ToList(),
             LastCopiedRelativePaths: result.CopiedRelativePaths,
             WorkspaceApps: workspaceApps);
@@ -129,11 +139,5 @@ public sealed class WorkspaceSetupHandler(
         return saveRes.IsSuccess
             ? Result<(WorkspaceInitResult, ActiveWorkspaceState)>.Success((result, state))
             : Result<(WorkspaceInitResult, ActiveWorkspaceState)>.Failure(saveRes.Error!);
-    }
-
-    private async Task<IReadOnlyList<string>> ScanWorkspaceExecutablesAsync(string workspacePath, CancellationToken ct)
-    {
-        var scanned = await appsStore.ScanAppsAsync(workspacePath, ct).ConfigureAwait(false);
-        return scanned.Where(a => a.IsPresentInWorkspace).Select(a => a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.Versioning;
 using Meloberry.Wrapper.Application;
@@ -29,62 +30,101 @@ internal static class Program
             return 0;
         }
 
-        using var instanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName);
+        var instanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
+        if (!createdNew)
+        {
+            instanceMutex.Dispose();
+            var existing = Win32Native.FindWindowW(Win32WindowHost.WindowClassName, null);
+            if (existing != IntPtr.Zero)
+            {
+                Win32Native.ShowWindow(existing, Win32Native.SW_RESTORE);
+                Win32Native.SetForegroundWindow(existing);
+            }
 
-        var windowHost = new Win32WindowHost();
-        SynchronizationContext.SetSynchronizationContext(new Win32SynchronizationContext(windowHost));
+            return 0;
+        }
 
-        var services = new ServiceCollection();
-        services.AddSingleton(windowHost);
-        services.AddSingleton<IAppShutdownCoordinator>(windowHost);
-        services.AddSingleton<INativeDialogService, NativeFileDialogs>();
-        services.AddSingleton<IExternalUrlLauncher, ExternalUrlLauncher>();
-        services.AddSingleton<WebView2Host>();
-        services.AddWrapperApplication(Assembly.GetExecutingAssembly());
-        services.AddWrapperInfrastructure();
-
-        using var provider = services.BuildServiceProvider();
-        var metadata = provider.GetRequiredService<IWrapperMetadataProvider>().GetMetadata();
-        var server = provider.GetRequiredService<LocalHttpWrapperServer>();
-        var webViewHost = provider.GetRequiredService<WebView2Host>();
-
+        (string FileName, string Arguments)? pendingLaunch = null;
         try
         {
-            server.Start();
-            windowHost.Create($"{metadata.ProductName} v{metadata.Version}");
-            windowHost.Show();
+            var windowHost = new Win32WindowHost();
+            SynchronizationContext.SetSynchronizationContext(new Win32SynchronizationContext(windowHost));
 
-            windowHost.EnqueueCallback(async () =>
+            var services = new ServiceCollection();
+            services.AddSingleton(windowHost);
+            services.AddSingleton<IAppShutdownCoordinator>(windowHost);
+            services.AddSingleton<INativeDialogService, NativeFileDialogs>();
+            services.AddSingleton<IExternalUrlLauncher, ExternalUrlLauncher>();
+            services.AddSingleton<WebView2Host>();
+            services.AddWrapperApplication(Assembly.GetExecutingAssembly());
+            services.AddWrapperInfrastructure();
+
+            using var provider = services.BuildServiceProvider();
+            var metadata = provider.GetRequiredService<IWrapperMetadataProvider>().GetMetadata();
+            var server = provider.GetRequiredService<LocalHttpWrapperServer>();
+            var webViewHost = provider.GetRequiredService<WebView2Host>();
+
+            try
             {
-                try
-                {
-                    await webViewHost.InitializeAsync(server.BaseUrl);
-                }
-                catch (WebView2RuntimeNotFoundException)
-                {
-                    Win32Native.MessageBoxW(
-                        windowHost.Handle,
-                        "Microsoft Edge WebView2 Runtime is required to run Meloberry PC.\n\nPlease install Evergreen WebView2 Runtime from developer.microsoft.com/en-us/microsoft-edge/webview2/ and relaunch.",
-                        "Meloberry PC — Missing WebView2 Runtime",
-                        Win32Native.MB_OK | Win32Native.MB_ICONERROR);
-                    windowHost.RequestShutdown();
-                }
-                catch (Exception ex)
-                {
-                    Win32Native.MessageBoxW(
-                        windowHost.Handle,
-                        $"Failed to initialize Meloberry PC:\n\n{ex.Message}",
-                        "Meloberry PC Error",
-                        Win32Native.MB_OK | Win32Native.MB_ICONERROR);
-                    windowHost.RequestShutdown();
-                }
-            });
+                server.Start();
+                windowHost.Create($"{metadata.ProductName} v{metadata.Version}");
+                windowHost.Show();
 
-            windowHost.RunMessageLoop();
+                windowHost.EnqueueCallback(async () =>
+                {
+                    try
+                    {
+                        await webViewHost.InitializeAsync(server.BaseUrl, server.ViewerBaseUrl);
+                    }
+                    catch (WebView2RuntimeNotFoundException)
+                    {
+                        Win32Native.MessageBoxW(
+                            windowHost.Handle,
+                            "Microsoft Edge WebView2 Runtime is required to run Meloberry PC.\n\nPlease install Evergreen WebView2 Runtime from developer.microsoft.com/en-us/microsoft-edge/webview2/ and relaunch.",
+                            "Meloberry PC — Missing WebView2 Runtime",
+                            Win32Native.MB_OK | Win32Native.MB_ICONERROR);
+                        windowHost.RequestShutdown();
+                    }
+                    catch (Exception ex)
+                    {
+                        Win32Native.MessageBoxW(
+                            windowHost.Handle,
+                            $"Failed to initialize Meloberry PC:\n\n{ex.Message}",
+                            "Meloberry PC Error",
+                            Win32Native.MB_OK | Win32Native.MB_ICONERROR);
+                        windowHost.RequestShutdown();
+                    }
+                });
+
+                windowHost.RunMessageLoop();
+            }
+            finally
+            {
+                webViewHost.Dispose();
+                pendingLaunch = windowHost.PendingPostShutdownLaunch;
+            }
         }
         finally
         {
-            webViewHost.Dispose();
+            try { instanceMutex.ReleaseMutex(); } catch { }
+            instanceMutex.Dispose();
+        }
+
+        if (pendingLaunch is { } launch && File.Exists(launch.FileName))
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = Path.GetFullPath(launch.FileName),
+                    Arguments = launch.Arguments,
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+                // Best-effort installer handoff after shutdown.
+            }
         }
 
         return 0;
