@@ -37,7 +37,11 @@ internal static class Program
             var existing = Win32Native.FindWindowW(Win32WindowHost.WindowClassName, null);
             if (existing != IntPtr.Zero)
             {
-                Win32Native.ShowWindow(existing, Win32Native.SW_RESTORE);
+                if (Win32Native.IsIconic(existing))
+                {
+                    Win32Native.ShowWindow(existing, Win32Native.SW_RESTORE);
+                }
+
                 Win32Native.SetForegroundWindow(existing);
             }
 

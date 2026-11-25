@@ -84,7 +84,6 @@ public interface IGitHubSelfUpdater
         AppUpdateCheckResult check,
         Action<DownloadProgressSnapshot> progressCallback,
         CancellationToken ct = default);
-    Result LaunchInstallerSilent(string installerPath);
 }
 
 /// <summary>Coordinates graceful Win32 app termination (used during Inno self-update).</summary>

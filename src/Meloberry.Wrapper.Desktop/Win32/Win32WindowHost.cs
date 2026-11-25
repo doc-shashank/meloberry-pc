@@ -251,8 +251,13 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
                 if (wParam != IntPtr.Zero && lParam != IntPtr.Zero)
                 {
                     var nc = Marshal.PtrToStructure<Win32Native.NCCALCSIZE_PARAMS>(lParam);
-                    var frameX = Win32Native.GetSystemMetrics(Win32Native.SM_CXFRAME) + Win32Native.GetSystemMetrics(Win32Native.SM_CXPADDEDBORDER);
-                    var frameY = Win32Native.GetSystemMetrics(Win32Native.SM_CYFRAME) + Win32Native.GetSystemMetrics(Win32Native.SM_CXPADDEDBORDER);
+                    var dpi = Win32Native.GetDpiForWindow(hWnd);
+                    var frameX = dpi > 0
+                        ? Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CXFRAME, dpi) + Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CXPADDEDBORDER, dpi)
+                        : Win32Native.GetSystemMetrics(Win32Native.SM_CXFRAME) + Win32Native.GetSystemMetrics(Win32Native.SM_CXPADDEDBORDER);
+                    var frameY = dpi > 0
+                        ? Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CYFRAME, dpi) + Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CXPADDEDBORDER, dpi)
+                        : Win32Native.GetSystemMetrics(Win32Native.SM_CYFRAME) + Win32Native.GetSystemMetrics(Win32Native.SM_CXPADDEDBORDER);
 
                     nc.rgrc0.left += frameX;
                     nc.rgrc0.right -= frameX;

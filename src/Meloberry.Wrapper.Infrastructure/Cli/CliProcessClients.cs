@@ -25,6 +25,7 @@ internal static class CliProcessRunner
             FileName = exePath,
             UseShellExecute = false,
             CreateNoWindow = true,
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             StandardOutputEncoding = Encoding.UTF8,
@@ -49,6 +50,8 @@ internal static class CliProcessRunner
             {
                 return (-1, string.Empty, $"Failed to start '{exePath}'.");
             }
+
+            proc.StandardInput.Close();
         }
         catch (Exception ex)
         {

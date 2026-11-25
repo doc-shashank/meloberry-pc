@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -222,7 +221,8 @@ public sealed partial class GitHubHttpClientHelper
 
     public static string? ExtractVersionFromText(string text)
     {
-        var m = SemverRegex().Match(text);
+        var cleaned = text.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? text[..^4] : text;
+        var m = SemverRegex().Match(cleaned);
         return m.Success ? m.Groups[1].Value : null;
     }
 
@@ -390,7 +390,7 @@ public sealed class GitHubToolDownloader(
     }
 }
 
-/// <summary>Checks `doc-shashank/meloberry-pc` releases and launches Inno Setup silent upgrade.</summary>
+/// <summary>Checks `doc-shashank/meloberry-pc` releases and downloads Inno Setup installers.</summary>
 public sealed class GitHubSelfUpdater(
     GitHubHttpClientHelper httpHelper,
     IWrapperDataPaths paths) : IGitHubSelfUpdater
@@ -547,29 +547,6 @@ public sealed class GitHubSelfUpdater(
             }
 
             return Result<string>.Failure(WrapperErrors.IoFailure($"Failed to finalize installer download: {ex.Message}"));
-        }
-    }
-
-    public Result LaunchInstallerSilent(string installerPath)
-    {
-        if (string.IsNullOrWhiteSpace(installerPath) || !File.Exists(installerPath))
-        {
-            return Result.Failure(WrapperErrors.InvalidPath($"Installer executable not found: {installerPath}"));
-        }
-
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = Path.GetFullPath(installerPath),
-                Arguments = "/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",
-                UseShellExecute = true
-            });
-            return Result.Success();
-        }
-        catch (Exception ex)
-        {
-            return Result.Failure(WrapperErrors.IoFailure($"Failed to launch installer: {ex.Message}"));
         }
     }
 }

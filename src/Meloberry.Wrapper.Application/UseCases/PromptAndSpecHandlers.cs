@@ -12,7 +12,7 @@ public sealed class LoadSpecCatalogHandler(
     IMbyCliClient mbyClient,
     ISettingsStore settingsStore)
 {
-    private sealed record SpecCacheEntry(string ExePath, IReadOnlyList<SpecTopicItem> Catalog);
+    private sealed record SpecCacheEntry(string ExePath, DateTime LastWriteTimeUtc, IReadOnlyList<SpecTopicItem> Catalog);
 
     private readonly SemaphoreSlim _cacheLock = new(1, 1);
     private volatile SpecCacheEntry? _cache;
@@ -33,9 +33,11 @@ public sealed class LoadSpecCatalogHandler(
             return (SpecCatalogDefaults.BuiltInFallbackCatalog, false, null);
         }
 
+        var mtime = File.GetLastWriteTimeUtc(mbyPath);
         var existing = _cache;
         if (!forceRefresh &&
             existing is not null &&
+            existing.LastWriteTimeUtc == mtime &&
             string.Equals(existing.ExePath, mbyPath, StringComparison.OrdinalIgnoreCase))
         {
             return (existing.Catalog, true, mbyPath);
@@ -44,9 +46,11 @@ public sealed class LoadSpecCatalogHandler(
         await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            mtime = File.GetLastWriteTimeUtc(mbyPath);
             existing = _cache;
             if (!forceRefresh &&
                 existing is not null &&
+                existing.LastWriteTimeUtc == mtime &&
                 string.Equals(existing.ExePath, mbyPath, StringComparison.OrdinalIgnoreCase))
             {
                 return (existing.Catalog, true, mbyPath);
@@ -65,7 +69,7 @@ public sealed class LoadSpecCatalogHandler(
             }
 
             IReadOnlyList<SpecTopicItem> snapshot = merged.AsReadOnly();
-            _cache = new SpecCacheEntry(mbyPath, snapshot);
+            _cache = new SpecCacheEntry(mbyPath, mtime, snapshot);
             return (snapshot, true, mbyPath);
         }
         finally

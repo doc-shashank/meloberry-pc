@@ -77,6 +77,11 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
             Assert.Contains("### `mcq` (question)", exportedText);
         }
 
+        var statusRes = await handler.GetStatusAsync(workspace);
+        Assert.True(statusRes.IsSuccess);
+        Assert.True(statusRes.Value.Exists);
+        Assert.Equal(exportedText, statusRes.Value.Preview);
+
         var conflict = await handler.ReadyWorkspaceAsync(new ReadyWorkspaceRequest(draft, OverwriteConfirmed: false));
         Assert.True(conflict.IsFailure);
         Assert.Equal("Workspace.AgentsMdExists", conflict.Error!.Code);

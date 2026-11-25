@@ -92,7 +92,7 @@ public sealed class WorkspaceInitializerTests : IDisposable
     }
 
     [Fact]
-    public async Task PlanAsync_BlocksCopyingFolderIntoItselfOrDescendant()
+    public async Task PlanAsync_BlocksCopyingFolderIntoItselfOrDescendant_AndRejectsDriveRoot()
     {
         var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data3"));
         var parentFolder = Path.Combine(_tempRoot, "Parent");
@@ -108,6 +108,15 @@ public sealed class WorkspaceInitializerTests : IDisposable
 
         Assert.True(res.IsFailure);
         Assert.Equal("Workspace.RecursiveCopyBlocked", res.Error!.Code);
+
+        var driveRoot = Path.GetPathRoot(Environment.CurrentDirectory)!;
+        var driveRes = await initializer.PlanAsync(
+            childWorkspace,
+            [],
+            [new StagedCopyItem(driveRoot, StagedCopyKind.Folder, driveRoot, driveRoot)]);
+
+        Assert.True(driveRes.IsFailure);
+        Assert.Equal("Security.InvalidPath", driveRes.Error!.Code);
     }
 
     public void Dispose()

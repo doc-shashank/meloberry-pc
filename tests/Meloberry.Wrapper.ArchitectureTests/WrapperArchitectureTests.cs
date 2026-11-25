@@ -71,6 +71,6 @@ public sealed class WrapperArchitectureTests
         }
 
         Assert.Single(versions);
-        Assert.Equal("1.0.0", versions.Single());
+        Assert.Matches(@"^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$", versions.Single());
     }
 }

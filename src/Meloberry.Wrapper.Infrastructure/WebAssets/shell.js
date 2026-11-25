@@ -70,6 +70,7 @@
     notifications: [],
     eventSource: null,
     previewSeq: 0,
+    previewDebounceTimer: null,
     prompt: {
       container: "session",
       title: "",
@@ -657,20 +658,22 @@
       }
     }, 350);
 
-    const res = await api("POST", "/api/apps/download", { tool: toolKey });
-    clearInterval(poller);
-    btn.disabled = false;
-
-    if (res.ok) {
-      progBar.style.width = "100%";
-      delete state.appUpdateChecks[toolKey];
-      selectUpgradedApp(res.data);
-      await refreshApps();
-      if (toolKey === "mby") await loadSpecs(true);
-      toast(`Installed ${res.data.fileName}`, "ok");
-    } else {
-      statusLine.textContent = res.data?.error?.description || "Download failed.";
-      toast(statusLine.textContent, "err");
+    try {
+      const res = await api("POST", "/api/apps/download", { tool: toolKey });
+      if (res.ok) {
+        progBar.style.width = "100%";
+        delete state.appUpdateChecks[toolKey];
+        selectUpgradedApp(res.data);
+        await refreshApps();
+        if (toolKey === "mby") await loadSpecs(true);
+        toast(`Installed ${res.data.fileName}`, "ok");
+      } else {
+        statusLine.textContent = res.data?.error?.description || "Download failed.";
+        toast(statusLine.textContent, "err");
+      }
+    } finally {
+      clearInterval(poller);
+      btn.disabled = false;
     }
   }
 
@@ -952,6 +955,9 @@
       del.onclick = async e => {
         e.stopPropagation();
         await api("DELETE", `/api/presets?id=${encodeURIComponent(preset.id)}`);
+        if (state.activePresetName === preset.name) {
+          state.activePresetName = "";
+        }
         await loadPresets();
       };
       item.appendChild(del);
@@ -1237,14 +1243,13 @@
       cnt.value = sel.desiredCount || "";
       cnt.oninput = () => {
         const raw = cnt.value.trim();
-        if (raw === "") {
+        const parsed = raw === "" ? NaN : parseInt(raw, 10);
+        if (raw === "" || !Number.isFinite(parsed) || parsed <= 0) {
           sel.desiredCount = null;
-          refreshPromptPreview();
-          return;
-        }
-        const parsed = parseInt(raw, 10);
-        if (!Number.isFinite(parsed) || parsed <= 0) {
-          sel.desiredCount = null;
+          if (comp.orderedItems) {
+            comp.orderedItems = comp.orderedItems.filter(o => o.topic.toLowerCase() !== spec.topic.toLowerCase());
+            if (!comp.orderedItems.length) comp.orderedItems = null;
+          }
           refreshPromptPreview();
           return;
         }
@@ -1595,7 +1600,16 @@
       : "";
   }
 
+  function schedulePromptPreview(delayMs = 120) {
+    refreshPromptOptionsAvailability();
+    clearTimeout(state.previewDebounceTimer);
+    state.previewDebounceTimer = setTimeout(() => {
+      refreshPromptPreview();
+    }, delayMs);
+  }
+
   async function refreshPromptPreview() {
+    clearTimeout(state.previewDebounceTimer);
     refreshPromptOptionsAvailability();
     const seq = ++state.previewSeq;
     const res = await api("POST", "/api/prompt/compose", buildPromptDraftPayload());
@@ -1902,13 +1916,21 @@
 
   document.getElementById("optCopyPlainText").onclick = async () => {
     document.getElementById("promptOptionsMenu").classList.add("hidden");
-    await navigator.clipboard.writeText(state.composedPrompt.plainText || state.composedPrompt.markdown || "");
-    toast("Copied prompt as plain text.", "ok");
+    try {
+      await navigator.clipboard.writeText(state.composedPrompt.plainText || state.composedPrompt.markdown || "");
+      toast("Copied prompt as plain text.", "ok");
+    } catch {
+      toast("Failed to copy to clipboard.", "err");
+    }
   };
   document.getElementById("optCopyMarkdown").onclick = async () => {
     document.getElementById("promptOptionsMenu").classList.add("hidden");
-    await navigator.clipboard.writeText(state.composedPrompt.markdown || "");
-    toast("Copied Markdown prompt.", "ok");
+    try {
+      await navigator.clipboard.writeText(state.composedPrompt.markdown || "");
+      toast("Copied Markdown prompt.", "ok");
+    } catch {
+      toast("Failed to copy to clipboard.", "err");
+    }
   };
   document.getElementById("optSaveMarkdown").onclick = async () => {
     document.getElementById("promptOptionsMenu").classList.add("hidden");
@@ -2075,8 +2097,9 @@
   };
 
   document.getElementById("btnSavePreset").onclick = async () => {
-    const name = window.prompt("Name for custom preset:", "Custom Preset");
-    if (!name) return;
+    const rawName = window.prompt("Name for custom preset:", "Custom Preset");
+    if (!rawName || !rawName.trim()) return;
+    const name = rawName.trim();
     const draft = buildPromptDraftPayload();
     const res = await api("POST", "/api/presets", {
       id: "",
@@ -2119,7 +2142,7 @@
     comp.title = e.target.value;
     const activeBox = document.querySelector("#orgTrack .drag-box.active");
     if (activeBox) activeBox.title = comp.title || (comp.kind === "article" ? "Article" : "Quiz");
-    refreshPromptPreview();
+    schedulePromptPreview(120);
   };
 
   document.querySelectorAll("#specCardModeTabs .seg-btn").forEach(btn => {
@@ -2159,7 +2182,13 @@
     refreshPromptPreview();
   };
 
-  ["promptTitle", "promptDescription", "promptFormat", "promptSourceText", "chkUseMelomg"].forEach(id => {
+  ["promptTitle", "promptDescription", "promptSourceText"].forEach(id => {
+    const el = document.getElementById(id);
+    el.addEventListener("input", () => schedulePromptPreview(120));
+    el.addEventListener("change", () => refreshPromptPreview());
+  });
+
+  ["promptFormat", "chkUseMelomg"].forEach(id => {
     const el = document.getElementById(id);
     el.addEventListener("input", () => refreshPromptPreview());
     el.addEventListener("change", () => refreshPromptPreview());
@@ -2181,7 +2210,7 @@
   document.getElementById("notePopoverText").oninput = e => {
     if (!state.activeNoteTarget) return;
     state.activeNoteTarget.sel.notes = e.target.value;
-    refreshPromptPreview();
+    schedulePromptPreview(120);
   };
   document.getElementById("btnCloseNotePopover").onclick = () => {
     if (state.activeNoteTarget) renderSpecSelectorPane(state.activeNoteTarget.comp);
@@ -2341,9 +2370,11 @@
   };
 
   document.getElementById("btnInstallSelfUpdate").onclick = async () => {
+    const installBtn = document.getElementById("btnInstallSelfUpdate");
     const wrap = document.getElementById("selfUpdateProgressWrap");
     const bar = document.getElementById("selfUpdateProgressBar");
     const statusText = document.getElementById("selfUpdateStatusText");
+    installBtn.disabled = true;
     wrap.classList.remove("hidden");
     const poller = setInterval(async () => {
       const st = await api("GET", "/api/self-update/status");
@@ -2353,9 +2384,13 @@
       }
     }, 300);
 
-    const res = await api("POST", "/api/self-update/install", {});
-    clearInterval(poller);
-    if (!res.ok) toast(res.data?.error?.description || "Self-update failed.", "err");
+    try {
+      const res = await api("POST", "/api/self-update/install", {});
+      if (!res.ok) toast(res.data?.error?.description || "Self-update failed.", "err");
+    } finally {
+      clearInterval(poller);
+      installBtn.disabled = false;
+    }
   };
 
   window.__onWin32Drop = path => {

@@ -8,27 +8,45 @@ namespace Meloberry.Wrapper.Infrastructure.Workspace;
 /// <summary>Confined atomic reader/writer for Active Workspace AGENTS.md exports.</summary>
 public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
 {
-    public Task<Result<AgentsMdStatus>> GetStatusAsync(string workspacePath, CancellationToken ct = default)
+    private const long MaxPreviewBytes = 512 * 1024;
+
+    public async Task<Result<AgentsMdStatus>> GetStatusAsync(string workspacePath, CancellationToken ct = default)
     {
         var pathRes = ResolveAgentsMdPath(workspacePath);
         if (pathRes.IsFailure)
         {
-            return Task.FromResult(Result<AgentsMdStatus>.Failure(pathRes.Error!));
+            return Result<AgentsMdStatus>.Failure(pathRes.Error!);
         }
 
         var (fullWs, agentsMdPath) = pathRes.Value;
         if (!File.Exists(agentsMdPath))
         {
-            return Task.FromResult(Result<AgentsMdStatus>.Success(new AgentsMdStatus(fullWs, agentsMdPath, false)));
+            return Result<AgentsMdStatus>.Success(new AgentsMdStatus(fullWs, agentsMdPath, false));
         }
 
-        var info = new FileInfo(agentsMdPath);
-        return Task.FromResult(Result<AgentsMdStatus>.Success(new AgentsMdStatus(
-            fullWs,
-            agentsMdPath,
-            Exists: true,
-            SizeBytes: info.Length,
-            LastModifiedUtc: new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero))));
+        try
+        {
+            var info = new FileInfo(agentsMdPath);
+            var preview = info.Length <= MaxPreviewBytes
+                ? await File.ReadAllTextAsync(agentsMdPath, ct).ConfigureAwait(false)
+                : "(AGENTS.md exceeds 512 KB preview limit — open the workspace folder to inspect.)";
+
+            return Result<AgentsMdStatus>.Success(new AgentsMdStatus(
+                fullWs,
+                agentsMdPath,
+                Exists: true,
+                SizeBytes: info.Length,
+                LastModifiedUtc: new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero),
+                Preview: preview));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Result<AgentsMdStatus>.Failure(WrapperErrors.IoFailure($"Failed to read AGENTS.md: {ex.Message}"));
+        }
     }
 
     public async Task<Result<AgentsMdStatus>> WriteAsync(
@@ -58,12 +76,17 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
             File.Move(tmpPath, agentsMdPath, overwrite: true);
 
             var info = new FileInfo(agentsMdPath);
+            var preview = info.Length <= MaxPreviewBytes
+                ? content
+                : "(AGENTS.md exceeds 512 KB preview limit — open the workspace folder to inspect.)";
+
             return Result<AgentsMdStatus>.Success(new AgentsMdStatus(
                 fullWs,
                 agentsMdPath,
                 Exists: true,
                 SizeBytes: info.Length,
-                LastModifiedUtc: new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero)));
+                LastModifiedUtc: new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero),
+                Preview: preview));
         }
         catch (Exception ex)
         {

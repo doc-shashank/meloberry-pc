@@ -192,7 +192,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
 
             if (path.StartsWith("/viewer/", StringComparison.OrdinalIgnoreCase) && method is "GET" or "HEAD")
             {
-                await ServeMountedWebAppAsync(ctx.Response, path, ct).ConfigureAwait(false);
+                await ServeMountedWebAppAsync(ctx.Response, path, method == "HEAD", ct).ConfigureAwait(false);
                 return;
             }
 
@@ -975,7 +975,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         await WriteResultAsync(resp, res, ct).ConfigureAwait(false);
     }
 
-    private async Task ServeMountedWebAppAsync(HttpListenerResponse resp, string path, CancellationToken ct)
+    private async Task ServeMountedWebAppAsync(HttpListenerResponse resp, string path, bool isHead, CancellationToken ct)
     {
         var trimmed = path["/viewer/".Length..];
         var slash = trimmed.IndexOf('/');
@@ -1000,9 +1000,21 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
             return;
         }
 
-        var decoded = Uri.UnescapeDataString(relPath).Replace('/', Path.DirectorySeparatorChar);
-        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(webDir)) + Path.DirectorySeparatorChar;
-        var target = Path.GetFullPath(Path.Combine(fullRoot, decoded));
+        string fullRoot;
+        string target;
+        try
+        {
+            var decoded = Uri.UnescapeDataString(relPath).Replace('/', Path.DirectorySeparatorChar);
+            fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(webDir)) + Path.DirectorySeparatorChar;
+            target = Path.GetFullPath(Path.Combine(fullRoot, decoded));
+        }
+        catch
+        {
+            resp.StatusCode = 404;
+            resp.Close();
+            return;
+        }
+
         if (!target.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase) || !File.Exists(target))
         {
             resp.StatusCode = 404;
@@ -1014,6 +1026,12 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         resp.ContentType = MimeTypes.GetValueOrDefault(ext, "application/octet-stream");
         resp.Headers["Cache-Control"] = "no-store";
         resp.StatusCode = 200;
+
+        if (isHead)
+        {
+            resp.Close();
+            return;
+        }
 
         if (string.Equals(relPath, "index.html", StringComparison.OrdinalIgnoreCase) &&
             string.Equals(ext, ".html", StringComparison.OrdinalIgnoreCase))
@@ -1069,6 +1087,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         html = html.Replace("__MBY_TOKEN_VALUE__", _token, StringComparison.Ordinal);
         var bytes = Encoding.UTF8.GetBytes(html);
         resp.ContentType = "text/html; charset=utf-8";
+        resp.Headers["Cache-Control"] = "no-store";
         resp.Headers["X-Frame-Options"] = "DENY";
         resp.Headers["Content-Security-Policy"] = "frame-ancestors 'none'";
         resp.StatusCode = 200;

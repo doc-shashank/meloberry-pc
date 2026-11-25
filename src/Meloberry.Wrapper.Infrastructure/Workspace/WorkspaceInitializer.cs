@@ -252,6 +252,7 @@ public sealed class WorkspaceInitializer(
                 return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
                     WrapperErrors.InvalidPath(item.SourcePath));
             }
+
             if (item.Kind == StagedCopyKind.File)
             {
                 if (!File.Exists(fullSrc))
@@ -273,20 +274,38 @@ public sealed class WorkspaceInitializer(
                 }
 
                 var folderName = Path.GetFileName(Path.TrimEndingDirectorySeparator(fullSrc));
-                var destFolderRoot = Path.Combine(fullWs, folderName);
+                if (string.IsNullOrWhiteSpace(folderName))
+                {
+                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                        WrapperErrors.InvalidPath($"Cannot stage a drive root directory: '{fullSrc}'."));
+                }
 
+                var destFolderRoot = Path.Combine(fullWs, folderName);
                 if (IsSameOrDescendant(fullSrc, destFolderRoot) || IsSameOrDescendant(fullSrc, fullWs))
                 {
                     return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
                         WrapperErrors.RecursiveCopyBlocked(fullSrc, fullWs));
                 }
 
-                foreach (var srcFile in Directory.GetFiles(fullSrc, "*", SearchOption.AllDirectories))
+                try
                 {
-                    var relInsideFolder = Path.GetRelativePath(fullSrc, srcFile);
-                    var relInWs = Path.Combine(folderName, relInsideFolder).Replace('\\', '/');
-                    var destFile = Path.Combine(destFolderRoot, relInsideFolder);
-                    await ClassifyCopyAsync(srcFile, destFile, relInWs, StagedCopyKind.Folder, false, folderName, ops, conflicts, ct, v => skippedIdentical += v).ConfigureAwait(false);
+                    var enumOpts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+                    foreach (var srcFile in Directory.EnumerateFiles(fullSrc, "*", enumOpts))
+                    {
+                        var relInsideFolder = Path.GetRelativePath(fullSrc, srcFile);
+                        var relInWs = Path.Combine(folderName, relInsideFolder).Replace('\\', '/');
+                        var destFile = Path.Combine(destFolderRoot, relInsideFolder);
+                        await ClassifyCopyAsync(srcFile, destFile, relInWs, StagedCopyKind.Folder, false, folderName, ops, conflicts, ct, v => skippedIdentical += v).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                        WrapperErrors.IoFailure($"Failed to enumerate staged folder '{fullSrc}': {ex.Message}"));
                 }
             }
         }
@@ -328,18 +347,29 @@ public sealed class WorkspaceInitializer(
 
     private static async Task<bool> AreFilesIdenticalAsync(string fileA, string fileB, CancellationToken ct)
     {
-        var infoA = new FileInfo(fileA);
-        var infoB = new FileInfo(fileB);
-        if (infoA.Length != infoB.Length)
+        try
+        {
+            var infoA = new FileInfo(fileA);
+            var infoB = new FileInfo(fileB);
+            if (infoA.Length != infoB.Length)
+            {
+                return false;
+            }
+
+            await using var streamA = File.OpenRead(fileA);
+            await using var streamB = File.OpenRead(fileB);
+            var hashA = await SHA256.HashDataAsync(streamA, ct).ConfigureAwait(false);
+            var hashB = await SHA256.HashDataAsync(streamB, ct).ConfigureAwait(false);
+            return hashA.AsSpan().SequenceEqual(hashB);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return false;
         }
-
-        await using var streamA = File.OpenRead(fileA);
-        await using var streamB = File.OpenRead(fileB);
-        var hashA = await SHA256.HashDataAsync(streamA, ct).ConfigureAwait(false);
-        var hashB = await SHA256.HashDataAsync(streamB, ct).ConfigureAwait(false);
-        return hashA.AsSpan().SequenceEqual(hashB);
     }
 
     private static bool IsSameOrDescendant(string parentCandidate, string childCandidate)

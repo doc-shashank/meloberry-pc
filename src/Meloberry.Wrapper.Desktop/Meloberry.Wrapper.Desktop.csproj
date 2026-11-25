@@ -32,11 +32,11 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3240.44" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3240.44" PrivateAssets="all" GeneratePathProperty="true" />
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="$(NuGetPackageRoot)microsoft.web.webview2\1.0.3240.44\runtimes\win-x64\native\WebView2Loader.dll" Condition="Exists('$(NuGetPackageRoot)microsoft.web.webview2\1.0.3240.44\runtimes\win-x64\native\WebView2Loader.dll')">
+    <EmbeddedResource Include="$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll" Condition="Exists('$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll')">
       <LogicalName>WebView2Loader.dll</LogicalName>
     </EmbeddedResource>
   </ItemGroup>

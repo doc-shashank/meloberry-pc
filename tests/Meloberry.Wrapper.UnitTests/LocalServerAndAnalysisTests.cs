@@ -40,10 +40,11 @@ public sealed class LocalServerAndAnalysisTests : IAsyncLifetime
         using var viewerHttp = new HttpClient { BaseAddress = new Uri(_server.ViewerBaseUrl) };
         Assert.NotEqual(_server.Port, _server.ViewerPort);
 
-        // Shell GET / has frame-ancestors 'none' and X-Frame-Options: DENY.
+        // Shell GET / has frame-ancestors 'none', X-Frame-Options: DENY, and Cache-Control: no-store.
         var rootResp = await shellHttp.GetAsync("/");
         Assert.Equal(HttpStatusCode.OK, rootResp.StatusCode);
         Assert.Equal("DENY", rootResp.Headers.GetValues("X-Frame-Options").Single());
+        Assert.True(rootResp.Headers.CacheControl?.NoStore);
 
         // Missing token must fail with 403.
         var unauth = await shellHttp.GetAsync("/api/bootstrap");
@@ -89,9 +90,17 @@ public sealed class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.Contains("mby-theme-override", await indexResp.Content.ReadAsStringAsync());
         Assert.Equal(HttpStatusCode.NotFound, (await shellHttp.GetAsync(new Uri(viewerUrl).AbsolutePath)).StatusCode);
 
-        // Traversal attempt outside mounted folder fails 404.
+        // HEAD /viewer/<slotId>/index.html returns 200 OK with empty response body.
+        using var headReq = new HttpRequestMessage(HttpMethod.Head, viewerUrl);
+        var headResp = await viewerHttp.SendAsync(headReq);
+        Assert.Equal(HttpStatusCode.OK, headResp.StatusCode);
+        Assert.Empty(await headResp.Content.ReadAsByteArrayAsync());
+
+        // Traversal attempt and invalid path chars outside mounted folder fail 404 (not 500).
         var traversal = await viewerHttp.GetAsync(viewerUrl.Replace("index.html", "../data/wrapper-settings.json"));
         Assert.Equal(HttpStatusCode.NotFound, traversal.StatusCode);
+        var invalidChars = await viewerHttp.GetAsync(viewerUrl.Replace("index.html", "bad*path.html"));
+        Assert.Equal(HttpStatusCode.NotFound, invalidChars.StatusCode);
 
         // Missing Origin + missing Referer on /api/analysis must be denied (Bug #27).
         var noOriginResp = await viewerHttp.PostAsync("/api/analysis", new StringContent("{\"report\":{\"score\":1}}", Encoding.UTF8, "application/json"));

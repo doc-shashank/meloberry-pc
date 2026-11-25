@@ -120,7 +120,9 @@ public sealed class GitHubDownloadAndSelfUpdateTests : IDisposable
         Assert.False(GitHubHttpClientHelper.IsAllowedGitHubUri("https://evil.example.com/mby.exe", out _));
         Assert.True(GitHubHttpClientHelper.IsAllowedGitHubUri("https://objects.githubusercontent.com/file.exe", out _));
 
-        // Bug #24: SemVer prerelease ordering.
+        // Bug #24: SemVer prerelease ordering & prerelease .exe extraction.
+        Assert.Equal("2.0.0-rc.1", GitHubHttpClientHelper.ExtractVersionFromText("mby-cli-2.0.0-rc.1.exe"));
+        Assert.Equal("1.2.0-beta.2", GitHubHttpClientHelper.ExtractVersionFromText("mby-pc-setup-1.2.0-beta.2.exe"));
         Assert.True(Meloberry.Wrapper.Domain.Common.SemverComparer.Compare("2.0.0", "2.0.0-beta.1") > 0);
         Assert.True(Meloberry.Wrapper.Domain.Common.SemverComparer.Compare("2.0.0-beta.1", "2.0.0-alpha.2") > 0);
         Assert.True(Meloberry.Wrapper.Domain.Common.SemverComparer.Compare("2.0.0-alpha.2", "2.0.0-alpha.10") < 0);

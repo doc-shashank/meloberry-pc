@@ -30,7 +30,8 @@ public sealed record AgentsMdStatus(
     string AgentsMdPath,
     bool Exists,
     long? SizeBytes = null,
-    DateTimeOffset? LastModifiedUtc = null);
+    DateTimeOffset? LastModifiedUtc = null,
+    string? Preview = null);
 
 /// <summary>Inputs required to deterministically render a tailored workspace AGENTS.md.</summary>
 public sealed record AgentsMdComposeInput(
