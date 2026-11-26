@@ -140,6 +140,8 @@ public sealed class TokenAndScaffoldTests : IDisposable
 
         var sessionResult = SessionScaffoldGenerator.Generate(sessionDraft, []);
         Assert.True(sessionResult.IsSuccess);
+        Assert.NotNull(sessionResult.Value.Warnings);
+        Assert.Contains(sessionResult.Value.Warnings!, w => w.Contains("assertion-reason", StringComparison.OrdinalIgnoreCase));
         using var sessionDoc = JsonDocument.Parse(sessionResult.Value.RawJson);
         var comps = sessionDoc.RootElement.GetProperty("components");
         Assert.Equal(2, comps.GetArrayLength());
@@ -149,7 +151,60 @@ public sealed class TokenAndScaffoldTests : IDisposable
         Assert.Equal("text", blocks[1].GetProperty("kind").GetString());
         Assert.Equal("callout", blocks[2].GetProperty("kind").GetString());
         Assert.Equal("warning", blocks[2].GetProperty("tone").GetString());
-        Assert.Equal("assertion-reason", comps[1].GetProperty("questions")[0].GetProperty("type").GetString());
+        var arQuestions = comps[1].GetProperty("questions");
+        Assert.Equal(2, arQuestions.GetArrayLength());
+        Assert.Equal("assertion-reason", arQuestions[0].GetProperty("type").GetString());
+        Assert.Equal("assertion-reason", arQuestions[1].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void SessionScaffoldGenerator_SupportsMixedMcqAndFlashcard_AndReconcilesTrimAndAppend()
+    {
+        var mixedDraft = new PromptDraft(
+            Container: ContainerKind.StandaloneQuiz,
+            Title: "Mixed Drill",
+            Description: "",
+            AuthoringFormat: AuthoringFormat.Json,
+            SourceText: "",
+            Selections: [],
+            Attachments: [],
+            Components:
+            [
+                new(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Mixed Quiz",
+                    [
+                        new("mcq", true, 3, Modes: ["mixed"]),
+                        new("flashcard", true, 2, Modes: ["mixed"])
+                    ],
+                    OrderedItems:
+                    [
+                        new("m1", "mcq", 1),
+                        new("m2", "mcq", 2),
+                        new("m3", "mcq", 3),
+                        new("m4", "mcq", 4),
+                        new("f1", "flashcard", 1)
+                    ])
+            ]);
+
+        var res = SessionScaffoldGenerator.Generate(mixedDraft, SpecCatalogDefaults.BuiltInFallbackCatalog);
+        Assert.True(res.IsSuccess);
+        Assert.True(res.Value.RequiresPlaceholderImage);
+        Assert.NotNull(res.Value.Warnings);
+        Assert.Contains(res.Value.Warnings!, w => w.Contains("added 1 'flashcard'", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(res.Value.Warnings!, w => w.Contains("trimmed 1 'mcq'", StringComparison.OrdinalIgnoreCase));
+
+        using var doc = JsonDocument.Parse(res.Value.RawJson);
+        var questions = doc.RootElement.GetProperty("questions");
+        Assert.Equal(5, questions.GetArrayLength());
+
+        Assert.False(questions[0].GetProperty("isMultiCorrect").GetBoolean());
+        Assert.True(questions[1].GetProperty("isMultiCorrect").GetBoolean());
+        Assert.False(questions[2].GetProperty("isMultiCorrect").GetBoolean());
+
+        Assert.False(questions[3].GetProperty("front").TryGetProperty("imagePath", out _));
+        Assert.True(questions[4].GetProperty("front").TryGetProperty("imagePath", out _));
     }
 
     [Fact]
@@ -222,9 +277,9 @@ public sealed class TokenAndScaffoldTests : IDisposable
         File.Copy(liveMby, Path.Combine(wsDir, "mby-cli-2.0.0.exe"), overwrite: true);
 
         var services = new ServiceCollection();
-        services.AddSingleton<IAppShutdownCoordinator>(new DummyShutdown());
-        services.AddSingleton<INativeDialogService>(new DummyDialogs());
-        services.AddSingleton<IExternalUrlLauncher>(new DummyLauncher());
+        services.AddSingleton<IAppShutdownCoordinator>(new NoopShutdown());
+        services.AddSingleton<INativeDialogService>(new NoopDialogs());
+        services.AddSingleton<IExternalUrlLauncher>(new NoopLauncher());
         services.AddWrapperApplication(typeof(TokenAndScaffoldTests).Assembly);
         services.AddWrapperInfrastructure(Path.Combine(_tempRoot, "data"));
 
@@ -281,24 +336,5 @@ public sealed class TokenAndScaffoldTests : IDisposable
         {
             // Ignore temp cleanup contention.
         }
-    }
-
-    private sealed class DummyShutdown : IAppShutdownCoordinator
-    {
-        public void RequestShutdown() { }
-        public void RequestShutdownAndLaunch(string executablePath, string arguments) { }
-    }
-
-    private sealed class DummyDialogs : INativeDialogService
-    {
-        public Task<string?> PickFolderAsync(string title, string? initialDir = null, CancellationToken ct = default) => Task.FromResult<string?>(null);
-        public Task<IReadOnlyList<string>> PickFilesAsync(string title, string filterLabel, string filterPattern, bool allowMultiple = true, string? initialDir = null, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<string>>([]);
-        public Task<string?> SaveFileAsync(string title, string defaultFileName, string filterLabel, string filterExtension, string? initialDir = null, CancellationToken ct = default) => Task.FromResult<string?>(null);
-    }
-
-    private sealed class DummyLauncher : IExternalUrlLauncher
-    {
-        public Result OpenAllowlistedUrl(string url) => Result.Success();
-        public Result OpenFolder(string folderPath) => Result.Success();
     }
 }

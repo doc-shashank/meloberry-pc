@@ -119,6 +119,65 @@ public sealed class WorkspaceInitializerTests : IDisposable
         Assert.Equal("Security.InvalidPath", driveRes.Error!.Code);
     }
 
+    [Fact]
+    public async Task PlanAndInitialize_DetectsIntraBatchCollisions_AndTracksAllEnsuredRelativePaths()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data_batch"));
+        var dirA = Path.Combine(_tempRoot, "A");
+        var dirB = Path.Combine(_tempRoot, "B");
+        var figs1 = Path.Combine(_tempRoot, "Term1", "Figs");
+        var figs2 = Path.Combine(_tempRoot, "Term2", "Figs");
+        Directory.CreateDirectory(dirA);
+        Directory.CreateDirectory(dirB);
+        Directory.CreateDirectory(figs1);
+        Directory.CreateDirectory(figs2);
+
+        var fileA = Path.Combine(dirA, "notes.txt");
+        var fileB = Path.Combine(dirB, "notes.txt");
+        var identicalSrc = Path.Combine(dirA, "same.txt");
+        await File.WriteAllTextAsync(fileA, "from-A");
+        await File.WriteAllTextAsync(fileB, "from-B");
+        await File.WriteAllTextAsync(identicalSrc, "already-there");
+        await File.WriteAllTextAsync(Path.Combine(figs1, "fig.png"), "fig-1");
+        await File.WriteAllTextAsync(Path.Combine(figs2, "fig.png"), "fig-2");
+
+        var workspace = Path.Combine(_tempRoot, "ws_batch");
+        Directory.CreateDirectory(workspace);
+        await File.WriteAllTextAsync(Path.Combine(workspace, "same.txt"), "already-there");
+
+        var initializer = new WorkspaceInitializer(paths, new WebAppAnalysisStore());
+        var staged = new List<StagedCopyItem>
+        {
+            new(identicalSrc, StagedCopyKind.File, "same.txt", "same.txt"),
+            new(fileA, StagedCopyKind.File, "notes.txt", "notes.txt"),
+            new(fileB, StagedCopyKind.File, "notes.txt", "notes.txt"),
+            new(figs1, StagedCopyKind.Folder, "Figs", "Figs"),
+            new(figs2, StagedCopyKind.Folder, "Figs", "Figs")
+        };
+
+        var plan = await initializer.PlanAsync(workspace, [], staged);
+        Assert.True(plan.IsSuccess);
+        Assert.Equal(1, plan.Value.SkippedIdenticalCount);
+        Assert.Equal(2, plan.Value.Conflicts.Count);
+        Assert.Contains(plan.Value.Conflicts, c => c.RelativeTargetPath == "notes.txt");
+        Assert.Contains(plan.Value.Conflicts, c => c.RelativeTargetPath == "Figs/fig.png");
+
+        var skipRes = await initializer.InitializeAsync(workspace, [], staged, ConflictPolicy.SkipExisting);
+        Assert.True(skipRes.IsSuccess);
+        Assert.Equal("from-A", await File.ReadAllTextAsync(Path.Combine(workspace, "notes.txt")));
+        Assert.Equal("fig-1", await File.ReadAllTextAsync(Path.Combine(workspace, "Figs", "fig.png")));
+        Assert.Contains("same.txt", skipRes.Value.CopiedRelativePaths);
+        Assert.Contains("notes.txt", skipRes.Value.CopiedRelativePaths);
+        Assert.Contains("Figs/fig.png", skipRes.Value.CopiedRelativePaths);
+
+        var workspaceOver = Path.Combine(_tempRoot, "ws_batch_over");
+        Directory.CreateDirectory(workspaceOver);
+        var overRes = await initializer.InitializeAsync(workspaceOver, [], staged, ConflictPolicy.OverwriteExisting);
+        Assert.True(overRes.IsSuccess);
+        Assert.Equal("from-B", await File.ReadAllTextAsync(Path.Combine(workspaceOver, "notes.txt")));
+        Assert.Equal("fig-2", await File.ReadAllTextAsync(Path.Combine(workspaceOver, "Figs", "fig.png")));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

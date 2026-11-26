@@ -100,6 +100,12 @@ public interface ISettingsStore
 {
     Task<WrapperSettings> LoadAsync(CancellationToken ct = default);
     Task<Result> SaveAsync(WrapperSettings settings, CancellationToken ct = default);
+    Task<Result<WrapperSettings>> UpdateAsync(
+        Func<WrapperSettings, WrapperSettings> mutator,
+        CancellationToken ct = default);
+    Task<Result<WrapperSettings>> UpdateAsync(
+        Func<WrapperSettings, Result<WrapperSettings>> mutator,
+        CancellationToken ct = default);
 }
 
 /// <summary>Writes captured WebApp study telemetry into &lt;webDir&gt;/reports/.</summary>
@@ -155,4 +161,13 @@ public interface IWorkspaceFileWatcher
     event Action<WorkspaceFileChangeEvent>? Changed;
     void UpdateActiveWorkspace(string? workspacePath);
     IDisposable SuppressScope(string scope, int postDisposeGraceMs = 1500);
+}
+
+/// <summary>Writes or copies files atomically via temporary sibling files with guaranteed cleanup.</summary>
+public interface IAtomicFileWriter
+{
+    Task WriteAllTextAsync(string destinationPath, string content, CancellationToken ct = default);
+    Task WriteAllBytesAsync(string destinationPath, byte[] bytes, CancellationToken ct = default);
+    void CopyFile(string sourcePath, string destinationPath, string tempSuffix = ".tmp");
+    void WriteStream(string destinationPath, Stream contentStream, string tempSuffix = ".tmp");
 }

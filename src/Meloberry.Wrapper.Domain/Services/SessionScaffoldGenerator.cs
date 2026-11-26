@@ -11,7 +11,8 @@ namespace Meloberry.Wrapper.Domain.Services;
 public sealed record SessionScaffoldOutput(
     string RawJson,
     bool RequiresPlaceholderImage,
-    string SuggestedFileName);
+    string SuggestedFileName,
+    IReadOnlyList<string>? Warnings = null);
 
 /// <summary>
 /// Deterministically generates strict valid `mby` JSON scaffolds directly matching Organization (A/Q),
@@ -63,19 +64,20 @@ public static class SessionScaffoldGenerator
         var title = string.IsNullOrWhiteSpace(draft.Title) ? "Draft Study Template" : draft.Title.Trim();
         var description = string.IsNullOrWhiteSpace(draft.Description) ? null : draft.Description.Trim();
         var requiresImage = false;
+        var warnings = new List<string>();
 
         object rootPayload;
         if (draft.Container == ContainerKind.StandaloneArticle)
         {
             var artComp = components.FirstOrDefault(c => c.Kind == ComponentKind.Article)
                 ?? new PromptComponentPlan("a1", ComponentKind.Article, title, []);
-            rootPayload = BuildArticleObject(artComp, title, ref requiresImage, includeSessionName: false);
+            rootPayload = BuildArticleObject(artComp, title, ref requiresImage, warnings);
         }
         else if (draft.Container == ContainerKind.StandaloneQuiz)
         {
             var quizComp = components.FirstOrDefault(c => c.Kind == ComponentKind.Quiz)
                 ?? new PromptComponentPlan("q1", ComponentKind.Quiz, title, [PromptComposer.DefaultFiveMcqFallback]);
-            rootPayload = BuildQuizObject(quizComp, title, description, isStandalone: true, ref requiresImage);
+            rootPayload = BuildQuizObject(quizComp, title, description, isStandalone: true, ref requiresImage, warnings);
         }
         else
         {
@@ -84,11 +86,11 @@ public static class SessionScaffoldGenerator
             {
                 if (comp.Kind == ComponentKind.Article)
                 {
-                    builtComponents.Add(BuildArticleObject(comp, null, ref requiresImage, includeSessionName: false));
+                    builtComponents.Add(BuildArticleObject(comp, null, ref requiresImage, warnings));
                 }
                 else
                 {
-                    builtComponents.Add(BuildQuizObject(comp, null, null, isStandalone: false, ref requiresImage));
+                    builtComponents.Add(BuildQuizObject(comp, null, null, isStandalone: false, ref requiresImage, warnings));
                 }
             }
 
@@ -104,16 +106,20 @@ public static class SessionScaffoldGenerator
         var rawJson = JsonSerializer.Serialize(rootPayload, JsonOptions);
         var safeSlug = Slugify(title);
         var suggested = $"template_{safeSlug}.json";
-        return Result<SessionScaffoldOutput>.Success(new SessionScaffoldOutput(rawJson, requiresImage, suggested));
+        return Result<SessionScaffoldOutput>.Success(new SessionScaffoldOutput(
+            rawJson,
+            requiresImage,
+            suggested,
+            warnings.Count > 0 ? warnings : null));
     }
 
     private static Dictionary<string, object?> BuildArticleObject(
         PromptComponentPlan comp,
         string? standaloneTitle,
         ref bool requiresImage,
-        bool includeSessionName)
+        List<string> warnings)
     {
-        var sequence = BuildInstanceSequence(comp);
+        var sequence = BuildInstanceSequence(comp, warnings);
         var blocks = new List<object>();
         var links = new List<object>();
         var linkIds = new List<string>();
@@ -235,11 +241,6 @@ public static class SessionScaffoldGenerator
             article["links"] = links;
         }
 
-        if (includeSessionName && !string.IsNullOrWhiteSpace(standaloneTitle))
-        {
-            article["title"] = standaloneTitle;
-        }
-
         return article;
     }
 
@@ -248,9 +249,10 @@ public static class SessionScaffoldGenerator
         string? standaloneName,
         string? standaloneDescription,
         bool isStandalone,
-        ref bool requiresImage)
+        ref bool requiresImage,
+        List<string> warnings)
     {
-        var sequence = BuildInstanceSequence(comp);
+        var sequence = BuildInstanceSequence(comp, warnings);
         var questions = new List<object>();
         var selLookup = comp.Selections.Where(s => s.Enabled).ToDictionary(s => s.Topic, StringComparer.OrdinalIgnoreCase);
 
@@ -263,9 +265,13 @@ public static class SessionScaffoldGenerator
             switch (inst.Topic.ToLowerInvariant())
             {
                 case "flashcard":
-                    var diagramMode = !string.Equals(inst.Subtype, "text", StringComparison.OrdinalIgnoreCase)
-                        && (string.Equals(inst.Subtype, "diagram", StringComparison.OrdinalIgnoreCase)
-                            || modes.Contains("diagram", StringComparer.OrdinalIgnoreCase));
+                    var isMixedFlashcard = string.Equals(inst.Subtype, "mixed", StringComparison.OrdinalIgnoreCase)
+                        || (string.IsNullOrWhiteSpace(inst.Subtype) && modes.Contains("mixed", StringComparer.OrdinalIgnoreCase));
+                    var diagramMode = isMixedFlashcard
+                        ? num % 2 == 0
+                        : !string.Equals(inst.Subtype, "text", StringComparison.OrdinalIgnoreCase)
+                            && (string.Equals(inst.Subtype, "diagram", StringComparison.OrdinalIgnoreCase)
+                                || modes.Contains("diagram", StringComparer.OrdinalIgnoreCase));
                     if (diagramMode) requiresImage = true;
                     questions.Add(new Dictionary<string, object?>
                     {
@@ -399,9 +405,13 @@ public static class SessionScaffoldGenerator
                     break;
 
                 default:
-                    var multi = !string.Equals(inst.Subtype, "single", StringComparison.OrdinalIgnoreCase)
-                        && (string.Equals(inst.Subtype, "multi", StringComparison.OrdinalIgnoreCase)
-                            || modes.Contains("multi", StringComparer.OrdinalIgnoreCase));
+                    var isMixedMcq = string.Equals(inst.Subtype, "mixed", StringComparison.OrdinalIgnoreCase)
+                        || (string.IsNullOrWhiteSpace(inst.Subtype) && modes.Contains("mixed", StringComparer.OrdinalIgnoreCase));
+                    var multi = isMixedMcq
+                        ? num % 2 == 0
+                        : !string.Equals(inst.Subtype, "single", StringComparison.OrdinalIgnoreCase)
+                            && (string.Equals(inst.Subtype, "multi", StringComparison.OrdinalIgnoreCase)
+                                || modes.Contains("multi", StringComparer.OrdinalIgnoreCase));
                     questions.Add(new Dictionary<string, object?>
                     {
                         ["type"] = "mcq",
@@ -450,33 +460,119 @@ public static class SessionScaffoldGenerator
         return quiz;
     }
 
-    private static List<OrderedSpecInstance> BuildInstanceSequence(PromptComponentPlan comp)
+    private static List<OrderedSpecInstance> BuildInstanceSequence(PromptComponentPlan comp, List<string> warnings)
     {
         if (comp.OrderedItems is { Count: > 0 })
         {
-            var allowedTopics = comp.Selections
-                .Where(s => s.Enabled)
-                .Select(s => s.Topic)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var enabledSelections = comp.Selections.Where(s => s.Enabled).ToList();
+            var desiredByTopic = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var sel in enabledSelections)
+            {
+                desiredByTopic[sel.Topic] = Math.Clamp(sel.DesiredCount ?? 1, 1, 50);
+            }
 
-            var filtered = new List<OrderedSpecInstance>();
-            var counters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (desiredByTopic.Count == 0)
+            {
+                return [];
+            }
+
+            var retained = new List<OrderedSpecInstance>();
+            var retainedCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var trimmedByTopic = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
             foreach (var inst in comp.OrderedItems)
             {
-                if (!allowedTopics.Contains(inst.Topic))
+                if (!desiredByTopic.TryGetValue(inst.Topic, out var targetQty))
                 {
                     continue;
                 }
 
-                var nextNum = counters.TryGetValue(inst.Topic, out var cur) ? cur + 1 : 1;
-                counters[inst.Topic] = nextNum;
-                filtered.Add(inst with { InstanceNumber = nextNum });
+                var cur = retainedCounts.GetValueOrDefault(inst.Topic, 0);
+                if (cur >= targetQty)
+                {
+                    trimmedByTopic[inst.Topic] = trimmedByTopic.GetValueOrDefault(inst.Topic, 0) + 1;
+                    continue;
+                }
+
+                retainedCounts[inst.Topic] = cur + 1;
+                retained.Add(inst);
             }
 
-            if (filtered.Count > 0 || allowedTopics.Count == 0)
+            var appendedByTopic = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var sel in enabledSelections)
             {
-                return filtered;
+                var targetQty = desiredByTopic[sel.Topic];
+                var cur = retainedCounts.GetValueOrDefault(sel.Topic, 0);
+                if (cur >= targetQty)
+                {
+                    continue;
+                }
+
+                var missing = targetQty - cur;
+                appendedByTopic[sel.Topic] = missing;
+
+                var remainingQuotas = sel.ModeCounts is { Count: > 0 }
+                    ? new Dictionary<string, int>(sel.ModeCounts, StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var existing in retained.Where(r => string.Equals(r.Topic, sel.Topic, StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (!string.IsNullOrWhiteSpace(existing.Subtype)
+                        && remainingQuotas.TryGetValue(existing.Subtype, out var quota)
+                        && quota > 0)
+                    {
+                        remainingQuotas[existing.Subtype] = quota - 1;
+                    }
+                }
+
+                var added = 0;
+                foreach (var kv in remainingQuotas)
+                {
+                    if (kv.Value <= 0 || string.IsNullOrWhiteSpace(kv.Key))
+                    {
+                        continue;
+                    }
+
+                    for (var c = 0; c < kv.Value && added < missing; c++)
+                    {
+                        added++;
+                        retained.Add(new OrderedSpecInstance($"{sel.Topic}_{cur + added}", sel.Topic, cur + added, kv.Key));
+                    }
+                }
+
+                while (added < missing)
+                {
+                    added++;
+                    retained.Add(new OrderedSpecInstance($"{sel.Topic}_{cur + added}", sel.Topic, cur + added));
+                }
             }
+
+            var finalSequence = new List<OrderedSpecInstance>(retained.Count);
+            var counters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var inst in retained)
+            {
+                var nextNum = counters.GetValueOrDefault(inst.Topic, 0) + 1;
+                counters[inst.Topic] = nextNum;
+                finalSequence.Add(inst with { InstanceNumber = nextNum });
+            }
+
+            if (trimmedByTopic.Count > 0 || appendedByTopic.Count > 0)
+            {
+                var parts = new List<string>();
+                foreach (var kv in appendedByTopic)
+                {
+                    parts.Add($"added {kv.Value} '{kv.Key}'");
+                }
+
+                foreach (var kv in trimmedByTopic)
+                {
+                    parts.Add($"trimmed {kv.Value} '{kv.Key}'");
+                }
+
+                var compLabel = string.IsNullOrWhiteSpace(comp.Title) ? comp.Id : comp.Title.Trim();
+                warnings.Add($"Reconciled organizer sequence in '{compLabel}' to match Qty: {string.Join(", ", parts)}.");
+            }
+
+            return finalSequence;
         }
 
         var list = new List<OrderedSpecInstance>();

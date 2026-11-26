@@ -6,6 +6,7 @@ internal static class Win32Native
 {
     public const int WS_OVERLAPPEDWINDOW = 0x00CF0000;
     public const int CW_USEDEFAULT = unchecked((int)0x80000000);
+    public const int SW_SHOWNORMAL = 1;
     public const int SW_SHOWMAXIMIZED = 3;
     public const int SW_SHOW = 5;
     public const int SW_MINIMIZE = 6;
@@ -13,13 +14,29 @@ internal static class Win32Native
 
     public const int WM_DESTROY = 0x0002;
     public const int WM_SIZE = 0x0005;
+    public const int WM_CLOSE = 0x0010;
+    public const int WM_GETMINMAXINFO = 0x0024;
     public const int WM_NCCALCSIZE = 0x0083;
+    public const int WM_NCHITTEST = 0x0084;
     public const int WM_NCLBUTTONDOWN = 0x00A1;
     public const int WM_DROPFILES = 0x0233;
     public const int WM_APP = 0x8000;
     public const int WM_APP_INVOKE = WM_APP + 1;
 
+    public const int HTCLIENT = 1;
     public const int HTCAPTION = 2;
+    public const int HTTOP = 12;
+    public const int HTTOPLEFT = 13;
+    public const int HTTOPRIGHT = 14;
+
+    public const int IDC_ARROW = 32512;
+    public const int IDI_APPLICATION = 32512;
+    public const uint IMAGE_ICON = 1;
+    public const uint LR_DEFAULTSIZE = 0x0040;
+    public const uint LR_SHARED = 0x8000;
+
+    public const uint MONITOR_DEFAULTTONULL = 0;
+    public const uint MONITOR_DEFAULTTONEAREST = 2;
 
     public const uint MB_OK = 0x00000000;
     public const uint MB_ICONERROR = 0x00000010;
@@ -102,6 +119,36 @@ internal static class Win32Native
         public int cyBottomHeight;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WINDOWPLACEMENT
+    {
+        public uint length;
+        public uint flags;
+        public uint showCmd;
+        public POINT ptMinPosition;
+        public POINT ptMaxPosition;
+        public RECT rcNormalPosition;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO
+    {
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MINMAXINFO
+    {
+        public POINT ptReserved;
+        public POINT ptMaxSize;
+        public POINT ptMaxPosition;
+        public POINT ptMinTrackSize;
+        public POINT ptMaxTrackSize;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
@@ -170,6 +217,39 @@ internal static class Win32Native
 
     [DllImport("user32.dll")]
     public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromRect(ref RECT lprc, uint dwFlags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadCursorW(IntPtr hInstance, IntPtr lpCursorName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadIconW(IntPtr hInstance, IntPtr lpIconName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr LoadImageW(
+        IntPtr hInst,
+        IntPtr lpszName,
+        uint uType,
+        int cxDesired,
+        int cyDesired,
+        uint fuLoad);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateSolidBrush(uint color);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr ho);
 
     [DllImport("user32.dll")]
     public static extern int GetSystemMetrics(int nIndex);

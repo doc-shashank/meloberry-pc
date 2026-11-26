@@ -58,25 +58,25 @@ public sealed class WorkspaceMaintenanceHandler(
             return Result<(WorkspaceResetResult, ActiveWorkspaceState?)>.Failure(res.Error!);
         }
 
-        ActiveWorkspaceState? updatedWs = settings.ActiveWorkspace;
-        if (updatedWs is not null && PathNormalization.AreSameDirectory(updatedWs.WorkspacePath, wsPath))
-        {
-            var scanned = await appsStore.ScanAppsAsync(updatedWs.WorkspacePath, ct).ConfigureAwait(false);
-            var remainingApps = scanned.Where(a => a.IsPresentInWorkspace).Select(a => a.WorkspaceFileName ?? a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            var remainingInstalled = scanned.Where(a => a.IsInstalled && a.IsPresentInWorkspace).Select(a => a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            var clearReadyState = scope == WorkspaceResetScope.UndoReadyWorkspace || res.Value.RemovedAgentsMd;
-            updatedWs = updatedWs with
+        var clearReadyState = scope == WorkspaceResetScope.UndoReadyWorkspace || res.Value.RemovedAgentsMd;
+        var syncRes = await WorkspaceStateSync.SyncActiveWorkspaceIfMatchingAsync(
+            settingsStore,
+            appsStore,
+            settings,
+            wsPath,
+            (activeWs, snapshot) => activeWs with
             {
-                AgentsMdExportedUtc = clearReadyState ? null : updatedWs.AgentsMdExportedUtc,
-                LastAgentsMdPath = clearReadyState ? null : updatedWs.LastAgentsMdPath,
-                LastReadyWorkspaceArtifacts = clearReadyState ? null : updatedWs.LastReadyWorkspaceArtifacts,
-                WorkspaceApps = remainingApps,
-                SelectedAppFileNames = remainingInstalled
-            };
-            await settingsStore.SaveAsync(settings with { ActiveWorkspace = updatedWs }, ct).ConfigureAwait(false);
-        }
+                AgentsMdExportedUtc = clearReadyState ? null : activeWs.AgentsMdExportedUtc,
+                LastAgentsMdPath = clearReadyState ? null : activeWs.LastAgentsMdPath,
+                LastReadyWorkspaceArtifacts = clearReadyState ? null : activeWs.LastReadyWorkspaceArtifacts,
+                WorkspaceApps = snapshot.WorkspaceApps,
+                SelectedAppFileNames = snapshot.InstalledInWorkspace
+            },
+            ct).ConfigureAwait(false);
 
-        return Result<(WorkspaceResetResult, ActiveWorkspaceState?)>.Success((res.Value, updatedWs));
+        return syncRes.IsSuccess
+            ? Result<(WorkspaceResetResult, ActiveWorkspaceState?)>.Success((res.Value, syncRes.Value))
+            : Result<(WorkspaceResetResult, ActiveWorkspaceState?)>.Failure(syncRes.Error!);
     }
 
     public async Task<IReadOnlyList<OutdatedWorkspaceTool>> DetectOutdatedToolsAsync(
@@ -114,21 +114,21 @@ public sealed class WorkspaceMaintenanceHandler(
             return Result<(WorkspaceToolUpdateResult, ActiveWorkspaceState?)>.Failure(res.Error!);
         }
 
-        ActiveWorkspaceState? updatedWs = settings.ActiveWorkspace;
-        if (updatedWs is not null && PathNormalization.AreSameDirectory(updatedWs.WorkspacePath, wsPath))
-        {
-            var scanned = await appsStore.ScanAppsAsync(updatedWs.WorkspacePath, ct).ConfigureAwait(false);
-            var currentApps = scanned.Where(a => a.IsPresentInWorkspace).Select(a => a.WorkspaceFileName ?? a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            var currentInstalled = scanned.Where(a => a.IsInstalled && a.IsPresentInWorkspace).Select(a => a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            updatedWs = updatedWs with
+        var syncRes = await WorkspaceStateSync.SyncActiveWorkspaceIfMatchingAsync(
+            settingsStore,
+            appsStore,
+            settings,
+            wsPath,
+            (activeWs, snapshot) => activeWs with
             {
-                WorkspaceApps = currentApps,
-                SelectedAppFileNames = currentInstalled
-            };
-            await settingsStore.SaveAsync(settings with { ActiveWorkspace = updatedWs }, ct).ConfigureAwait(false);
-        }
+                WorkspaceApps = snapshot.WorkspaceApps,
+                SelectedAppFileNames = snapshot.InstalledInWorkspace
+            },
+            ct).ConfigureAwait(false);
 
-        return Result<(WorkspaceToolUpdateResult, ActiveWorkspaceState?)>.Success((res.Value, updatedWs));
+        return syncRes.IsSuccess
+            ? Result<(WorkspaceToolUpdateResult, ActiveWorkspaceState?)>.Success((res.Value, syncRes.Value))
+            : Result<(WorkspaceToolUpdateResult, ActiveWorkspaceState?)>.Failure(syncRes.Error!);
     }
 
     private async Task<string?> ResolveWorkspacePathAsync(string? overridePath, CancellationToken ct)

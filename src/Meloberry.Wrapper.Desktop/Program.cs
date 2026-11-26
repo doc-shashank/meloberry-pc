@@ -5,6 +5,7 @@ using Meloberry.Wrapper.Application;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Desktop.Win32;
 using Meloberry.Wrapper.Infrastructure;
+using Meloberry.Wrapper.Infrastructure.Common;
 using Meloberry.Wrapper.Infrastructure.Server;
 using Meloberry.Wrapper.Infrastructure.Workspace;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,7 +25,7 @@ internal static class Program
         if (args.Contains("--verify-loader", StringComparer.OrdinalIgnoreCase))
         {
             var dataPaths = new WrapperDataPaths();
-            _ = WebView2Host.EnsureLoaderDllLoaded(dataPaths);
+            _ = WebView2Host.EnsureLoaderDllLoaded(dataPaths, new AtomicFileWriter());
             _ = CoreWebView2Environment.CompareBrowserVersions("1.0.0.0", "1.0.0.0");
             _ = CoreWebView2Environment.GetAvailableBrowserVersionString();
             return 0;
@@ -65,40 +66,25 @@ internal static class Program
 
             using var provider = services.BuildServiceProvider();
             var metadata = provider.GetRequiredService<IWrapperMetadataProvider>().GetMetadata();
+            var settingsStore = provider.GetRequiredService<ISettingsStore>();
+            var initialSettings = settingsStore.LoadAsync().GetAwaiter().GetResult();
             var server = provider.GetRequiredService<LocalHttpWrapperServer>();
             var webViewHost = provider.GetRequiredService<WebView2Host>();
 
             try
             {
                 server.Start();
-                windowHost.Create($"{metadata.ProductName} v{metadata.Version}");
+                windowHost.Create(
+                    $"{metadata.ProductName} v{metadata.Version}",
+                    initialSettings.ThemeMode,
+                    initialSettings.WindowPlacement);
                 windowHost.Show();
 
-                windowHost.EnqueueCallback(async () =>
-                {
-                    try
-                    {
-                        await webViewHost.InitializeAsync(server.BaseUrl, server.ViewerBaseUrl);
-                    }
-                    catch (WebView2RuntimeNotFoundException)
-                    {
-                        Win32Native.MessageBoxW(
-                            windowHost.Handle,
-                            "Microsoft Edge WebView2 Runtime is required to run Meloberry PC.\n\nPlease install Evergreen WebView2 Runtime from developer.microsoft.com/en-us/microsoft-edge/webview2/ and relaunch.",
-                            "Meloberry PC — Missing WebView2 Runtime",
-                            Win32Native.MB_OK | Win32Native.MB_ICONERROR);
-                        windowHost.RequestShutdown();
-                    }
-                    catch (Exception ex)
-                    {
-                        Win32Native.MessageBoxW(
-                            windowHost.Handle,
-                            $"Failed to initialize Meloberry PC:\n\n{ex.Message}",
-                            "Meloberry PC Error",
-                            Win32Native.MB_OK | Win32Native.MB_ICONERROR);
-                        windowHost.RequestShutdown();
-                    }
-                });
+                windowHost.EnqueueCallback(() => _ = InitializeWebViewOnUiThreadAsync(
+                    webViewHost,
+                    windowHost,
+                    server.BaseUrl,
+                    server.ViewerBaseUrl));
 
                 windowHost.RunMessageLoop();
             }
@@ -106,6 +92,17 @@ internal static class Program
             {
                 webViewHost.Dispose();
                 pendingLaunch = windowHost.PendingPostShutdownLaunch;
+                if (windowHost.LastCapturedPlacement is { } placement)
+                {
+                    try
+                    {
+                        settingsStore.UpdateAsync(s => s with { WindowPlacement = placement }).GetAwaiter().GetResult();
+                    }
+                    catch
+                    {
+                        // Best-effort placement persistence on exit.
+                    }
+                }
             }
         }
         finally
@@ -132,5 +129,35 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    private static async Task InitializeWebViewOnUiThreadAsync(
+        WebView2Host webViewHost,
+        Win32WindowHost windowHost,
+        string baseUrl,
+        string viewerBaseUrl)
+    {
+        try
+        {
+            await webViewHost.InitializeAsync(baseUrl, viewerBaseUrl);
+        }
+        catch (WebView2RuntimeNotFoundException)
+        {
+            Win32Native.MessageBoxW(
+                windowHost.Handle,
+                "Microsoft Edge WebView2 Runtime is required to run Meloberry PC.\n\nPlease install Evergreen WebView2 Runtime from developer.microsoft.com/en-us/microsoft-edge/webview2/ and relaunch.",
+                "Meloberry PC — Missing WebView2 Runtime",
+                Win32Native.MB_OK | Win32Native.MB_ICONERROR);
+            windowHost.RequestShutdown();
+        }
+        catch (Exception ex)
+        {
+            Win32Native.MessageBoxW(
+                windowHost.Handle,
+                $"Failed to initialize Meloberry PC:\n\n{ex.Message}",
+                "Meloberry PC Error",
+                Win32Native.MB_OK | Win32Native.MB_ICONERROR);
+            windowHost.RequestShutdown();
+        }
     }
 }

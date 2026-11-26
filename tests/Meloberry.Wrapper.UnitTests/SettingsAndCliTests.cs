@@ -50,6 +50,10 @@ public sealed class SettingsAndCliTests : IDisposable
         Assert.True((await handler.DeleteCustomPresetAsync(custom.Value.Id)).IsSuccess);
         Assert.DoesNotContain(await handler.GetAllPresetsAsync(), p => p.Name == "My Drill");
 
+        var missingDelete = await handler.DeleteCustomPresetAsync("nonexistent-preset");
+        Assert.True(missingDelete.IsFailure);
+        Assert.Equal("Preset.NotFound", missingDelete.Error!.Code);
+
         // Bug #21: invalid GitHub owner/repo identifiers must be rejected.
         var badOwner = await handler.UpdateSettingsAsync("dark", null, null, null, "evil/repo", "meloberry-pc");
         Assert.True(badOwner.IsFailure);
@@ -127,6 +131,53 @@ public sealed class SettingsAndCliTests : IDisposable
         var missingRes = await new ProcessMbyCliClient().GetSpecCatalogAsync(Path.Combine(_tempRoot, "nonexistent_mby.exe"), null);
         Assert.True(missingRes.IsFailure);
         Assert.Equal("Cli.ExecutionFailed", missingRes.Error!.Code);
+    }
+
+    [Fact]
+    public async Task JsonSettingsStore_UpdateAsync_PreservesAllDisjointConcurrentMutations()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "concurrent_cfg"));
+        var store = new JsonSettingsStore(paths);
+        var settingsHandler = new SettingsAndPresetsHandler(store);
+        var libHandler = new ManageLibraryHandler(
+            new WebAppMountRegistry(),
+            new WebAppAnalysisStore(),
+            new WorkspaceInitializer(paths, new WebAppAnalysisStore()),
+            store);
+
+        var webApps = new List<string>();
+        for (var i = 0; i < 6; i++)
+        {
+            var dir = Path.Combine(_tempRoot, $"web_{i}");
+            Directory.CreateDirectory(dir);
+            await File.WriteAllTextAsync(Path.Combine(dir, "index.html"), "<html></html>");
+            await File.WriteAllTextAsync(Path.Combine(dir, "app.js"), "console.log(1);");
+            webApps.Add(dir);
+        }
+
+        var tasks = new List<Task>();
+        for (var i = 0; i < 6; i++)
+        {
+            var idx = i;
+            var webDir = webApps[idx];
+            var presetName = $"Preset_{idx}";
+            tasks.Add(Task.Run(() => libHandler.OpenWebAppAsync(webDir)));
+            tasks.Add(Task.Run(() => settingsHandler.SaveCustomPresetAsync(new PromptPreset(
+                $"custom-{idx}",
+                presetName,
+                "Desc",
+                ContainerKind.StandaloneQuiz,
+                AuthoringFormat.Json,
+                [new ShoppingListSelection("mcq", true, 5)]))));
+        }
+
+        tasks.Add(Task.Run(() => settingsHandler.UpdateOverrideWebAppThemeAsync(false)));
+        await Task.WhenAll(tasks);
+
+        var finalSettings = await store.LoadAsync();
+        Assert.False(finalSettings.OverrideWebAppTheme);
+        Assert.Equal(6, finalSettings.RecentWebApps?.Count);
+        Assert.Equal(6, finalSettings.CustomPresets?.Count);
     }
 
     private sealed class NoopDownloader : IGitHubToolDownloader

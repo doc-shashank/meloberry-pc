@@ -1,5 +1,6 @@
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Infrastructure.Cli;
+using Meloberry.Wrapper.Infrastructure.Common;
 using Meloberry.Wrapper.Infrastructure.GitHub;
 using Meloberry.Wrapper.Infrastructure.Persistence;
 using Meloberry.Wrapper.Infrastructure.Server;
@@ -16,6 +17,7 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddSingleton<IWrapperDataPaths>(_ => new WrapperDataPaths(customDataDir));
+        services.AddSingleton<IAtomicFileWriter, AtomicFileWriter>();
         services.AddSingleton<ISettingsStore, JsonSettingsStore>();
         services.AddSingleton<IWebAppAnalysisStore, WebAppAnalysisStore>();
         services.AddSingleton<IManagedAppsStore, ManagedAppsStore>();

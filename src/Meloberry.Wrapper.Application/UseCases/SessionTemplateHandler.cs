@@ -10,14 +10,16 @@ namespace Meloberry.Wrapper.Application.UseCases;
 public sealed record GenerateTemplateResult(
     string JsonPath,
     string WorkspaceId,
-    string RawJson);
+    string RawJson,
+    IReadOnlyList<string>? Warnings = null);
 
 /// <summary>Builds strict `mby` JSON session/article/quiz scaffolds and optionally ingests them via `mby apply`.</summary>
 public sealed class SessionTemplateHandler(
     LoadSpecCatalogHandler specLoader,
     ManagedAppsHandler managedApps,
     IMbyCliClient mbyClient,
-    ISettingsStore settingsStore)
+    ISettingsStore settingsStore,
+    IAtomicFileWriter atomicFileWriter)
 {
     // Valid 1x1 transparent PNG bytes so draft `image` / `relabel` templates pass asset confinement cleanly.
     private static readonly byte[] PlaceholderPngBytes =
@@ -62,32 +64,26 @@ public sealed class SessionTemplateHandler(
 
         var scaffold = scaffoldRes.Value;
         var jsonPath = Path.Combine(fullWs, scaffold.SuggestedFileName);
-        string? tmpJson = null;
         try
         {
             Directory.CreateDirectory(fullWs);
             if (scaffold.RequiresPlaceholderImage)
             {
-                var assetsDir = Path.Combine(fullWs, "assets");
-                Directory.CreateDirectory(assetsDir);
-                var placeholderPath = Path.Combine(assetsDir, "placeholder.png");
+                var placeholderPath = Path.Combine(fullWs, "assets", "placeholder.png");
                 if (!File.Exists(placeholderPath))
                 {
-                    await File.WriteAllBytesAsync(placeholderPath, PlaceholderPngBytes, ct).ConfigureAwait(false);
+                    await atomicFileWriter.WriteAllBytesAsync(placeholderPath, PlaceholderPngBytes, ct).ConfigureAwait(false);
                 }
             }
 
-            tmpJson = $"{jsonPath}.{Guid.NewGuid():N}.tmp";
-            await File.WriteAllTextAsync(tmpJson, scaffold.RawJson, ct).ConfigureAwait(false);
-            File.Move(tmpJson, jsonPath, overwrite: true);
+            await atomicFileWriter.WriteAllTextAsync(jsonPath, scaffold.RawJson, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            if (tmpJson is not null && File.Exists(tmpJson))
-            {
-                try { File.Delete(tmpJson); } catch { }
-            }
-
             return Result<GenerateTemplateResult>.Failure(WrapperErrors.IoFailure($"Failed to write template files: {ex.Message}"));
         }
 
@@ -100,6 +96,7 @@ public sealed class SessionTemplateHandler(
         return Result<GenerateTemplateResult>.Success(new GenerateTemplateResult(
             JsonPath: jsonPath,
             WorkspaceId: applyRes.Value,
-            RawJson: scaffold.RawJson));
+            RawJson: scaffold.RawJson,
+            Warnings: scaffold.Warnings));
     }
 }

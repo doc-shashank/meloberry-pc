@@ -54,6 +54,9 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
     private static partial Regex HeadOpenTagRegex();
 
     private static readonly Lazy<IReadOnlyDictionary<string, string>> IconMapLazy = new(BuildEmbeddedIconMap);
+    private static readonly Lazy<string> PaperThemeCssLazy = new(() => ReadEmbeddedText("WebAssets.paper-theme.css").Trim());
+    private static readonly Lazy<byte[]> CombinedShellCssBytesLazy = new(() =>
+        Encoding.UTF8.GetBytes($"{ReadEmbeddedText("WebAssets.shell.css").TrimEnd()}\n\n{PaperThemeCssLazy.Value}\n"));
 
     private readonly IWrapperMetadataProvider _metadataProvider;
     private readonly IWrapperDataPaths _dataPaths;
@@ -141,19 +144,58 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
             return;
         }
 
-        Port = FindFreeTcpPort();
-        _listener = new HttpListener();
-        _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
-        _listener.Start();
+        var (shellListener, shellPort) = StartListenerOnFreePort();
+        HttpListener viewerListener;
+        int viewerPort;
+        try
+        {
+            (viewerListener, viewerPort) = StartListenerOnFreePort(excludePort: shellPort);
+        }
+        catch
+        {
+            try { shellListener.Close(); } catch { }
+            throw;
+        }
 
-        ViewerPort = FindFreeTcpPort();
-        _viewerListener = new HttpListener();
-        _viewerListener.Prefixes.Add($"http://127.0.0.1:{ViewerPort}/");
-        _viewerListener.Start();
+        Port = shellPort;
+        ViewerPort = viewerPort;
+        _listener = shellListener;
+        _viewerListener = viewerListener;
 
         _cts = new CancellationTokenSource();
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_listener, isViewerHost: false, _cts.Token));
         _viewerAcceptLoop = Task.Run(() => AcceptLoopAsync(_viewerListener, isViewerHost: true, _cts.Token));
+    }
+
+    private static (HttpListener Listener, int Port) StartListenerOnFreePort(int maxAttempts = 10, int? excludePort = null)
+    {
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            var port = FindFreeTcpPort();
+            if (excludePort.HasValue && port == excludePort.Value)
+            {
+                continue;
+            }
+
+            var listener = new HttpListener();
+            try
+            {
+                listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+                listener.Start();
+                return (listener, port);
+            }
+            catch (Exception ex) when ((ex is HttpListenerException or SocketException) && attempt < maxAttempts - 1)
+            {
+                try { listener.Close(); } catch { }
+            }
+            catch
+            {
+                try { listener.Close(); } catch { }
+                throw;
+            }
+        }
+
+        throw new InvalidOperationException("Failed to bind a local HTTP listener port after multiple attempts.");
     }
 
     private async Task AcceptLoopAsync(HttpListener listener, bool isViewerHost, CancellationToken ct)
@@ -246,7 +288,11 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
 
             if (path == "/shell/shell.css")
             {
-                await ServeEmbeddedResourceAsync(ctx.Response, "WebAssets.shell.css", "text/css; charset=utf-8", ct).ConfigureAwait(false);
+                var cssBytes = CombinedShellCssBytesLazy.Value;
+                ctx.Response.ContentType = "text/css; charset=utf-8";
+                ctx.Response.StatusCode = 200;
+                await ctx.Response.OutputStream.WriteAsync(cssBytes, ct).ConfigureAwait(false);
+                ctx.Response.Close();
                 return;
             }
 
@@ -320,6 +366,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
             {
                 var settings = await _settingsStore.LoadAsync(ct).ConfigureAwait(false);
                 var apps = await _managedApps.ListAppsAsync(ct).ConfigureAwait(false);
+                var resolvedTools = await _managedApps.ResolveToolsAsync(settings.ActiveWorkspace?.WorkspacePath, ct).ConfigureAwait(false);
                 var meta = _metadataProvider.GetMetadata();
                 AgentsMdStatus? agentsStatus = null;
                 IReadOnlyList<OutdatedWorkspaceTool> outdatedTools = [];
@@ -342,6 +389,8 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                     viewerOrigin = ViewerBaseUrl.TrimEnd('/'),
                     settings,
                     apps,
+                    resolvedTools,
+                    paperThemeFallbackCss = PaperThemeCssLazy.Value,
                     agentsMdStatus = agentsStatus,
                     outdatedTools,
                     ecosystemRepos = EcosystemCatalog.Repositories,
@@ -353,7 +402,8 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
             case ("/api/apps", "GET"):
             {
                 var apps = await _managedApps.ListAppsAsync(ct).ConfigureAwait(false);
-                await WriteJsonAsync(resp, 200, new { appsDirectory = _dataPaths.AppsDirectory, apps }, ct).ConfigureAwait(false);
+                var resolvedTools = await _managedApps.ResolveToolsAsync(ct: ct).ConfigureAwait(false);
+                await WriteJsonAsync(resp, 200, new { appsDirectory = _dataPaths.AppsDirectory, apps, resolvedTools }, ct).ConfigureAwait(false);
                 return;
             }
 
@@ -1118,11 +1168,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
     {
         var safeTheme = JsonSerializer.Serialize(themeMode);
         var paperCss = string.Equals(themeMode, "paper", StringComparison.OrdinalIgnoreCase)
-            ? """
-              <style id="mby-wrapper-theme-fallback">
-              html[data-theme="paper"] { --bg:#f7f3e9;--surface:#fffdf8;--text:#2c241b;--muted:#6f6254;--accent:#9a3412;--accent-soft:#ffedd5;--select:#1d4ed8;--select-soft:#e0e7ff;--table-hideable-bg:#eef2e6;--table-hideable-color:#3f6212;--border:#e7dcc8;--callout-pearl-bg:#fef7e0;--callout-clinical-bg:#eef7fb;--callout-warning-bg:#fdf0ed; }
-              </style>
-              """
+            ? $"<style id=\"mby-wrapper-theme-fallback\">\n{PaperThemeCssLazy.Value}\n</style>"
             : string.Empty;
         return $"{paperCss}<script>(function(){{if(window.__mbyOrigTheme===undefined){{window.__mbyOrigTheme=document.documentElement.getAttribute('data-theme');}}document.documentElement.setAttribute('data-theme',{safeTheme});}})();</script>";
     }

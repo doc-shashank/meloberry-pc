@@ -7,13 +7,16 @@ using Microsoft.Web.WebView2.Core;
 namespace Meloberry.Wrapper.Desktop.Win32;
 
 /// <summary>Hosts CoreWebView2 inside the borderless Win32 HWND client area and handles single-file loader resolution.</summary>
-internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths dataPaths) : IDisposable
+internal sealed class WebView2Host(
+    Win32WindowHost windowHost,
+    IWrapperDataPaths dataPaths,
+    IAtomicFileWriter atomicFileWriter) : IDisposable
 {
     private static IntPtr _loaderHandle;
     private static int _resolverRegistered;
     private CoreWebView2Controller? _controller;
 
-    public static string EnsureLoaderDllLoaded(IWrapperDataPaths dataPaths)
+    public static string EnsureLoaderDllLoaded(IWrapperDataPaths dataPaths, IAtomicFileWriter atomicFileWriter)
     {
         var candidates = new[]
         {
@@ -26,7 +29,7 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
         {
             var primaryDir = Path.Combine(dataPaths.BaseDirectory, "runtime", "win-x64");
             var fallbackDir = Path.Combine(Path.GetTempPath(), "Meloberry", "runtime", "win-x64");
-            existing = TryExtractLoader(primaryDir) ?? TryExtractLoader(fallbackDir)
+            existing = TryExtractLoader(primaryDir, atomicFileWriter) ?? TryExtractLoader(fallbackDir, atomicFileWriter)
                 ?? throw new DllNotFoundException("Unable to extract WebView2Loader.dll to runtime cache.");
         }
 
@@ -51,13 +54,13 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
         return existing;
     }
 
-    private static string? TryExtractLoader(string runtimeDir)
+    private static string? TryExtractLoader(string runtimeDir, IAtomicFileWriter atomicFileWriter)
     {
         try
         {
             Directory.CreateDirectory(runtimeDir);
             var targetPath = Path.Combine(runtimeDir, "WebView2Loader.dll");
-            ExtractEmbeddedLoaderIfNeeded(targetPath);
+            ExtractEmbeddedLoaderIfNeeded(targetPath, atomicFileWriter);
             return File.Exists(targetPath) ? targetPath : null;
         }
         catch
@@ -68,21 +71,22 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
 
     public async Task InitializeAsync(string startUrl, string viewerBaseUrl)
     {
-        _ = EnsureLoaderDllLoaded(dataPaths);
+        _ = EnsureLoaderDllLoaded(dataPaths, atomicFileWriter);
         Directory.CreateDirectory(dataPaths.WebView2UserDataDirectory);
         var env = await CoreWebView2Environment.CreateAsync(null, dataPaths.WebView2UserDataDirectory);
         _controller = await env.CreateCoreWebView2ControllerAsync(windowHost.Handle);
-        _controller.Bounds = windowHost.GetClientBounds();
+        _controller.DefaultBackgroundColor = windowHost.InitialWebViewBackgroundColor;
+        _controller.Bounds = windowHost.GetWebViewBounds();
         _controller.AllowExternalDrop = true;
 
         var shellAuthority = new Uri(startUrl).GetLeftPart(UriPartial.Authority);
         var viewerAuthority = new Uri(viewerBaseUrl).GetLeftPart(UriPartial.Authority);
 
-        windowHost.Resized += size =>
+        windowHost.Resized += bounds =>
         {
             if (_controller is not null)
             {
-                _controller.Bounds = new System.Drawing.Rectangle(0, 0, size.Width, size.Height);
+                _controller.Bounds = bounds;
             }
         };
 
@@ -244,7 +248,7 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
         _ = _controller.CoreWebView2.ExecuteScriptAsync($"window.__onNativeDrop && window.__onNativeDrop({payloadJson});");
     }
 
-    private static void ExtractEmbeddedLoaderIfNeeded(string targetPath)
+    private static void ExtractEmbeddedLoaderIfNeeded(string targetPath, IAtomicFileWriter atomicFileWriter)
     {
         var asm = Assembly.GetExecutingAssembly();
         var resName = asm.GetManifestResourceNames()
@@ -261,25 +265,7 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
             return;
         }
 
-        var tmp = $"{targetPath}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            using (var fs = File.Create(tmp))
-            {
-                stream.CopyTo(fs);
-            }
-
-            File.Move(tmp, targetPath, overwrite: true);
-        }
-        catch
-        {
-            if (File.Exists(tmp))
-            {
-                try { File.Delete(tmp); } catch { }
-            }
-
-            throw;
-        }
+        atomicFileWriter.WriteStream(targetPath, stream);
     }
 
     public void Dispose()

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using Meloberry.Wrapper.Application.Abstractions;
+using Meloberry.Wrapper.Domain.Models;
 
 namespace Meloberry.Wrapper.Desktop.Win32;
 
@@ -12,7 +13,7 @@ internal sealed class Win32SynchronizationContext(Win32WindowHost host) : Synchr
         host.EnqueueCallback(() => d(state));
 }
 
-/// <summary>Owns the borderless ExtendContent Win32 HWND window, maximized startup, DPI awareness, and shutdown.</summary>
+/// <summary>Owns the borderless ExtendContent Win32 HWND window, placement persistence, DPI awareness, and shutdown.</summary>
 internal sealed class Win32WindowHost : IAppShutdownCoordinator
 {
     public const string WindowClassName = "MeloberryPcWrapperWindowClass";
@@ -20,9 +21,11 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
     private readonly ConcurrentQueue<Action> _uiQueue = new();
     private readonly Win32Native.WndProc _wndProcDelegate;
     private IntPtr _hwnd;
+    private IntPtr _backgroundBrush;
+    private bool _initialMaximized = true;
     private volatile bool _isDestroyed;
 
-    public event Action<Size>? Resized;
+    public event Action<Rectangle>? Resized;
     public event Action<bool>? MaximizedChanged;
     public event Action<IReadOnlyList<string>>? FilesDropped;
 
@@ -34,12 +37,36 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
     public IntPtr Handle => _hwnd;
     public bool IsMaximized => _hwnd != IntPtr.Zero && Win32Native.IsZoomed(_hwnd);
     public (string FileName, string Arguments)? PendingPostShutdownLaunch { get; private set; }
+    public WindowPlacementState? LastCapturedPlacement { get; private set; }
+    public Color InitialWebViewBackgroundColor { get; private set; } = Color.FromArgb(0xFD, 0xF6, 0xF9);
 
-    public void Create(string title, int width = 1320, int height = 860)
+    public void Create(
+        string title,
+        string themeMode = "berry",
+        WindowPlacementState? savedPlacement = null,
+        int width = 1320,
+        int height = 860)
     {
         Win32Native.SetProcessDpiAwarenessContext(Win32Native.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+        var (surfaceColorRef, webBgColor, isDarkTheme) = ResolveThemeColors(themeMode);
+        InitialWebViewBackgroundColor = webBgColor;
+        _backgroundBrush = Win32Native.CreateSolidBrush(surfaceColorRef);
+
         var hInstance = Win32Native.GetModuleHandleW(null);
+        var appIcon = Win32Native.LoadImageW(
+            hInstance,
+            new IntPtr(Win32Native.IDI_APPLICATION),
+            Win32Native.IMAGE_ICON,
+            0,
+            0,
+            Win32Native.LR_DEFAULTSIZE | Win32Native.LR_SHARED);
+        if (appIcon == IntPtr.Zero)
+        {
+            appIcon = Win32Native.LoadIconW(IntPtr.Zero, new IntPtr(Win32Native.IDI_APPLICATION));
+        }
+
+        var arrowCursor = Win32Native.LoadCursorW(IntPtr.Zero, new IntPtr(Win32Native.IDC_ARROW));
 
         var wc = new Win32Native.WNDCLASSEXW
         {
@@ -47,14 +74,16 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
             style = 0x0003,
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate),
             hInstance = hInstance,
+            hIcon = appIcon,
+            hIconSm = appIcon,
+            hCursor = arrowCursor,
+            hbrBackground = _backgroundBrush,
             lpszClassName = WindowClassName
         };
         Win32Native.RegisterClassExW(ref wc);
 
-        var screenW = Win32Native.GetSystemMetrics(Win32Native.SM_CXSCREEN);
-        var screenH = Win32Native.GetSystemMetrics(Win32Native.SM_CYSCREEN);
-        var x = Math.Max(40, (screenW - width) / 2);
-        var y = Math.Max(40, (screenH - height) / 2);
+        var (x, y, winW, winH, startMaximized) = ResolveInitialPlacement(savedPlacement, width, height);
+        _initialMaximized = startMaximized;
 
         _hwnd = Win32Native.CreateWindowExW(
             0,
@@ -63,8 +92,8 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
             Win32Native.WS_OVERLAPPEDWINDOW,
             x,
             y,
-            width,
-            height,
+            winW,
+            winH,
             IntPtr.Zero,
             IntPtr.Zero,
             hInstance,
@@ -72,10 +101,16 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
 
         if (_hwnd == IntPtr.Zero)
         {
+            if (_backgroundBrush != IntPtr.Zero)
+            {
+                Win32Native.DeleteObject(_backgroundBrush);
+                _backgroundBrush = IntPtr.Zero;
+            }
+
             throw new InvalidOperationException("Failed to create Win32 host window.");
         }
 
-        var useDark = 1;
+        var useDark = isDarkTheme ? 1 : 0;
         _ = Win32Native.DwmSetWindowAttribute(_hwnd, Win32Native.DWMWA_USE_IMMERSIVE_DARK_MODE, ref useDark, sizeof(int));
 
         var margins = new Win32Native.MARGINS { cxLeftWidth = 0, cxRightWidth = 0, cyTopHeight = 1, cyBottomHeight = 0 };
@@ -95,7 +130,7 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
 
     public void Show()
     {
-        Win32Native.ShowWindow(_hwnd, Win32Native.SW_SHOWMAXIMIZED);
+        Win32Native.ShowWindow(_hwnd, _initialMaximized ? Win32Native.SW_SHOWMAXIMIZED : Win32Native.SW_SHOWNORMAL);
         Win32Native.UpdateWindow(_hwnd);
     }
 
@@ -134,14 +169,22 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
         });
     }
 
-    public Rectangle GetClientBounds()
+    public Rectangle GetWebViewBounds()
     {
         if (_hwnd == IntPtr.Zero || !Win32Native.GetClientRect(_hwnd, out var rect))
         {
             return new Rectangle(0, 0, 1280, 800);
         }
 
-        return new Rectangle(0, 0, Math.Max(1, rect.right - rect.left), Math.Max(1, rect.bottom - rect.top));
+        var w = Math.Max(1, rect.right - rect.left);
+        var h = Math.Max(1, rect.bottom - rect.top);
+        if (Win32Native.IsZoomed(_hwnd))
+        {
+            return new Rectangle(0, 0, w, h);
+        }
+
+        var topInset = GetTopResizeBorderPx(Win32Native.GetDpiForWindow(_hwnd));
+        return new Rectangle(0, topInset, w, Math.Max(1, h - topInset));
     }
 
     public void EnqueueCallback(Action action)
@@ -252,12 +295,8 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
                 {
                     var nc = Marshal.PtrToStructure<Win32Native.NCCALCSIZE_PARAMS>(lParam);
                     var dpi = Win32Native.GetDpiForWindow(hWnd);
-                    var frameX = dpi > 0
-                        ? Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CXFRAME, dpi) + Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CXPADDEDBORDER, dpi)
-                        : Win32Native.GetSystemMetrics(Win32Native.SM_CXFRAME) + Win32Native.GetSystemMetrics(Win32Native.SM_CXPADDEDBORDER);
-                    var frameY = dpi > 0
-                        ? Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CYFRAME, dpi) + Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CXPADDEDBORDER, dpi)
-                        : Win32Native.GetSystemMetrics(Win32Native.SM_CYFRAME) + Win32Native.GetSystemMetrics(Win32Native.SM_CXPADDEDBORDER);
+                    var frameX = GetFrameX(dpi);
+                    var frameY = GetFrameY(dpi);
 
                     nc.rgrc0.left += frameX;
                     nc.rgrc0.right -= frameX;
@@ -273,6 +312,47 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
 
                 return Win32Native.DefWindowProcW(hWnd, msg, wParam, lParam);
 
+            case Win32Native.WM_NCHITTEST:
+                if (!Win32Native.IsZoomed(hWnd) && Win32Native.GetWindowRect(hWnd, out var winRect))
+                {
+                    var ptX = unchecked((short)((long)lParam & 0xFFFF));
+                    var ptY = unchecked((short)(((long)lParam >> 16) & 0xFFFF));
+                    var dpi = Win32Native.GetDpiForWindow(hWnd);
+                    var borderX = GetFrameX(dpi);
+                    var borderY = Math.Max(GetFrameY(dpi), GetTopResizeBorderPx(dpi));
+
+                    if (ptY >= winRect.top && ptY < winRect.top + borderY && ptX >= winRect.left && ptX < winRect.right)
+                    {
+                        if (ptX < winRect.left + borderX)
+                        {
+                            return new IntPtr(Win32Native.HTTOPLEFT);
+                        }
+
+                        if (ptX >= winRect.right - borderX)
+                        {
+                            return new IntPtr(Win32Native.HTTOPRIGHT);
+                        }
+
+                        return new IntPtr(Win32Native.HTTOP);
+                    }
+                }
+
+                return Win32Native.DefWindowProcW(hWnd, msg, wParam, lParam);
+
+            case Win32Native.WM_GETMINMAXINFO:
+                if (lParam != IntPtr.Zero)
+                {
+                    var mmi = Marshal.PtrToStructure<Win32Native.MINMAXINFO>(lParam);
+                    var dpi = Win32Native.GetDpiForWindow(hWnd);
+                    var scale = (dpi > 0 ? dpi : 96u) / 96.0;
+                    mmi.ptMinTrackSize.x = (int)Math.Round(640.0 * scale);
+                    mmi.ptMinTrackSize.y = (int)Math.Round(480.0 * scale);
+                    Marshal.StructureToPtr(mmi, lParam, fDeleteOld: false);
+                    return IntPtr.Zero;
+                }
+
+                return Win32Native.DefWindowProcW(hWnd, msg, wParam, lParam);
+
             case Win32Native.WM_APP_INVOKE:
                 while (_uiQueue.TryDequeue(out var act))
                 {
@@ -282,11 +362,7 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
                 return IntPtr.Zero;
 
             case Win32Native.WM_SIZE:
-                if (Win32Native.GetClientRect(hWnd, out var rect))
-                {
-                    Resized?.Invoke(new Size(Math.Max(1, rect.right - rect.left), Math.Max(1, rect.bottom - rect.top)));
-                }
-
+                Resized?.Invoke(GetWebViewBounds());
                 MaximizedChanged?.Invoke(Win32Native.IsZoomed(hWnd));
                 return IntPtr.Zero;
 
@@ -294,12 +370,23 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
                 HandleDropFiles(wParam);
                 return IntPtr.Zero;
 
+            case Win32Native.WM_CLOSE:
+                CaptureWindowPlacement(hWnd);
+                return Win32Native.DefWindowProcW(hWnd, msg, wParam, lParam);
+
             case Win32Native.WM_DESTROY:
+                CaptureWindowPlacement(hWnd);
                 _isDestroyed = true;
                 _hwnd = IntPtr.Zero;
                 while (_uiQueue.TryDequeue(out var pending))
                 {
                     try { pending(); } catch { }
+                }
+
+                if (_backgroundBrush != IntPtr.Zero)
+                {
+                    Win32Native.DeleteObject(_backgroundBrush);
+                    _backgroundBrush = IntPtr.Zero;
                 }
 
                 Win32Native.PostQuitMessage(0);
@@ -341,4 +428,99 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
             Win32Native.DragFinish(hDrop);
         }
     }
+
+    private void CaptureWindowPlacement(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var wp = new Win32Native.WINDOWPLACEMENT
+        {
+            length = (uint)Marshal.SizeOf<Win32Native.WINDOWPLACEMENT>()
+        };
+        if (!Win32Native.GetWindowPlacement(hWnd, ref wp))
+        {
+            return;
+        }
+
+        var normal = wp.rcNormalPosition;
+        var w = Math.Max(480, normal.right - normal.left);
+        var h = Math.Max(360, normal.bottom - normal.top);
+        LastCapturedPlacement = new WindowPlacementState(
+            X: normal.left,
+            Y: normal.top,
+            Width: w,
+            Height: h,
+            IsMaximized: Win32Native.IsZoomed(hWnd));
+    }
+
+    private static (int X, int Y, int Width, int Height, bool StartMaximized) ResolveInitialPlacement(
+        WindowPlacementState? saved,
+        int defaultWidth,
+        int defaultHeight)
+    {
+        if (saved is { Width: >= 480, Height: >= 360 })
+        {
+            var candidate = new Win32Native.RECT
+            {
+                left = saved.X,
+                top = saved.Y,
+                right = saved.X + saved.Width,
+                bottom = saved.Y + saved.Height
+            };
+
+            var onMonitor = Win32Native.MonitorFromRect(ref candidate, Win32Native.MONITOR_DEFAULTTONULL);
+            var targetMonitor = onMonitor != IntPtr.Zero
+                ? onMonitor
+                : Win32Native.MonitorFromRect(ref candidate, Win32Native.MONITOR_DEFAULTTONEAREST);
+
+            if (targetMonitor != IntPtr.Zero)
+            {
+                var mi = new Win32Native.MONITORINFO { cbSize = (uint)Marshal.SizeOf<Win32Native.MONITORINFO>() };
+                if (Win32Native.GetMonitorInfoW(targetMonitor, ref mi))
+                {
+                    var work = mi.rcWork;
+                    var workW = Math.Max(640, work.right - work.left);
+                    var workH = Math.Max(480, work.bottom - work.top);
+                    var w = Math.Clamp(saved.Width, 640, workW);
+                    var h = Math.Clamp(saved.Height, 480, workH);
+                    var x = onMonitor != IntPtr.Zero
+                        ? Math.Clamp(saved.X, work.left - w + 120, work.right - 120)
+                        : Math.Clamp(saved.X, work.left, Math.Max(work.left, work.right - w));
+                    var y = Math.Clamp(saved.Y, work.top, Math.Max(work.top, work.bottom - 48));
+                    return (x, y, w, h, saved.IsMaximized);
+                }
+            }
+
+            return (saved.X, saved.Y, saved.Width, saved.Height, saved.IsMaximized);
+        }
+
+        var screenW = Win32Native.GetSystemMetrics(Win32Native.SM_CXSCREEN);
+        var screenH = Win32Native.GetSystemMetrics(Win32Native.SM_CYSCREEN);
+        var defX = Math.Max(40, (screenW - defaultWidth) / 2);
+        var defY = Math.Max(40, (screenH - defaultHeight) / 2);
+        return (defX, defY, defaultWidth, defaultHeight, true);
+    }
+
+    private static (uint SurfaceColorRef, Color WebViewBgColor, bool IsDark) ResolveThemeColors(string? themeMode) =>
+        (themeMode ?? "berry").Trim().ToLowerInvariant() switch
+        {
+            "dark" => (0x00241B18u, Color.FromArgb(0x0F, 0x11, 0x17), true),
+            "paper" => (0x00F8FDFFu, Color.FromArgb(0xF7, 0xF3, 0xE9), false),
+            "light" => (0x00FFFFFFu, Color.FromArgb(0xF6, 0xF8, 0xFA), false),
+            _ => (0x00FFFFFFu, Color.FromArgb(0xFD, 0xF6, 0xF9), false)
+        };
+
+    private static int GetFrameX(uint dpi) => dpi > 0
+        ? Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CXFRAME, dpi) + Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CXPADDEDBORDER, dpi)
+        : Win32Native.GetSystemMetrics(Win32Native.SM_CXFRAME) + Win32Native.GetSystemMetrics(Win32Native.SM_CXPADDEDBORDER);
+
+    private static int GetFrameY(uint dpi) => dpi > 0
+        ? Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CYFRAME, dpi) + Win32Native.GetSystemMetricsForDpi(Win32Native.SM_CXPADDEDBORDER, dpi)
+        : Win32Native.GetSystemMetrics(Win32Native.SM_CYFRAME) + Win32Native.GetSystemMetrics(Win32Native.SM_CXPADDEDBORDER);
+
+    private static int GetTopResizeBorderPx(uint dpi) =>
+        Math.Max(4, (int)Math.Round(5.0 * (dpi > 0 ? dpi : 96u) / 96.0));
 }

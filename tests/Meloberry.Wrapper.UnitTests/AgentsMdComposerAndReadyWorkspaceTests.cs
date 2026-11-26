@@ -201,6 +201,83 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
         Assert.DoesNotContain("`Single Markdown File`", prompt.Markdown);
     }
 
+    [Fact]
+    public async Task ReadyWorkspaceHandler_ExcludesMissingStagedPaths_AndHonorsExplicitToolOverrides()
+    {
+        var dataDir = Path.Combine(_tempRoot, "data_prec");
+        var paths = new WrapperDataPaths(dataDir);
+        Directory.CreateDirectory(paths.AppsDirectory);
+        var workspace = Path.Combine(_tempRoot, "ws_prec");
+        Directory.CreateDirectory(workspace);
+
+        var presentFile = Path.Combine(workspace, "present.txt");
+        await File.WriteAllTextAsync(presentFile, "hello");
+        var presentFolder = Path.Combine(workspace, "PresentFigs");
+        Directory.CreateDirectory(presentFolder);
+
+        // Create both a workspace mby.exe and a higher-priority explicit override executable.
+        await File.WriteAllBytesAsync(Path.Combine(workspace, "mby-cli-1.0.0.exe"), [(byte)'M', (byte)'Z', 0x90, 0x00]);
+        var overrideDir = Path.Combine(_tempRoot, "overrides");
+        Directory.CreateDirectory(overrideDir);
+        var overrideMby = Path.Combine(overrideDir, "custom-mby.exe");
+        var overrideMelomg = Path.Combine(overrideDir, "custom-melomg.exe");
+        await File.WriteAllBytesAsync(overrideMby, [(byte)'M', (byte)'Z', 0x90, 0x00]);
+        await File.WriteAllBytesAsync(overrideMelomg, [(byte)'M', (byte)'Z', 0x90, 0x00]);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(
+            ActiveWorkspace: new ActiveWorkspaceState(
+                WorkspacePath: workspace,
+                IsInitialized: true,
+                StagedItems:
+                [
+                    new StagedCopyItem(presentFile, StagedCopyKind.File, "present.txt", "present.txt"),
+                    new StagedCopyItem(Path.Combine(_tempRoot, "missing.pdf"), StagedCopyKind.File, "missing.pdf", "missing.pdf"),
+                    new StagedCopyItem(presentFolder, StagedCopyKind.Folder, "PresentFigs", "PresentFigs"),
+                    new StagedCopyItem(Path.Combine(_tempRoot, "MissingFigs"), StagedCopyKind.Folder, "MissingFigs", "MissingFigs")
+                ]),
+            MbyExecutableOverride: overrideMby,
+            MelomgExecutableOverride: overrideMelomg));
+
+        var appsStore = new ManagedAppsStore(paths);
+        var mbyClient = new ProcessMbyCliClient();
+        var specLoader = new LoadSpecCatalogHandler(appsStore, mbyClient, settingsStore);
+        var handler = new ReadyWorkspaceHandler(
+            new AgentsMdFileWriter(),
+            appsStore,
+            mbyClient,
+            new ProcessMelomgCliClient(),
+            settingsStore,
+            specLoader);
+
+        var draft = new PromptDraft(
+            Container: ContainerKind.Session,
+            Title: "Precedence Test",
+            Description: "",
+            AuthoringFormat: AuthoringFormat.Json,
+            SourceText: "",
+            Selections: [new("text", true, 1)],
+            Attachments: [new SourceAttachment(Path.Combine(workspace, "deleted_in_ws.pdf"), "pdf")],
+            CopiedFolders: ["NonExistentCopiedFolder"],
+            UseMelomgForPdfs: true,
+            WorkingDirectory: workspace);
+
+        var res = await handler.ReadyWorkspaceAsync(new ReadyWorkspaceRequest(draft, OverwriteConfirmed: false));
+        Assert.True(res.IsSuccess);
+
+        var agentsText = await File.ReadAllTextAsync(res.Value.OutputPath);
+        Assert.Contains("./present.txt", agentsText);
+        Assert.Contains("./PresentFigs/", agentsText);
+        Assert.DoesNotContain("./missing.pdf", agentsText);
+        Assert.DoesNotContain("./deleted_in_ws.pdf", agentsText);
+        Assert.DoesNotContain("./MissingFigs/", agentsText);
+        Assert.DoesNotContain("./NonExistentCopiedFolder/", agentsText);
+
+        Assert.Contains(overrideMby, agentsText);
+        Assert.DoesNotContain(@".\mby-cli-1.0.0.exe", agentsText);
+        Assert.Contains(overrideMelomg, agentsText);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

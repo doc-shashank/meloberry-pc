@@ -80,7 +80,7 @@ public sealed class LoadSpecCatalogHandler(
 }
 
 /// <summary>Composes and saves Prompt Studio prompts.</summary>
-public sealed class PromptHandlers(LoadSpecCatalogHandler specLoader)
+public sealed class PromptHandlers(LoadSpecCatalogHandler specLoader, IAtomicFileWriter atomicFileWriter)
 {
     public async Task<ComposedPrompt> ComposeAsync(PromptDraft draft, CancellationToken ct = default)
     {
@@ -95,28 +95,18 @@ public sealed class PromptHandlers(LoadSpecCatalogHandler specLoader)
             return Result<string>.Failure(WrapperErrors.InvalidPath("Save file path cannot be empty."));
         }
 
-        string? tmp = null;
         try
         {
             var full = Path.GetFullPath(filePath);
-            var dir = Path.GetDirectoryName(full);
-            if (!string.IsNullOrWhiteSpace(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
-
-            tmp = $"{full}.{Guid.NewGuid():N}.tmp";
-            await File.WriteAllTextAsync(tmp, markdown, ct).ConfigureAwait(false);
-            File.Move(tmp, full, overwrite: true);
+            await atomicFileWriter.WriteAllTextAsync(full, markdown, ct).ConfigureAwait(false);
             return Result<string>.Success(full);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            if (tmp is not null && File.Exists(tmp))
-            {
-                try { File.Delete(tmp); } catch { }
-            }
-
             return Result<string>.Failure(WrapperErrors.IoFailure($"Failed to save prompt: {ex.Message}"));
         }
     }

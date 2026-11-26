@@ -130,33 +130,27 @@ public sealed partial class SettingsAndPresetsHandler(ISettingsStore settingsSto
                 ErrorType.Validation));
         }
 
-        var current = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
-        var theme = !string.IsNullOrWhiteSpace(themeMode) && AllowedThemes.Contains(themeMode)
-            ? themeMode.ToLowerInvariant()
-            : current.ThemeMode;
-
-        var updated = current with
+        return await settingsStore.UpdateAsync(current =>
         {
-            ThemeMode = theme,
-            MbyExecutableOverride = mbyOverride?.Trim() is { Length: > 0 } m ? m : null,
-            MelomgExecutableOverride = melomgOverride?.Trim() is { Length: > 0 } ml ? ml : null,
-            DefaultBuildOutputDir = defaultBuildDir?.Trim() is { Length: > 0 } bd ? bd : null,
-            SelfUpdateRepoOwner = owner,
-            SelfUpdateRepoName = repo,
-            OverrideWebAppTheme = overrideWebAppTheme ?? current.OverrideWebAppTheme
-        };
+            var theme = !string.IsNullOrWhiteSpace(themeMode) && AllowedThemes.Contains(themeMode)
+                ? themeMode.ToLowerInvariant()
+                : current.ThemeMode;
 
-        var res = await settingsStore.SaveAsync(updated, ct).ConfigureAwait(false);
-        return res.IsSuccess ? Result<WrapperSettings>.Success(updated) : Result<WrapperSettings>.Failure(res.Error!);
+            return current with
+            {
+                ThemeMode = theme,
+                MbyExecutableOverride = mbyOverride?.Trim() is { Length: > 0 } m ? m : null,
+                MelomgExecutableOverride = melomgOverride?.Trim() is { Length: > 0 } ml ? ml : null,
+                DefaultBuildOutputDir = defaultBuildDir?.Trim() is { Length: > 0 } bd ? bd : null,
+                SelfUpdateRepoOwner = owner,
+                SelfUpdateRepoName = repo,
+                OverrideWebAppTheme = overrideWebAppTheme ?? current.OverrideWebAppTheme
+            };
+        }, ct).ConfigureAwait(false);
     }
 
-    public async Task<Result<WrapperSettings>> UpdateOverrideWebAppThemeAsync(bool overrideWebAppTheme, CancellationToken ct = default)
-    {
-        var current = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
-        var updated = current with { OverrideWebAppTheme = overrideWebAppTheme };
-        var res = await settingsStore.SaveAsync(updated, ct).ConfigureAwait(false);
-        return res.IsSuccess ? Result<WrapperSettings>.Success(updated) : Result<WrapperSettings>.Failure(res.Error!);
-    }
+    public async Task<Result<WrapperSettings>> UpdateOverrideWebAppThemeAsync(bool overrideWebAppTheme, CancellationToken ct = default) =>
+        await settingsStore.UpdateAsync(current => current with { OverrideWebAppTheme = overrideWebAppTheme }, ct).ConfigureAwait(false);
 
     public async Task<IReadOnlyList<PromptPreset>> GetAllPresetsAsync(CancellationToken ct = default)
     {
@@ -166,28 +160,34 @@ public sealed partial class SettingsAndPresetsHandler(ISettingsStore settingsSto
 
     public async Task<Result<PromptPreset>> SaveCustomPresetAsync(PromptPreset preset, CancellationToken ct = default)
     {
-        var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
         var id = string.IsNullOrWhiteSpace(preset.Id) ? $"custom-{Guid.NewGuid():N}"[..16] : preset.Id;
         var clean = preset with { Id = id, IsBuiltIn = false };
-        var list = (settings.CustomPresets ?? [])
-            .Where(p => !string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase))
-            .Append(clean)
-            .ToList();
+        var res = await settingsStore.UpdateAsync(current =>
+        {
+            var list = (current.CustomPresets ?? [])
+                .Where(p => !string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase))
+                .Append(clean)
+                .ToList();
+            return current with { CustomPresets = list };
+        }, ct).ConfigureAwait(false);
 
-        var res = await settingsStore.SaveAsync(settings with { CustomPresets = list }, ct).ConfigureAwait(false);
         return res.IsSuccess ? Result<PromptPreset>.Success(clean) : Result<PromptPreset>.Failure(res.Error!);
     }
 
     public async Task<Result> DeleteCustomPresetAsync(string presetId, CancellationToken ct = default)
     {
-        var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
-        var existing = settings.CustomPresets ?? [];
-        var remaining = existing.Where(p => !string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase)).ToList();
-        if (remaining.Count == existing.Count)
+        var res = await settingsStore.UpdateAsync(current =>
         {
-            return Result.Failure(Domain.Errors.WrapperErrors.PresetNotFound(presetId));
-        }
+            var existing = current.CustomPresets ?? [];
+            var remaining = existing.Where(p => !string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (remaining.Count == existing.Count)
+            {
+                return Result<WrapperSettings>.Failure(Domain.Errors.WrapperErrors.PresetNotFound(presetId));
+            }
 
-        return await settingsStore.SaveAsync(settings with { CustomPresets = remaining }, ct).ConfigureAwait(false);
+            return Result<WrapperSettings>.Success(current with { CustomPresets = remaining });
+        }, ct).ConfigureAwait(false);
+
+        return res.IsSuccess ? Result.Success() : Result.Failure(res.Error!);
     }
 }

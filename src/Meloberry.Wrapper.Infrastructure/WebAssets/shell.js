@@ -2,34 +2,17 @@
   const token = window.__MBY_TOKEN__ || "";
   try { delete window.__MBY_TOKEN__; } catch { window.__MBY_TOKEN__ = ""; }
 
-  const PAPER_THEME_FALLBACK_CSS = `
-    html[data-theme="paper"] {
-      --bg: #f7f3e9;
-      --surface: #fffdf8;
-      --text: #2c241b;
-      --muted: #6f6254;
-      --accent: #9a3412;
-      --accent-soft: #ffedd5;
-      --select: #1d4ed8;
-      --select-soft: #e0e7ff;
-      --table-hideable-bg: #eef2e6;
-      --table-hideable-color: #3f6212;
-      --border: #e7dcc8;
-      --callout-pearl-bg: #fef7e0;
-      --callout-clinical-bg: #eef7fb;
-      --callout-warning-bg: #fdf0ed;
-    }
-  `;
-
   const VIEW_ORDER = { setup: 0, prompt: 1, viewer: 2, settings: 3 };
 
   const state = {
     metadata: { version: "1.0.0", productName: "Meloberry PC", selfUpdateRepoOwner: "doc-shashank", selfUpdateRepoName: "meloberry-pc" },
     icons: {},
+    paperThemeFallbackCss: "",
     appsDirectory: "",
     viewerOrigin: "",
     settings: { themeMode: "berry", overrideWebAppTheme: true, recentWebApps: [] },
     apps: [],
+    resolvedTools: { mby: null, melomg: null },
     appUpdateChecks: {},
     outdatedTools: [],
     resetScope: "executablesOnly",
@@ -193,40 +176,65 @@
     });
   }
 
-  const TOP_DROPDOWN_IDS = [
-    "resetMenu",
-    "readyWsMenu",
-    "actionsMenu",
-    "promptOptionsMenu",
-    "agentsPillMenu",
-    "notifPopover",
-    "conflictMenu",
-    "presetDropdownMenu",
-    "selectorSpecMenu",
-    "orgSpecMenu",
-    "orgSubtypeMenu",
-    "notePopover",
-    "distPopover",
-    "viewerUpMenu",
-    "viewerHelpPopover",
-    "recentSubmenu",
-    "activeWsSubmenu"
-  ];
+  const overlayRegistry = [];
+
+  function registerPopover(menuId, opts = {}) {
+    const entry = {
+      menuId,
+      triggerId: opts.triggerId || null,
+      wrapSelector: opts.wrapSelector || `#${menuId}`,
+      beforeOpen: opts.beforeOpen || null,
+      onClose: opts.onClose || null
+    };
+    overlayRegistry.push(entry);
+    return entry;
+  }
 
   function closeAllDropdowns(exceptIds = []) {
     const keep = new Set(exceptIds);
-    const noteWasOpen = !keep.has("notePopover") && !document.getElementById("notePopover")?.classList.contains("hidden");
-    const noteComp = noteWasOpen ? state.activeNoteTarget?.comp : null;
-
-    TOP_DROPDOWN_IDS.forEach(id => {
-      if (!keep.has(id)) {
-        document.getElementById(id)?.classList.add("hidden");
+    const toNotify = [];
+    overlayRegistry.forEach(entry => {
+      if (keep.has(entry.menuId)) return;
+      const el = document.getElementById(entry.menuId);
+      if (el && !el.classList.contains("hidden")) {
+        el.classList.add("hidden");
+        if (entry.onClose) toNotify.push(entry.onClose);
       }
     });
+    toNotify.forEach(fn => fn());
+  }
 
-    if (!keep.has("notePopover")) state.activeNoteTarget = null;
-    if (!keep.has("distPopover")) state.activeDistTarget = null;
-    if (noteComp) renderSpecSelectorPane(noteComp);
+  function openDropdown(menuId) {
+    const entry = overlayRegistry.find(e => e.menuId === menuId);
+    const el = document.getElementById(menuId);
+    if (!el) return;
+    closeAllDropdowns([menuId]);
+    if (entry?.beforeOpen) entry.beforeOpen();
+    el.classList.remove("hidden");
+  }
+
+  function toggleDropdown(menuId) {
+    const el = document.getElementById(menuId);
+    if (!el) return;
+    if (el.classList.contains("hidden")) {
+      openDropdown(menuId);
+    } else {
+      closeAllDropdowns();
+    }
+  }
+
+  function registerDropdown(triggerId, menuId, opts = {}) {
+    const entry = registerPopover(menuId, { ...opts, triggerId });
+    if (opts.autoWireClick !== false) {
+      const trigger = document.getElementById(triggerId);
+      if (trigger) {
+        trigger.onclick = e => {
+          e.stopPropagation();
+          toggleDropdown(menuId);
+        };
+      }
+    }
+    return entry;
   }
 
   function toast(msg, kind = "info", opts = {}) {
@@ -365,7 +373,7 @@
         type: "mby-theme-override",
         override: isOverrideOn,
         theme: targetTheme,
-        fallbackCss: PAPER_THEME_FALLBACK_CSS
+        fallbackCss: state.paperThemeFallbackCss
       },
       state.viewerOrigin
     );
@@ -430,6 +438,7 @@
 
     const d = res.data;
     state.metadata = d.metadata || state.metadata;
+    state.paperThemeFallbackCss = d.paperThemeFallbackCss || "";
     state.appsDirectory = d.appsDirectory || "";
     state.viewerOrigin = d.viewerOrigin || "";
     state.settings = d.settings || {};
@@ -437,6 +446,7 @@
       state.settings.overrideWebAppTheme = true;
     }
     state.apps = d.apps || [];
+    state.resolvedTools = d.resolvedTools || { mby: null, melomg: null };
     state.outdatedTools = d.outdatedTools || [];
     state.ecosystemRepos = d.ecosystemRepos || [];
     state.agentsMdStatus = d.agentsMdStatus || null;
@@ -650,6 +660,9 @@
     const res = await api("GET", "/api/apps");
     if (res.ok) {
       state.apps = res.data.apps || [];
+      if (res.data.resolvedTools) {
+        state.resolvedTools = res.data.resolvedTools;
+      }
       pruneSelectedAppNames();
       if (render) {
         renderAppsCart();
@@ -2295,15 +2308,6 @@
     }));
 
     const flatSelections = activeComps.flatMap(c => c.selections);
-    const wsMby = state.apps.find(a => a.kind === "mby");
-    const wsMel = state.apps.find(a => a.kind === "melomg");
-    const mbyOverride = state.settings.mbyExecutableOverride && state.settings.mbyExecutableOverride.trim();
-    const melOverride = state.settings.melomgExecutableOverride && state.settings.melomgExecutableOverride.trim();
-
-    const resolvedMbyPath = mbyOverride
-      || (wsPath && wsMby && wsMby.isPresentInWorkspace ? `${wsPath}\\${wsMby.workspaceFileName || wsMby.fileName}` : (wsMby && wsMby.isInstalled ? wsMby.fullPath : null));
-    const resolvedMelomgPath = melOverride
-      || (wsPath && wsMel && wsMel.isPresentInWorkspace ? `${wsPath}\\${wsMel.workspaceFileName || wsMel.fileName}` : (wsMel && wsMel.isInstalled ? wsMel.fullPath : null));
 
     return {
       container: state.prompt.container,
@@ -2318,8 +2322,8 @@
       lazyCliDiscovery: !state.prompt.agentsMdExported,
       agentsMdExported: state.prompt.agentsMdExported,
       workingDirectory: wsPath,
-      mbyExecutablePath: resolvedMbyPath,
-      melomgExecutablePath: resolvedMelomgPath,
+      mbyExecutablePath: state.resolvedTools?.mby || null,
+      melomgExecutablePath: state.resolvedTools?.melomg || null,
       copiedFolders,
       components: activeComps
     };
@@ -2335,8 +2339,7 @@
     const hasAnyActiveSpec = enabledSpecs.length > 0;
     const hasMissingQty = enabledSpecs.some(s => !s.desiredCount || s.desiredCount <= 0);
     const hasActiveWorkspace = !!(state.settings.activeWorkspace && state.settings.activeWorkspace.workspacePath);
-    const hasMbyInstalled = state.apps.some(a => a.kind === "mby" && a.isInstalled)
-      || !!(state.settings.mbyExecutableOverride && state.settings.mbyExecutableOverride.trim());
+    const hasMbyInstalled = !!state.resolvedTools?.mby;
     return { hasAnyActiveSpec, hasMissingQty, hasActiveWorkspace, hasMbyInstalled };
   }
 
@@ -2679,13 +2682,7 @@
   document.getElementById("btnWinClose").onclick = () => postWindowCommand("window.close");
 
   // Notification Center
-  document.getElementById("btnNotifications").onclick = e => {
-    e.stopPropagation();
-    const pop = document.getElementById("notifPopover");
-    const opening = pop.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["notifPopover"] : []);
-    pop.classList.toggle("hidden");
-  };
+  registerDropdown("btnNotifications", "notifPopover", { wrapSelector: ".notif-wrap" });
   document.getElementById("btnNotifReadAll").onclick = () => {
     state.notifications.forEach(n => { n.unread = false; });
     renderNotifications();
@@ -2696,13 +2693,7 @@
   };
 
   // AGENTS.md Ready Pill Menu
-  document.getElementById("agentsReadyPill").onclick = e => {
-    e.stopPropagation();
-    const menu = document.getElementById("agentsPillMenu");
-    const opening = menu.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["agentsPillMenu"] : []);
-    menu.classList.toggle("hidden");
-  };
+  registerDropdown("agentsReadyPill", "agentsPillMenu", { wrapSelector: "#agentsPillWrap" });
   document.getElementById("btnMenuInspectAgents").onclick = () => {
     closeAllDropdowns();
     document.getElementById("confirmModalTitle").textContent = "AGENTS.md";
@@ -2722,13 +2713,7 @@
   };
 
   // Workspace Action Strip controls
-  document.getElementById("btnResetWorkspace").onclick = e => {
-    e.stopPropagation();
-    const menu = document.getElementById("resetMenu");
-    const opening = menu.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["resetMenu"] : []);
-    menu.classList.toggle("hidden");
-  };
+  registerDropdown("btnResetWorkspace", "resetMenu", { wrapSelector: "#resetMenuWrap" });
   document.querySelectorAll("#resetMenu .dropdown-item").forEach(btn => {
     btn.onclick = () => {
       state.resetScope = btn.dataset.scope;
@@ -2737,6 +2722,7 @@
     };
   });
 
+  registerDropdown("btnReadyWorkspace", "readyWsMenu", { wrapSelector: "#readyWsMenuWrap", autoWireClick: false });
   document.getElementById("btnReadyWorkspace").onclick = async e => {
     e.stopPropagation();
     const aws = state.settings.activeWorkspace;
@@ -2750,10 +2736,7 @@
 
     const subRes = await api("GET", `/api/workspace/subfolders?workspacePath=${encodeURIComponent(wsPath)}`);
     if (subRes.ok && subRes.data.hasSubfolders) {
-      const menu = document.getElementById("readyWsMenu");
-      const opening = menu.classList.contains("hidden");
-      closeAllDropdowns(opening ? ["readyWsMenu"] : []);
-      menu.classList.toggle("hidden");
+      toggleDropdown("readyWsMenu");
       return;
     }
 
@@ -2785,23 +2768,15 @@
     await readyWorkspace(false, picked);
   };
 
-  document.getElementById("btnWorkspaceActions").onclick = e => {
-    e.stopPropagation();
-    refreshPromptOptionsAvailability();
-    const menu = document.getElementById("actionsMenu");
-    const opening = menu.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["actionsMenu"] : []);
-    menu.classList.toggle("hidden");
-  };
+  registerDropdown("btnWorkspaceActions", "actionsMenu", {
+    wrapSelector: "#actionsMenuWrap",
+    beforeOpen: refreshPromptOptionsAvailability
+  });
 
-  document.getElementById("btnPromptOptions").onclick = e => {
-    e.stopPropagation();
-    refreshPromptOptionsAvailability();
-    const menu = document.getElementById("promptOptionsMenu");
-    const opening = menu.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["promptOptionsMenu"] : []);
-    menu.classList.toggle("hidden");
-  };
+  registerDropdown("btnPromptOptions", "promptOptionsMenu", {
+    wrapSelector: "#promptOptionsWrap",
+    beforeOpen: refreshPromptOptionsAvailability
+  });
 
   document.getElementById("optCopyPlainText").onclick = async () => {
     closeAllDropdowns();
@@ -2836,6 +2811,12 @@
       return;
     }
 
+    if (rawRes.data?.warnings?.length > 0) {
+      const warnMsg = rawRes.data.warnings.join(" ");
+      addNotification("Organizer Sequence Reconciled", warnMsg, "warn");
+      toast(warnMsg, "warn");
+    }
+
     const saveRes = await api("POST", "/api/prompt/save-json", {
       rawJson: rawRes.data.rawJson,
       defaultName: rawRes.data.suggestedFileName
@@ -2853,6 +2834,12 @@
     if (!genRes.ok) {
       toast(genRes.data?.error?.description || "Failed to generate template.", "err");
       return;
+    }
+
+    if (genRes.data?.warnings?.length > 0) {
+      const warnMsg = genRes.data.warnings.join(" ");
+      addNotification("Organizer Sequence Reconciled", warnMsg, "warn");
+      toast(warnMsg, "warn");
     }
 
     addNotification("Draft Template Created", `Session ${genRes.data.workspaceId} created from ${genRes.data.jsonPath}`, "info");
@@ -2937,13 +2924,7 @@
     }
   };
 
-  document.getElementById("btnConflictDropdown").onclick = e => {
-    e.stopPropagation();
-    const menu = document.getElementById("conflictMenu");
-    const opening = menu.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["conflictMenu"] : []);
-    menu.classList.toggle("hidden");
-  };
+  registerDropdown("btnConflictDropdown", "conflictMenu", { wrapSelector: "#conflictMenuWrap" });
   document.querySelectorAll("#conflictMenu .dropdown-item").forEach(item => {
     item.onclick = () => {
       state.conflictPolicy = item.dataset.policy;
@@ -3020,13 +3001,7 @@
     };
   });
 
-  document.getElementById("btnPresetDropdown").onclick = e => {
-    e.stopPropagation();
-    const menu = document.getElementById("presetDropdownMenu");
-    const opening = menu.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["presetDropdownMenu"] : []);
-    menu.classList.toggle("hidden");
-  };
+  registerDropdown("btnPresetDropdown", "presetDropdownMenu", { wrapSelector: "#presetMenuWrap" });
 
   const btnSavePreset = document.getElementById("btnSavePreset");
   btnSavePreset.onclick = withButtonBusy(btnSavePreset, "Saving...", async () => {
@@ -3096,29 +3071,9 @@
     };
   });
 
-  document.getElementById("btnSelectorAddSpecDrop").onclick = e => {
-    e.stopPropagation();
-    const menu = document.getElementById("selectorSpecMenu");
-    const opening = menu.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["selectorSpecMenu"] : []);
-    menu.classList.toggle("hidden");
-  };
-
-  document.getElementById("btnOrgSpecDrop").onclick = e => {
-    e.stopPropagation();
-    const menu = document.getElementById("orgSpecMenu");
-    const opening = menu.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["orgSpecMenu"] : []);
-    menu.classList.toggle("hidden");
-  };
-
-  document.getElementById("btnOrgSubtypeDrop").onclick = e => {
-    e.stopPropagation();
-    const menu = document.getElementById("orgSubtypeMenu");
-    const opening = menu.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["orgSubtypeMenu"] : []);
-    menu.classList.toggle("hidden");
-  };
+  registerDropdown("btnSelectorAddSpecDrop", "selectorSpecMenu", { wrapSelector: "#selectorSpecDropWrap" });
+  registerDropdown("btnOrgSpecDrop", "orgSpecMenu", { wrapSelector: "#orgSpecDropWrap" });
+  registerDropdown("btnOrgSubtypeDrop", "orgSubtypeMenu", { wrapSelector: "#orgSubtypeDropWrap" });
 
   document.getElementById("btnSpecOrgResetOrder").onclick = () => {
     markPresetModified();
@@ -3244,24 +3199,27 @@
     }
   });
 
-  document.getElementById("btnEmptyOpenWebApp").onclick = () => openWebAppPath(null);
-  document.getElementById("btnViewerHelp").onclick = e => {
-    e.stopPropagation();
-    const pop = document.getElementById("viewerHelpPopover");
-    const opening = pop.classList.contains("hidden");
-    closeAllDropdowns(opening ? ["viewerHelpPopover"] : []);
-    pop.classList.toggle("hidden");
-  };
-  document.getElementById("btnViewerUpTrigger").onclick = e => {
-    e.stopPropagation();
-    const menu = document.getElementById("viewerUpMenu");
-    const wasHidden = menu.classList.contains("hidden");
-    closeAllDropdowns(wasHidden ? ["viewerUpMenu"] : []);
-    if (wasHidden) {
-      refreshViewerDiscovery();
-      menu.classList.remove("hidden");
+  registerPopover("notePopover", {
+    wrapSelector: "#notePopover, .pencil-btn",
+    onClose: () => {
+      const comp = state.activeNoteTarget?.comp;
+      state.activeNoteTarget = null;
+      if (comp) renderSpecSelectorPane(comp);
     }
-  };
+  });
+  registerPopover("distPopover", {
+    wrapSelector: "#distPopover, .dist-trigger-btn",
+    onClose: () => { state.activeDistTarget = null; }
+  });
+  registerPopover("recentSubmenu", { wrapSelector: "#viewerFabWrap" });
+  registerPopover("activeWsSubmenu", { wrapSelector: "#viewerFabWrap" });
+
+  document.getElementById("btnEmptyOpenWebApp").onclick = () => openWebAppPath(null);
+  registerDropdown("btnViewerHelp", "viewerHelpPopover", { wrapSelector: "#viewerFabWrap" });
+  registerDropdown("btnViewerUpTrigger", "viewerUpMenu", {
+    wrapSelector: "#viewerFabWrap",
+    beforeOpen: refreshViewerDiscovery
+  });
   document.getElementById("menuOpenWebAppFolder").addEventListener("mouseenter", closeViewerSubmenus);
   document.getElementById("menuOpenWebAppFolder").onclick = () => {
     closeViewerMenus();
@@ -3311,9 +3269,7 @@
 
   // Global outside-click & Escape key overlay dismissal
   document.addEventListener("click", e => {
-    const insideMenu = e.target.closest(
-      "#resetMenuWrap, #readyWsMenuWrap, #actionsMenuWrap, #promptOptionsWrap, #agentsPillWrap, #conflictMenuWrap, #presetMenuWrap, #selectorSpecDropWrap, #orgSpecDropWrap, #orgSubtypeDropWrap, .notif-wrap, #viewerFabWrap, #notePopover, .pencil-btn, #distPopover, .dist-trigger-btn"
-    );
+    const insideMenu = overlayRegistry.some(entry => entry.wrapSelector && e.target.closest(entry.wrapSelector));
     if (!insideMenu) {
       closeAllDropdowns();
     }
@@ -3358,7 +3314,9 @@
       state.settings = res.data;
       applyTheme(state.settings.themeMode);
       applyViewerThemeOverride();
+      await refreshApps(false);
       await loadSpecs(true);
+      await refreshPromptPreview();
       toast("Settings saved.", "ok");
     } else {
       toast(res.data?.error?.description || "Failed to save settings.", "err");

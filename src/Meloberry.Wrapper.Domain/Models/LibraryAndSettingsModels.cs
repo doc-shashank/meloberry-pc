@@ -15,6 +15,14 @@ public sealed record WorkspaceSummary(
     string StorageDirectory,
     int ItemCount);
 
+/// <summary>Persisted Win32 host window bounds and maximized state.</summary>
+public sealed record WindowPlacementState(
+    int X,
+    int Y,
+    int Width,
+    int Height,
+    bool IsMaximized);
+
 /// <summary>Root persisted settings stored in %LOCALAPPDATA%\Meloberry\wrapper-settings.json.</summary>
 public sealed record WrapperSettings(
     ActiveWorkspaceState? ActiveWorkspace = null,
@@ -27,4 +35,5 @@ public sealed record WrapperSettings(
     string? DefaultBuildOutputDir = null,
     IReadOnlyList<WebAppLibraryEntry>? RecentWebApps = null,
     IReadOnlyList<PromptPreset>? CustomPresets = null,
-    bool OverrideWebAppTheme = true);
+    bool OverrideWebAppTheme = true,
+    WindowPlacementState? WindowPlacement = null);

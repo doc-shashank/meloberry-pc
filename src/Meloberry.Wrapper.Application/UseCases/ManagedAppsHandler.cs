@@ -6,6 +6,9 @@ using Meloberry.Wrapper.Domain.Models;
 
 namespace Meloberry.Wrapper.Application.UseCases;
 
+/// <summary>Resolved executable paths for managed Meloberry CLI tools.</summary>
+public sealed record ResolvedToolPaths(string? Mby, string? Melomg);
+
 /// <summary>Manages scanning, downloading, updating, importing, and uninstalling tools inside apps\.</summary>
 public sealed class ManagedAppsHandler(
     IManagedAppsStore appsStore,
@@ -124,5 +127,14 @@ public sealed class ManagedAppsHandler(
             : settings.MelomgExecutableOverride;
 
         return await appsStore.ResolveToolExecutableAsync(toolKey, wsPath, explicitOverride, ct).ConfigureAwait(false);
+    }
+
+    public async Task<ResolvedToolPaths> ResolveToolsAsync(string? workspacePathOverride = null, CancellationToken ct = default)
+    {
+        var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
+        var wsPath = workspacePathOverride ?? settings.ActiveWorkspace?.WorkspacePath;
+        var mby = await appsStore.ResolveToolExecutableAsync("mby", wsPath, settings.MbyExecutableOverride, ct).ConfigureAwait(false);
+        var melomg = await appsStore.ResolveToolExecutableAsync("melomg", wsPath, settings.MelomgExecutableOverride, ct).ConfigureAwait(false);
+        return new ResolvedToolPaths(mby, melomg);
     }
 }

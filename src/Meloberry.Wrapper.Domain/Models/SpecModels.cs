@@ -156,4 +156,28 @@ public static class SpecCatalogDefaults
         new("mechanism", "content", "question", "Ordered pathway / mechanism step sequencing.", "{ type:\"mechanism\", ref?:string, title?:string, steps:[{orderGroup?:int, text:string, isDistractor?:bool}], explanation?:string }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("mechanism")),
         new("relabel", "content", "question", "Image label identification / matching drill.", "{ type:\"relabel\", ref?:string, imagePath:string, prompt?:string, mode?:\"reveal\"|\"bank\"|\"recall\", style?:\"solid\"|\"blur\"|\"pixelate\"|\"whiteout\", masksPath?:string, include?:string[], boxes?:[{label:string,aliases?:string[],rect?:[x,y,w,h]}], distractors?:string[], explanation?:string }", "Inside quiz.questions[]", false, GetModeGroupsForTopic("relabel"))
     ];
+
+    private static readonly Lazy<Dictionary<string, string>> FallbackCategoryByTopic = new(() =>
+        BuiltInFallbackCatalog.ToDictionary(s => s.Topic, s => s.Category, StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>Resolves the built-in category for a topic from <see cref="BuiltInFallbackCatalog"/>.</summary>
+    public static string GetCategoryForTopic(string? topic)
+    {
+        if (string.IsNullOrWhiteSpace(topic))
+        {
+            return "other";
+        }
+
+        var trimmed = topic.Trim();
+        if (FallbackCategoryByTopic.Value.TryGetValue(trimmed, out var category))
+        {
+            return category;
+        }
+
+        return trimmed.ToLowerInvariant() switch
+        {
+            "session" or "article" or "quiz" => "container",
+            _ => "other"
+        };
+    }
 }

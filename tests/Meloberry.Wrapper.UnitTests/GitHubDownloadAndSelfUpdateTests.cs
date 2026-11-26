@@ -178,6 +178,71 @@ public sealed class GitHubDownloadAndSelfUpdateTests : IDisposable
         Assert.Contains("/SILENT", shutdown.LaunchArgs);
     }
 
+    [Fact]
+    public async Task ReleaseAssetSelection_PicksHighestSemver_AndDownloadInstallerCleansOlderSetups()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "semver_cleanup"));
+        Directory.CreateDirectory(paths.UpdatesDirectory);
+        var oldSetup = Path.Combine(paths.UpdatesDirectory, "mby-pc-setup-1.0.0.exe");
+        var orphanTmp = Path.Combine(paths.UpdatesDirectory, "stale.tmp");
+        await File.WriteAllBytesAsync(oldSetup, [(byte)'M', (byte)'Z', 0x00]);
+        await File.WriteAllBytesAsync(orphanTmp, [0x01, 0x02]);
+
+        var fakeExe = new byte[] { (byte)'M', (byte)'Z', 0x90, 0x00 };
+        var multiToolReleaseJson =
+            "{\"tag_name\":\"v2.1.0\",\"assets\":[" +
+            "{\"name\":\"mby-cli-2.0.0.exe\",\"browser_download_url\":\"https://github.com/doc-shashank/meloberry-cli/releases/download/v2.1.0/mby-cli-2.0.0.exe\",\"size\":4}," +
+            "{\"name\":\"mby-cli-2.1.0.exe\",\"browser_download_url\":\"https://github.com/doc-shashank/meloberry-cli/releases/download/v2.1.0/mby-cli-2.1.0.exe\",\"size\":4}" +
+            "]}";
+        var multiSetupReleaseJson =
+            "{\"tag_name\":\"v1.3.0\",\"assets\":[" +
+            "{\"name\":\"mby-pc-setup-1.2.0.exe\",\"browser_download_url\":\"https://github.com/doc-shashank/meloberry-pc/releases/download/v1.3.0/mby-pc-setup-1.2.0.exe\",\"size\":4}," +
+            "{\"name\":\"mby-pc-setup-1.3.0.exe\",\"browser_download_url\":\"https://github.com/doc-shashank/meloberry-pc/releases/download/v1.3.0/mby-pc-setup-1.3.0.exe\",\"size\":4}" +
+            "]}";
+
+        var handler = new StubHttpMessageHandler(req =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.Contains("meloberry-cli/releases/latest", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(multiToolReleaseJson, Encoding.UTF8, "application/json")
+                };
+            }
+
+            if (url.Contains("meloberry-pc/releases/latest", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(multiSetupReleaseJson, Encoding.UTF8, "application/json")
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(fakeExe)
+            };
+        });
+
+        var helper = new GitHubHttpClientHelper(new FakeMetaProvider("1.0.0"), handler);
+        var toolDl = new GitHubToolDownloader(helper, paths);
+        var toolCheck = await toolDl.CheckLatestToolAsync("mby");
+        Assert.True(toolCheck.IsSuccess);
+        Assert.Equal("mby-cli-2.1.0.exe", toolCheck.Value.AssetFileName);
+
+        var selfUpdater = new GitHubSelfUpdater(helper, paths);
+        var appCheck = await selfUpdater.CheckForUpdateAsync("doc-shashank", "meloberry-pc", "1.0.0");
+        Assert.True(appCheck.IsSuccess);
+        Assert.Equal("mby-pc-setup-1.3.0.exe", appCheck.Value.AssetFileName);
+
+        var dlRes = await selfUpdater.DownloadInstallerAsync(appCheck.Value, _ => { });
+        Assert.True(dlRes.IsSuccess);
+        Assert.True(File.Exists(dlRes.Value));
+        Assert.False(File.Exists(oldSetup));
+        Assert.False(File.Exists(orphanTmp));
+    }
+
     private sealed class RecordingShutdown : IAppShutdownCoordinator
     {
         public string? LaunchExe { get; private set; }

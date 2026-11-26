@@ -1,0 +1,16 @@
+html[data-theme="paper"] {
+  --bg: #f7f3e9;
+  --surface: #fffdf8;
+  --text: #2c241b;
+  --muted: #6f6254;
+  --accent: #9a3412;
+  --accent-soft: #ffedd5;
+  --select: #1d4ed8;
+  --select-soft: #e0e7ff;
+  --table-hideable-bg: #eef2e6;
+  --table-hideable-color: #3f6212;
+  --border: #e7dcc8;
+  --callout-pearl-bg: #fef7e0;
+  --callout-clinical-bg: #eef7fb;
+  --callout-warning-bg: #fdf0ed;
+}

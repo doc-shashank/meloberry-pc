@@ -3,6 +3,7 @@ using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Infrastructure.Common;
 
 namespace Meloberry.Wrapper.Infrastructure.Persistence;
 
@@ -22,18 +23,7 @@ public sealed class JsonSettingsStore(IWrapperDataPaths paths) : ISettingsStore
         await _lock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (!File.Exists(paths.SettingsFilePath))
-            {
-                return new WrapperSettings();
-            }
-
-            await using var fs = File.OpenRead(paths.SettingsFilePath);
-            var loaded = await JsonSerializer.DeserializeAsync<WrapperSettings>(fs, JsonOptions, ct).ConfigureAwait(false);
-            return loaded ?? new WrapperSettings();
-        }
-        catch
-        {
-            return new WrapperSettings();
+            return await LoadUnlockedAsync(ct).ConfigureAwait(false);
         }
         finally
         {
@@ -44,28 +34,88 @@ public sealed class JsonSettingsStore(IWrapperDataPaths paths) : ISettingsStore
     public async Task<Result> SaveAsync(WrapperSettings settings, CancellationToken ct = default)
     {
         await _lock.WaitAsync(ct).ConfigureAwait(false);
-        string? tmp = null;
         try
         {
-            Directory.CreateDirectory(paths.BaseDirectory);
-            tmp = $"{paths.SettingsFilePath}.{Guid.NewGuid():N}.tmp";
-            var json = JsonSerializer.Serialize(settings, JsonOptions);
-            await File.WriteAllTextAsync(tmp, json, ct).ConfigureAwait(false);
-            File.Move(tmp, paths.SettingsFilePath, overwrite: true);
-            return Result.Success();
-        }
-        catch (Exception ex)
-        {
-            if (tmp is not null && File.Exists(tmp))
-            {
-                try { File.Delete(tmp); } catch { }
-            }
-
-            return Result.Failure(WrapperErrors.IoFailure($"Failed to save wrapper settings: {ex.Message}"));
+            return await SaveUnlockedAsync(settings, ct).ConfigureAwait(false);
         }
         finally
         {
             _lock.Release();
+        }
+    }
+
+    public Task<Result<WrapperSettings>> UpdateAsync(
+        Func<WrapperSettings, WrapperSettings> mutator,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(mutator);
+        return UpdateAsync(current => Result<WrapperSettings>.Success(mutator(current)), ct);
+    }
+
+    public async Task<Result<WrapperSettings>> UpdateAsync(
+        Func<WrapperSettings, Result<WrapperSettings>> mutator,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(mutator);
+        await _lock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var current = await LoadUnlockedAsync(ct).ConfigureAwait(false);
+            var mutated = mutator(current);
+            if (mutated.IsFailure)
+            {
+                return mutated;
+            }
+
+            var saveRes = await SaveUnlockedAsync(mutated.Value, ct).ConfigureAwait(false);
+            return saveRes.IsSuccess
+                ? Result<WrapperSettings>.Success(mutated.Value)
+                : Result<WrapperSettings>.Failure(saveRes.Error!);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    private async Task<WrapperSettings> LoadUnlockedAsync(CancellationToken ct)
+    {
+        try
+        {
+            if (!File.Exists(paths.SettingsFilePath))
+            {
+                return new WrapperSettings();
+            }
+
+            await using var fs = File.OpenRead(paths.SettingsFilePath);
+            var loaded = await JsonSerializer.DeserializeAsync<WrapperSettings>(fs, JsonOptions, ct).ConfigureAwait(false);
+            return loaded ?? new WrapperSettings();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return new WrapperSettings();
+        }
+    }
+
+    private async Task<Result> SaveUnlockedAsync(WrapperSettings settings, CancellationToken ct)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(settings, JsonOptions);
+            await AtomicFileOps.WriteAllTextAsync(paths.SettingsFilePath, json, ct).ConfigureAwait(false);
+            return Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure(WrapperErrors.IoFailure($"Failed to save wrapper settings: {ex.Message}"));
         }
     }
 }

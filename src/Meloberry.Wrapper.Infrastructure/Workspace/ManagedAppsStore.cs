@@ -1,9 +1,9 @@
 using System.Diagnostics;
-using System.Text.RegularExpressions;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Infrastructure.Common;
 
 namespace Meloberry.Wrapper.Infrastructure.Workspace;
 
@@ -11,10 +11,8 @@ namespace Meloberry.Wrapper.Infrastructure.Workspace;
 /// Manages canonical CLI executables stored in %LOCALAPPDATA%\Meloberry\apps\ including
 /// metadata-based universal import detection and clean uninstall.
 /// </summary>
-public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManagedAppsStore
+public sealed class ManagedAppsStore(IWrapperDataPaths paths) : IManagedAppsStore
 {
-    [GeneratedRegex(@"(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)", RegexOptions.CultureInvariant)]
-    private static partial Regex SemverRegex();
 
     public Task<IReadOnlyList<ManagedAppEntry>> ScanAppsAsync(string? activeWorkspacePath, CancellationToken ct = default)
     {
@@ -141,19 +139,12 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
 
         if (!string.Equals(fullSource, destPath, StringComparison.OrdinalIgnoreCase))
         {
-            var tmp = $"{destPath}.{Guid.NewGuid():N}.tmp";
             try
             {
-                File.Copy(fullSource, tmp, overwrite: true);
-                File.Move(tmp, destPath, overwrite: true);
+                AtomicFileOps.CopyFile(fullSource, destPath);
             }
             catch (Exception ex)
             {
-                if (File.Exists(tmp))
-                {
-                    try { File.Delete(tmp); } catch { }
-                }
-
                 return Result<ManagedAppEntry>.Failure(WrapperErrors.IoFailure($"Failed to import '{resolvedFileName}': {ex.Message}"));
             }
         }
@@ -265,23 +256,18 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             ? ManagedAppKind.Melomg
             : ManagedAppKind.Mby;
 
-        var match = entries.FirstOrDefault(e => e.Kind == targetKind && e.IsInstalled && !string.IsNullOrWhiteSpace(e.FullPath));
-        if (match?.FullPath is not null && File.Exists(match.FullPath))
+        var entry = entries.FirstOrDefault(e => e.Kind == targetKind);
+        if (!string.IsNullOrWhiteSpace(workspacePath) && Directory.Exists(workspacePath))
         {
-            if (!string.IsNullOrWhiteSpace(workspacePath) && Directory.Exists(workspacePath))
+            if (!string.IsNullOrWhiteSpace(entry?.WorkspaceFileName))
             {
-                var wsCandidate = Path.Combine(workspacePath, match.FileName);
+                var wsCandidate = Path.Combine(workspacePath, entry.WorkspaceFileName);
                 if (File.Exists(wsCandidate))
                 {
                     return Path.GetFullPath(wsCandidate);
                 }
             }
 
-            return Path.GetFullPath(match.FullPath);
-        }
-
-        if (!string.IsNullOrWhiteSpace(workspacePath) && Directory.Exists(workspacePath))
-        {
             var direct = Directory.GetFiles(workspacePath, "*.exe", SearchOption.TopDirectoryOnly)
                 .FirstOrDefault(f => targetKind == ManagedAppKind.Mby
                     ? IsMbyFileName(Path.GetFileName(f))
@@ -290,6 +276,11 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             {
                 return Path.GetFullPath(direct);
             }
+        }
+
+        if (entry is { IsInstalled: true, FullPath: not null } && File.Exists(entry.FullPath))
+        {
+            return Path.GetFullPath(entry.FullPath);
         }
 
         return null;
@@ -323,13 +314,7 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             var rawVer = !string.IsNullOrWhiteSpace(vi.ProductVersion) ? vi.ProductVersion : vi.FileVersion;
             if (!string.IsNullOrWhiteSpace(rawVer))
             {
-                var plus = rawVer.IndexOf('+');
-                var v = plus > 0 ? rawVer[..plus] : rawVer;
-                var match = SemverRegex().Match(v);
-                if (match.Success)
-                {
-                    detectedVersion = match.Groups[1].Value;
-                }
+                detectedVersion = SemverComparer.ExtractVersion(rawVer);
             }
         }
         catch
@@ -457,10 +442,10 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
 
     internal static string? ExtractVersion(string fullPath)
     {
-        var match = SemverRegex().Match(Path.GetFileNameWithoutExtension(fullPath));
-        if (match.Success)
+        var nameVer = SemverComparer.ExtractVersion(Path.GetFileNameWithoutExtension(fullPath));
+        if (nameVer is not null)
         {
-            return match.Groups[1].Value;
+            return nameVer;
         }
 
         try
@@ -471,8 +456,7 @@ public sealed partial class ManagedAppsStore(IWrapperDataPaths paths) : IManaged
             {
                 var plus = rawVer.IndexOf('+');
                 var cleaned = plus > 0 ? rawVer[..plus] : rawVer;
-                var peMatch = SemverRegex().Match(cleaned);
-                return peMatch.Success ? peMatch.Groups[1].Value : cleaned;
+                return SemverComparer.ExtractVersion(cleaned) ?? cleaned;
             }
         }
         catch

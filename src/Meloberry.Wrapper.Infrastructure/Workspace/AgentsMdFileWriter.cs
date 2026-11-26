@@ -3,6 +3,7 @@ using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
 using Meloberry.Wrapper.Domain.Services;
+using Meloberry.Wrapper.Infrastructure.Common;
 
 namespace Meloberry.Wrapper.Infrastructure.Workspace;
 
@@ -96,13 +97,9 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
             return Result<AgentsMdStatus>.Failure(WrapperErrors.AgentsMdAlreadyExists(agentsMdPath));
         }
 
-        string? tmpPath = null;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(agentsMdPath)!);
-            tmpPath = $"{agentsMdPath}.{Guid.NewGuid():N}.tmp";
-            await File.WriteAllTextAsync(tmpPath, content, ct).ConfigureAwait(false);
-            File.Move(tmpPath, agentsMdPath, overwrite: true);
+            await AtomicFileOps.WriteAllTextAsync(agentsMdPath, content, ct).ConfigureAwait(false);
 
             var info = new FileInfo(agentsMdPath);
             var preview = info.Length <= MaxPreviewBytes
@@ -119,13 +116,12 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
                 ApproximateTokens: AgentsMdComposer.EstimateTokens(content),
                 CharacterCount: content.Length));
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            if (tmpPath is not null && File.Exists(tmpPath))
-            {
-                try { File.Delete(tmpPath); } catch { }
-            }
-
             return Result<AgentsMdStatus>.Failure(WrapperErrors.IoFailure($"Failed to write AGENTS.md: {ex.Message}"));
         }
     }

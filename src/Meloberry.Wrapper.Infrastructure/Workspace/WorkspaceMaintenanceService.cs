@@ -1,8 +1,8 @@
-using System.Security.Cryptography;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Infrastructure.Common;
 
 namespace Meloberry.Wrapper.Infrastructure.Workspace;
 
@@ -234,7 +234,7 @@ public sealed class WorkspaceMaintenanceService(
 
             if (latestMby is not null && ManagedAppsStore.IsMbyFileName(name))
             {
-                if (latestMby.FullPath is not null && await AreFilesIdenticalAsync(file, latestMby.FullPath, ct).ConfigureAwait(false))
+                if (latestMby.FullPath is not null && await FileIdentity.AreIdenticalAsync(file, latestMby.FullPath, ct).ConfigureAwait(false))
                 {
                     continue;
                 }
@@ -255,7 +255,7 @@ public sealed class WorkspaceMaintenanceService(
             }
             else if (latestMelomg is not null && ManagedAppsStore.IsMelomgFileName(name))
             {
-                if (latestMelomg.FullPath is not null && await AreFilesIdenticalAsync(file, latestMelomg.FullPath, ct).ConfigureAwait(false))
+                if (latestMelomg.FullPath is not null && await FileIdentity.AreIdenticalAsync(file, latestMelomg.FullPath, ct).ConfigureAwait(false))
                 {
                     continue;
                 }
@@ -317,20 +317,7 @@ public sealed class WorkspaceMaintenanceService(
                 }
 
                 var destPath = Path.GetFullPath(Path.Combine(fullWs, latest.FileName));
-                var tmpPath = $"{destPath}.{Guid.NewGuid():N}.mbytmp";
-                try
-                {
-                    File.Copy(latest.FullPath, tmpPath, overwrite: true);
-                    File.Move(tmpPath, destPath, overwrite: true);
-                }
-                catch
-                {
-                    if (File.Exists(tmpPath))
-                    {
-                        try { File.Delete(tmpPath); } catch { }
-                    }
-                    throw;
-                }
+                AtomicFileOps.CopyFile(latest.FullPath, destPath, ".mbytmp");
 
                 keptPaths.Add(destPath);
                 copiedNew.Add(latest.FileName);
@@ -362,29 +349,6 @@ public sealed class WorkspaceMaintenanceService(
         catch (Exception ex)
         {
             return Result<WorkspaceToolUpdateResult>.Failure(WrapperErrors.IoFailure($"Failed to update workspace tools: {ex.Message}"));
-        }
-    }
-
-    private static async Task<bool> AreFilesIdenticalAsync(string fileA, string fileB, CancellationToken ct)
-    {
-        try
-        {
-            var infoA = new FileInfo(fileA);
-            var infoB = new FileInfo(fileB);
-            if (!infoA.Exists || !infoB.Exists || infoA.Length != infoB.Length)
-            {
-                return false;
-            }
-
-            await using var streamA = File.OpenRead(fileA);
-            await using var streamB = File.OpenRead(fileB);
-            var hashA = await SHA256.HashDataAsync(streamA, ct).ConfigureAwait(false);
-            var hashB = await SHA256.HashDataAsync(streamB, ct).ConfigureAwait(false);
-            return hashA.AsSpan().SequenceEqual(hashB);
-        }
-        catch
-        {
-            return false;
         }
     }
 

@@ -1,16 +1,16 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Infrastructure.Common;
 
 namespace Meloberry.Wrapper.Infrastructure.GitHub;
 
 /// <summary>Shared HTTP allowlist, redirect validation, PE magic-byte, and SHA-256 download guards.</summary>
-public sealed partial class GitHubHttpClientHelper
+public sealed class GitHubHttpClientHelper
 {
     public const long MaxDownloadBytes = 250L * 1024L * 1024L;
 
@@ -35,9 +35,6 @@ public sealed partial class GitHubHttpClientHelper
             : new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }, disposeHandler: true);
         _http.Timeout = TimeSpan.FromMinutes(3);
     }
-
-    [GeneratedRegex(@"(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)", RegexOptions.CultureInvariant)]
-    public static partial Regex SemverRegex();
 
     public static bool IsAllowedGitHubUri(string url, out Uri? parsed)
     {
@@ -219,12 +216,8 @@ public sealed partial class GitHubHttpClientHelper
         }
     }
 
-    public static string? ExtractVersionFromText(string text)
-    {
-        var cleaned = text.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? text[..^4] : text;
-        var m = SemverRegex().Match(cleaned);
-        return m.Success ? m.Groups[1].Value : null;
-    }
+    public static string? ExtractVersionFromText(string text) =>
+        SemverComparer.ExtractVersion(text);
 
     public static int CompareSemver(string? left, string? right) =>
         SemverComparer.Compare(left, right);
@@ -320,6 +313,7 @@ public sealed class GitHubToolDownloader(
             return null;
         }
 
+        ToolReleaseCandidate? best = null;
         foreach (var asset in assets.EnumerateArray())
         {
             var name = asset.TryGetProperty("name", out var n) ? n.GetString() : null;
@@ -337,8 +331,7 @@ public sealed class GitHubToolDownloader(
 
             long? size = asset.TryGetProperty("size", out var s) && s.TryGetInt64(out var sv) ? sv : null;
             var digest = asset.TryGetProperty("digest", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null;
-
-            return new ToolReleaseCandidate(
+            var candidate = new ToolReleaseCandidate(
                 ToolKey: toolKey,
                 Source: "releases/latest",
                 TagOrRef: tag,
@@ -347,9 +340,14 @@ public sealed class GitHubToolDownloader(
                 SizeBytes: size,
                 Sha256Hex: digest,
                 ExtractedVersion: GitHubHttpClientHelper.ExtractVersionFromText(name) ?? GitHubHttpClientHelper.ExtractVersionFromText(tag));
+
+            if (best is null || GitHubHttpClientHelper.CompareSemver(candidate.ExtractedVersion, best.ExtractedVersion) > 0)
+            {
+                best = candidate;
+            }
         }
 
-        return null;
+        return best;
     }
 
     private static ToolReleaseCandidate? TrySelectContentsAppBinary(string toolKey, string prefix, string json)
@@ -446,6 +444,7 @@ public sealed class GitHubSelfUpdater(
             string? downloadUrl = null;
             long? sizeBytes = null;
             string? digest = null;
+            string? bestVer = null;
 
             if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
             {
@@ -461,12 +460,16 @@ public sealed class GitHubSelfUpdater(
                     if (name.StartsWith("mby-pc-setup-", StringComparison.OrdinalIgnoreCase) &&
                         name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                     {
-                        assetName = name;
-                        downloadUrl = url;
-                        sizeBytes = asset.TryGetProperty("size", out var s) && s.TryGetInt64(out var sv) ? sv : null;
-                        digest = asset.TryGetProperty("digest", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null;
-                        latestVer = GitHubHttpClientHelper.ExtractVersionFromText(name) ?? latestVer;
-                        break;
+                        var candidateVer = GitHubHttpClientHelper.ExtractVersionFromText(name) ?? latestVer;
+                        if (downloadUrl is null || GitHubHttpClientHelper.CompareSemver(candidateVer, bestVer) > 0)
+                        {
+                            assetName = name;
+                            downloadUrl = url;
+                            sizeBytes = asset.TryGetProperty("size", out var s) && s.TryGetInt64(out var sv) ? sv : null;
+                            digest = asset.TryGetProperty("digest", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null;
+                            bestVer = candidateVer;
+                            latestVer = candidateVer;
+                        }
                     }
                 }
             }
@@ -533,20 +536,51 @@ public sealed class GitHubSelfUpdater(
             return tmpRes;
         }
 
-        var finalPath = Path.Combine(paths.UpdatesDirectory, Path.GetFileName(check.AssetFileName));
+        var finalFileName = Path.GetFileName(check.AssetFileName);
+        var finalPath = Path.Combine(paths.UpdatesDirectory, finalFileName);
         try
         {
-            File.Move(tmpRes.Value, finalPath, overwrite: true);
+            AtomicFileOps.MoveTempIntoPlace(tmpRes.Value, finalPath);
+            CleanupStaleInstallers(paths.UpdatesDirectory, finalFileName);
             return Result<string>.Success(finalPath);
         }
         catch (Exception ex)
         {
-            if (File.Exists(tmpRes.Value))
+            return Result<string>.Failure(WrapperErrors.IoFailure($"Failed to finalize installer download: {ex.Message}"));
+        }
+    }
+
+    private static void CleanupStaleInstallers(string updatesDirectory, string keepFileName)
+    {
+        if (!Directory.Exists(updatesDirectory))
+        {
+            return;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(updatesDirectory, "*", SearchOption.TopDirectoryOnly))
+        {
+            var name = Path.GetFileName(file);
+            if (string.Equals(name, keepFileName, StringComparison.OrdinalIgnoreCase))
             {
-                try { File.Delete(tmpRes.Value); } catch { }
+                continue;
             }
 
-            return Result<string>.Failure(WrapperErrors.IoFailure($"Failed to finalize installer download: {ex.Message}"));
+            var isOldInstaller = name.StartsWith("mby-pc-setup-", StringComparison.OrdinalIgnoreCase)
+                && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+            var isOrphanTemp = name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
+            if (!isOldInstaller && !isOrphanTemp)
+            {
+                continue;
+            }
+
+            try
+            {
+                File.Delete(file);
+            }
+            catch
+            {
+                // Best-effort cleanup; ignore files locked by OS or running installer.
+            }
         }
     }
 }

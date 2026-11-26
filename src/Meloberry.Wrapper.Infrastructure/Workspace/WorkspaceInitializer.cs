@@ -1,8 +1,8 @@
-using System.Security.Cryptography;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Infrastructure.Common;
 
 namespace Meloberry.Wrapper.Infrastructure.Workspace;
 
@@ -34,7 +34,7 @@ public sealed class WorkspaceInitializer(
             return Result<WorkspaceInitPlan>.Failure(planRes.Error!);
         }
 
-        var (fullWs, operations, skippedIdentical, conflicts) = planRes.Value;
+        var (fullWs, operations, skippedIdentical, conflicts, _) = planRes.Value;
         return Result<WorkspaceInitPlan>.Success(new WorkspaceInitPlan(
             WorkspacePath: fullWs,
             SelectedAppFileNames: selectedAppFileNames,
@@ -57,13 +57,13 @@ public sealed class WorkspaceInitializer(
             return Result<WorkspaceInitResult>.Failure(planRes.Error!);
         }
 
-        var (fullWs, operations, skippedIdentical, _) = planRes.Value;
+        var (fullWs, operations, skippedIdentical, _, identicalSkippedRelativePaths) = planRes.Value;
         string? wsMbyPath = null;
         string? wsMelomgPath = null;
         var copiedApps = new List<string>();
         var copiedFiles = new List<string>();
         var copiedFolderSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var copiedRelativePaths = new List<string>();
+        var copiedRelativePaths = new List<string>(identicalSkippedRelativePaths);
         var skipped = skippedIdentical;
         var overwritten = 0;
 
@@ -89,27 +89,7 @@ public sealed class WorkspaceInitializer(
                     overwritten++;
                 }
 
-                var destDir = Path.GetDirectoryName(op.DestinationPath);
-                if (!string.IsNullOrWhiteSpace(destDir))
-                {
-                    Directory.CreateDirectory(destDir);
-                }
-
-                var tmp = $"{op.DestinationPath}.{Guid.NewGuid():N}.mbytmp";
-                try
-                {
-                    File.Copy(op.SourcePath, tmp, overwrite: true);
-                    File.Move(tmp, op.DestinationPath, overwrite: true);
-                }
-                catch
-                {
-                    if (File.Exists(tmp))
-                    {
-                        try { File.Delete(tmp); } catch { }
-                    }
-
-                    throw;
-                }
+                AtomicFileOps.CopyFile(op.SourcePath, op.DestinationPath, ".mbytmp");
 
                 copiedRelativePaths.Add(op.RelativeTargetPath);
                 if (op.IsExecutable)
@@ -194,7 +174,7 @@ public sealed class WorkspaceInitializer(
         return Task.FromResult<IReadOnlyList<DiscoveredWebApp>>(found);
     }
 
-    private async Task<Result<(string FullWs, List<PlannedFileCopy> Ops, int SkippedIdentical, List<WorkspaceCopyConflict> Conflicts)>> BuildOperationsAsync(
+    private async Task<Result<(string FullWs, List<PlannedFileCopy> Ops, int SkippedIdentical, List<WorkspaceCopyConflict> Conflicts, List<string> IdenticalSkippedRelativePaths)>> BuildOperationsAsync(
         string workspacePath,
         IReadOnlyList<string> selectedAppFileNames,
         IReadOnlyList<StagedCopyItem> stagedItems,
@@ -202,7 +182,7 @@ public sealed class WorkspaceInitializer(
     {
         if (string.IsNullOrWhiteSpace(workspacePath))
         {
-            return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+            return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Failure(
                 WrapperErrors.InvalidWorkspaceDir(workspacePath));
         }
 
@@ -213,13 +193,21 @@ public sealed class WorkspaceInitializer(
         }
         catch (Exception ex)
         {
-            return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+            return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Failure(
                 WrapperErrors.InvalidWorkspaceDir($"{workspacePath} ({ex.Message})"));
         }
 
         var ops = new List<PlannedFileCopy>();
+        var plannedByDest = new Dictionary<string, PlannedFileCopy>(StringComparer.OrdinalIgnoreCase);
         var conflicts = new List<WorkspaceCopyConflict>();
+        var identicalSkippedRelativePaths = new List<string>();
         var skippedIdentical = 0;
+
+        void RecordIdenticalSkip(int count, string relTarget)
+        {
+            skippedIdentical += count;
+            identicalSkippedRelativePaths.Add(relTarget);
+        }
 
         foreach (var appName in selectedAppFileNames.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -227,12 +215,12 @@ public sealed class WorkspaceInitializer(
             var srcExe = Path.Combine(dataPaths.AppsDirectory, safeName);
             if (!File.Exists(srcExe))
             {
-                return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Failure(
                     WrapperErrors.CliNotFound(safeName));
             }
 
             var destExe = Path.Combine(fullWs, safeName);
-            await ClassifyCopyAsync(srcExe, destExe, safeName, StagedCopyKind.File, true, null, ops, conflicts, ct, v => skippedIdentical += v).ConfigureAwait(false);
+            await ClassifyCopyAsync(srcExe, destExe, safeName, StagedCopyKind.File, true, null, ops, plannedByDest, conflicts, ct, RecordIdenticalSkip).ConfigureAwait(false);
         }
 
         foreach (var item in stagedItems)
@@ -249,7 +237,7 @@ public sealed class WorkspaceInitializer(
             }
             catch
             {
-                return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Failure(
                     WrapperErrors.InvalidPath(item.SourcePath));
             }
 
@@ -257,33 +245,33 @@ public sealed class WorkspaceInitializer(
             {
                 if (!File.Exists(fullSrc))
                 {
-                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Failure(
                         WrapperErrors.InvalidPath($"Staged file does not exist: {fullSrc}"));
                 }
 
                 var rel = Path.GetFileName(fullSrc);
                 var dest = Path.Combine(fullWs, rel);
-                await ClassifyCopyAsync(fullSrc, dest, rel, StagedCopyKind.File, false, null, ops, conflicts, ct, v => skippedIdentical += v).ConfigureAwait(false);
+                await ClassifyCopyAsync(fullSrc, dest, rel, StagedCopyKind.File, false, null, ops, plannedByDest, conflicts, ct, RecordIdenticalSkip).ConfigureAwait(false);
             }
             else
             {
                 if (!Directory.Exists(fullSrc))
                 {
-                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Failure(
                         WrapperErrors.InvalidPath($"Staged folder does not exist: {fullSrc}"));
                 }
 
                 var folderName = Path.GetFileName(Path.TrimEndingDirectorySeparator(fullSrc));
                 if (string.IsNullOrWhiteSpace(folderName))
                 {
-                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Failure(
                         WrapperErrors.InvalidPath($"Cannot stage a drive root directory: '{fullSrc}'."));
                 }
 
                 var destFolderRoot = Path.Combine(fullWs, folderName);
                 if (IsSameOrDescendant(fullSrc, destFolderRoot) || IsSameOrDescendant(fullSrc, fullWs))
                 {
-                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Failure(
                         WrapperErrors.RecursiveCopyBlocked(fullSrc, fullWs));
                 }
 
@@ -295,7 +283,7 @@ public sealed class WorkspaceInitializer(
                         var relInsideFolder = Path.GetRelativePath(fullSrc, srcFile);
                         var relInWs = Path.Combine(folderName, relInsideFolder).Replace('\\', '/');
                         var destFile = Path.Combine(destFolderRoot, relInsideFolder);
-                        await ClassifyCopyAsync(srcFile, destFile, relInWs, StagedCopyKind.Folder, false, folderName, ops, conflicts, ct, v => skippedIdentical += v).ConfigureAwait(false);
+                        await ClassifyCopyAsync(srcFile, destFile, relInWs, StagedCopyKind.Folder, false, folderName, ops, plannedByDest, conflicts, ct, RecordIdenticalSkip).ConfigureAwait(false);
                     }
                 }
                 catch (OperationCanceledException)
@@ -304,13 +292,14 @@ public sealed class WorkspaceInitializer(
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
-                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Failure(
+                    return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Failure(
                         WrapperErrors.IoFailure($"Failed to enumerate staged folder '{fullSrc}': {ex.Message}"));
                 }
             }
         }
 
-        return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>)>.Success((fullWs, ops, skippedIdentical, conflicts));
+        return Result<(string, List<PlannedFileCopy>, int, List<WorkspaceCopyConflict>, List<string>)>.Success(
+            (fullWs, ops, skippedIdentical, conflicts, identicalSkippedRelativePaths));
     }
 
     private static async Task ClassifyCopyAsync(
@@ -321,55 +310,43 @@ public sealed class WorkspaceInitializer(
         bool isExe,
         string? rootFolderName,
         List<PlannedFileCopy> ops,
+        Dictionary<string, PlannedFileCopy> plannedByDest,
         List<WorkspaceCopyConflict> conflicts,
         CancellationToken ct,
-        Action<int> addIdenticalSkip)
+        Action<int, string> addIdenticalSkip)
     {
-        if (string.Equals(Path.GetFullPath(src), Path.GetFullPath(dest), StringComparison.OrdinalIgnoreCase))
+        var fullSrc = Path.GetFullPath(src);
+        var fullDest = Path.GetFullPath(dest);
+        if (string.Equals(fullSrc, fullDest, StringComparison.OrdinalIgnoreCase))
         {
-            addIdenticalSkip(1);
+            addIdenticalSkip(1, relTarget);
             return;
         }
 
-        if (File.Exists(dest))
+        if (plannedByDest.TryGetValue(fullDest, out var priorOp))
         {
-            if (await AreFilesIdenticalAsync(src, dest, ct).ConfigureAwait(false))
+            if (await FileIdentity.AreIdenticalAsync(fullSrc, priorOp.SourcePath, ct).ConfigureAwait(false))
             {
-                addIdenticalSkip(1);
+                addIdenticalSkip(1, relTarget);
                 return;
             }
 
-            conflicts.Add(new WorkspaceCopyConflict(src, dest, relTarget, kind));
+            conflicts.Add(new WorkspaceCopyConflict(fullSrc, fullDest, relTarget, kind));
         }
-
-        ops.Add(new PlannedFileCopy(src, dest, relTarget, kind, isExe, rootFolderName));
-    }
-
-    private static async Task<bool> AreFilesIdenticalAsync(string fileA, string fileB, CancellationToken ct)
-    {
-        try
+        else if (File.Exists(fullDest))
         {
-            var infoA = new FileInfo(fileA);
-            var infoB = new FileInfo(fileB);
-            if (infoA.Length != infoB.Length)
+            if (await FileIdentity.AreIdenticalAsync(fullSrc, fullDest, ct).ConfigureAwait(false))
             {
-                return false;
+                addIdenticalSkip(1, relTarget);
+                return;
             }
 
-            await using var streamA = File.OpenRead(fileA);
-            await using var streamB = File.OpenRead(fileB);
-            var hashA = await SHA256.HashDataAsync(streamA, ct).ConfigureAwait(false);
-            var hashB = await SHA256.HashDataAsync(streamB, ct).ConfigureAwait(false);
-            return hashA.AsSpan().SequenceEqual(hashB);
+            conflicts.Add(new WorkspaceCopyConflict(fullSrc, fullDest, relTarget, kind));
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
+
+        var planned = new PlannedFileCopy(fullSrc, fullDest, relTarget, kind, isExe, rootFolderName);
+        plannedByDest[fullDest] = planned;
+        ops.Add(planned);
     }
 
     private static bool IsSameOrDescendant(string parentCandidate, string childCandidate)

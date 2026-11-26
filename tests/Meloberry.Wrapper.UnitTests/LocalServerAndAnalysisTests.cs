@@ -74,13 +74,36 @@ public sealed class LocalServerAndAnalysisTests : IAsyncLifetime
         var shellAnalysis = await shellHttp.PostAsync("/api/analysis", new StringContent("{}", Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NotFound, shellAnalysis.StatusCode);
 
-        // Authorized bootstrap succeeds and advertises viewerOrigin.
+        // Authorized bootstrap succeeds and advertises viewerOrigin, paperThemeFallbackCss, and resolvedTools.
         using var bootReq = new HttpRequestMessage(HttpMethod.Get, "/api/bootstrap");
         bootReq.Headers.Add("X-Mby-Token", _server.AuthToken);
         var bootResp = await shellHttp.SendAsync(bootReq);
         Assert.Equal(HttpStatusCode.OK, bootResp.StatusCode);
         var bootJson = await bootResp.Content.ReadAsStringAsync();
         Assert.Contains(_server.ViewerBaseUrl.TrimEnd('/'), bootJson);
+        using (var bootDoc = System.Text.Json.JsonDocument.Parse(bootJson))
+        {
+            Assert.Contains("html[data-theme=\"paper\"]", bootDoc.RootElement.GetProperty("paperThemeFallbackCss").GetString() ?? string.Empty);
+            var tools = bootDoc.RootElement.GetProperty("resolvedTools");
+            Assert.True(tools.TryGetProperty("mby", out _));
+            Assert.True(tools.TryGetProperty("melomg", out _));
+        }
+
+        // /shell/shell.css concatenates base styles with paper-theme.css, and /api/apps includes resolvedTools.
+        var cssResp = await shellHttp.GetAsync("/shell/shell.css");
+        Assert.Equal(HttpStatusCode.OK, cssResp.StatusCode);
+        var cssText = await cssResp.Content.ReadAsStringAsync();
+        Assert.Contains("html[data-theme=\"paper\"]", cssText);
+        Assert.Contains("--callout-pearl-bg", cssText);
+
+        using var appsReq = new HttpRequestMessage(HttpMethod.Get, "/api/apps");
+        appsReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var appsResp = await shellHttp.SendAsync(appsReq);
+        Assert.Equal(HttpStatusCode.OK, appsResp.StatusCode);
+        using (var appsDoc = System.Text.Json.JsonDocument.Parse(await appsResp.Content.ReadAsStringAsync()))
+        {
+            Assert.True(appsDoc.RootElement.TryGetProperty("resolvedTools", out _));
+        }
 
         // Mount dummy WebApp.
         var webDir = Path.Combine(_tempRoot, "sample_web");
@@ -255,23 +278,5 @@ public sealed class LocalServerAndAnalysisTests : IAsyncLifetime
         {
             Directory.Delete(_tempRoot, recursive: true);
         }
-    }
-
-    private sealed class NoopShutdown : IAppShutdownCoordinator
-    {
-        public void RequestShutdown() { }
-        public void RequestShutdownAndLaunch(string executablePath, string arguments) { }
-    }
-    private sealed class NoopDialogs : INativeDialogService
-    {
-        public Task<string?> PickFolderAsync(string title, string? initialDir = null, CancellationToken ct = default) => Task.FromResult<string?>(null);
-        public Task<IReadOnlyList<string>> PickFilesAsync(string title, string filterLabel, string filterPattern, bool allowMultiple = true, string? initialDir = null, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<string>>([]);
-        public Task<string?> SaveFileAsync(string title, string defaultFileName, string filterLabel, string filterExtension, string? initialDir = null, CancellationToken ct = default) => Task.FromResult<string?>(null);
-    }
-
-    private sealed class NoopLauncher : IExternalUrlLauncher
-    {
-        public Result OpenAllowlistedUrl(string url) => Result.Success();
-        public Result OpenFolder(string folderPath) => Result.Success();
     }
 }

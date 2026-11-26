@@ -177,7 +177,7 @@ public sealed class ReadyWorkspaceHandler(
 
             var category = catalogByTopic.TryGetValue(sel.Topic, out var meta)
                 ? meta.Category
-                : InferCategory(sel.Topic);
+                : SpecCatalogDefaults.GetCategoryForTopic(sel.Topic);
             if (PromptComposer.IsAllowedInContainer(request.Draft.Container, category))
             {
                 AddUnique(sel.Topic);
@@ -185,7 +185,7 @@ public sealed class ReadyWorkspaceHandler(
         }
 
         if (request.Draft.Container == ContainerKind.StandaloneQuiz &&
-            !topicSet.Any(t => (catalogByTopic.TryGetValue(t, out var m) ? m.Category : InferCategory(t)) == "question"))
+            !topicSet.Any(t => (catalogByTopic.TryGetValue(t, out var m) ? m.Category : SpecCatalogDefaults.GetCategoryForTopic(t)) == "question"))
         {
             AddUnique("mcq");
         }
@@ -228,10 +228,13 @@ public sealed class ReadyWorkspaceHandler(
         var stagedFiles = new List<string>();
         if (settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, fullWs))
         {
-            stagedFiles.AddRange((settings.ActiveWorkspace.StagedItems ?? [])
-                .Where(i => i.Kind == StagedCopyKind.File)
-                .Select(i => i.TargetRelativePath)
-                .Where(x => !string.IsNullOrWhiteSpace(x)));
+            foreach (var stagedFile in (settings.ActiveWorkspace.StagedItems ?? []).Where(i => i.Kind == StagedCopyKind.File))
+            {
+                if (TryResolveExistingWorkspaceFile(fullWs, normalizedWsPrefix, stagedFile.TargetRelativePath, out var relFile))
+                {
+                    stagedFiles.Add(relFile);
+                }
+            }
         }
 
         var externalAttachments = new List<string>();
@@ -247,7 +250,10 @@ public sealed class ReadyWorkspaceHandler(
                 var fullAtt = Path.GetFullPath(att.FilePath.Trim());
                 if (fullAtt.StartsWith(normalizedWsPrefix, StringComparison.OrdinalIgnoreCase))
                 {
-                    stagedFiles.Add(Path.GetRelativePath(fullWs, fullAtt).Replace('\\', '/'));
+                    if (File.Exists(fullAtt))
+                    {
+                        stagedFiles.Add(Path.GetRelativePath(fullWs, fullAtt).Replace('\\', '/'));
+                    }
                 }
                 else
                 {
@@ -263,22 +269,29 @@ public sealed class ReadyWorkspaceHandler(
         var distinctStagedFiles = stagedFiles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var distinctExternalAttachments = externalAttachments.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
-        var stagedFolders = (settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, fullWs)
+        var candidateFolders = (settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, fullWs)
                 ? settings.ActiveWorkspace.StagedItems ?? []
                 : [])
             .Where(i => i.Kind == StagedCopyKind.Folder)
             .Select(i => i.TargetRelativePath)
-            .Concat(request.Draft.CopiedFolders ?? [])
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+            .Concat(request.Draft.CopiedFolders ?? []);
+
+        var stagedFolders = new List<string>();
+        foreach (var candidateFolder in candidateFolders)
+        {
+            if (TryResolveExistingWorkspaceFolder(fullWs, normalizedWsPrefix, candidateFolder, out var relFolder))
+            {
+                stagedFolders.Add(relFolder);
+            }
+        }
+        stagedFolders = stagedFolders.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         var composeInput = new AgentsMdComposeInput(
             WorkspacePath: fullWs,
             Container: request.Draft.Container,
             AuthoringFormat: request.Draft.AuthoringFormat,
-            WorkspaceMbyFileName: workspaceMby ?? (!string.IsNullOrWhiteSpace(mbyExePath) ? mbyExePath : null),
-            WorkspaceMelomgFileName: workspaceMelomg ?? (!string.IsNullOrWhiteSpace(melomgExePath) ? melomgExePath : null),
+            WorkspaceMbyFileName: FormatResolvedToolForAgentsMd(mbyExePath, fullWs, normalizedWsPrefix),
+            WorkspaceMelomgFileName: FormatResolvedToolForAgentsMd(melomgExePath, fullWs, normalizedWsPrefix),
             ExtraWorkspaceExecutables: extraWorkspaceExes,
             CopiedFiles: distinctStagedFiles,
             CopiedFolders: stagedFolders,
@@ -297,18 +310,26 @@ public sealed class ReadyWorkspaceHandler(
         if (settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, fullWs))
         {
             var relArtifact = Path.GetRelativePath(fullWs, writeRes.Value.AgentsMdPath).Replace('\\', '/');
-            var artifacts = (settings.ActiveWorkspace.LastReadyWorkspaceArtifacts ?? [])
-                .Concat([relArtifact])
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var updatedState = settings.ActiveWorkspace with
+            await settingsStore.UpdateAsync(current =>
             {
-                AgentsMdExportedUtc = DateTimeOffset.UtcNow,
-                LastAgentsMdPath = writeRes.Value.AgentsMdPath,
-                LastReadyWorkspaceArtifacts = artifacts
-            };
-            await settingsStore.SaveAsync(settings with { ActiveWorkspace = updatedState }, ct).ConfigureAwait(false);
+                if (current.ActiveWorkspace is null || !PathNormalization.AreSameDirectory(current.ActiveWorkspace.WorkspacePath, fullWs))
+                {
+                    return current;
+                }
+
+                var artifacts = (current.ActiveWorkspace.LastReadyWorkspaceArtifacts ?? [])
+                    .Concat([relArtifact])
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var updatedState = current.ActiveWorkspace with
+                {
+                    AgentsMdExportedUtc = DateTimeOffset.UtcNow,
+                    LastAgentsMdPath = writeRes.Value.AgentsMdPath,
+                    LastReadyWorkspaceArtifacts = artifacts
+                };
+                return current with { ActiveWorkspace = updatedState };
+            }, ct).ConfigureAwait(false);
         }
 
         var included = specDetails.Select(s => s.Topic)
@@ -326,11 +347,86 @@ public sealed class ReadyWorkspaceHandler(
             CharacterCount: markdown.Length));
     }
 
-    private static string InferCategory(string topic) => topic.ToLowerInvariant() switch
+    private static string? FormatResolvedToolForAgentsMd(string? resolvedExePath, string fullWs, string normalizedWsPrefix)
     {
-        "text" or "image" or "callout" or "table" or "link" => "block",
-        "session" or "article" or "quiz" => "container",
-        "mcq" or "flashcard" or "fill-blank" or "assertion-reason" or "spot-error" or "diff" or "mechanism" or "relabel" => "question",
-        _ => "other"
-    };
+        if (string.IsNullOrWhiteSpace(resolvedExePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var fullExe = Path.GetFullPath(resolvedExePath.Trim());
+            if (fullExe.StartsWith(normalizedWsPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.GetRelativePath(fullWs, fullExe);
+            }
+
+            return fullExe;
+        }
+        catch
+        {
+            return resolvedExePath;
+        }
+    }
+
+    private static bool TryResolveExistingWorkspaceFile(
+        string fullWs,
+        string normalizedWsPrefix,
+        string? relativePath,
+        out string normalizedRelative)
+    {
+        normalizedRelative = string.Empty;
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var candidate = Path.GetFullPath(Path.Combine(fullWs, relativePath.Trim()));
+            if (!candidate.StartsWith(normalizedWsPrefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(candidate))
+            {
+                return false;
+            }
+
+            normalizedRelative = Path.GetRelativePath(fullWs, candidate).Replace('\\', '/');
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryResolveExistingWorkspaceFolder(
+        string fullWs,
+        string normalizedWsPrefix,
+        string? relativePath,
+        out string normalizedRelative)
+    {
+        normalizedRelative = string.Empty;
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var candidate = Path.GetFullPath(Path.Combine(fullWs, relativePath.Trim()));
+            if (PathNormalization.AreSameDirectory(candidate, fullWs)
+                || !candidate.StartsWith(normalizedWsPrefix, StringComparison.OrdinalIgnoreCase)
+                || !Directory.Exists(candidate))
+            {
+                return false;
+            }
+
+            normalizedRelative = Path.GetRelativePath(fullWs, candidate).Replace('\\', '/').TrimEnd('/');
+            return !string.IsNullOrWhiteSpace(normalizedRelative);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }

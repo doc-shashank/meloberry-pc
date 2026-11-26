@@ -44,14 +44,15 @@ public sealed class ManageLibraryHandler(
             LastOpenedUtc: DateTimeOffset.UtcNow,
             ReportCount: analysisStore.CountReports(fullDir));
 
-        var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
-        var updatedRecents = (settings.RecentWebApps ?? [])
-            .Where(r => !PathNormalization.AreSameDirectory(r.Path, fullDir))
-            .Prepend(entry)
-            .Take(20)
-            .ToList();
-
-        await settingsStore.SaveAsync(settings with { RecentWebApps = updatedRecents }, ct).ConfigureAwait(false);
+        await settingsStore.UpdateAsync(current =>
+        {
+            var updatedRecents = (current.RecentWebApps ?? [])
+                .Where(r => !PathNormalization.AreSameDirectory(r.Path, fullDir))
+                .Prepend(entry)
+                .Take(20)
+                .ToList();
+            return current with { RecentWebApps = updatedRecents };
+        }, ct).ConfigureAwait(false);
 
         return Result<(string, string, WebAppLibraryEntry)>.Success((mountRes.Value, $"/viewer/{mountRes.Value}/index.html", entry));
     }

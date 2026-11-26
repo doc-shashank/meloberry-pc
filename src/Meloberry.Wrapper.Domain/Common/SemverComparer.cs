@@ -1,8 +1,36 @@
+using System.Text.RegularExpressions;
+
 namespace Meloberry.Wrapper.Domain.Common;
 
 /// <summary>Zero-dependency SemVer 2.0.0 comparator supporting prerelease precedence.</summary>
-public static class SemverComparer
+public static partial class SemverComparer
 {
+    [GeneratedRegex(@"(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)", RegexOptions.CultureInvariant)]
+    private static partial Regex SemverRegex();
+
+    public static string? ExtractVersion(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var cleaned = text.Trim();
+        if (cleaned.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            cleaned = cleaned[..^4];
+        }
+
+        var plus = cleaned.IndexOf('+');
+        if (plus > 0)
+        {
+            cleaned = cleaned[..plus];
+        }
+
+        var match = SemverRegex().Match(cleaned);
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
     public static int Compare(string? left, string? right)
     {
         var l = Parse(left);

@@ -18,53 +18,41 @@ public sealed class WorkspaceSetupHandler(
             return Result<ActiveWorkspaceState>.Failure(WrapperErrors.InvalidWorkspaceDir(workspacePath));
         }
 
-        var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
-        var recent = (settings.RecentWorkspaces ?? [])
-            .Where(p => !PathNormalization.AreSameDirectory(p, fullPath))
-            .Prepend(fullPath)
-            .Take(10)
-            .ToList();
+        var snapshot = await WorkspaceStateSync.ScanAppsSnapshotAsync(appsStore, fullPath, ct).ConfigureAwait(false);
 
-        var isSameWorkspace = PathNormalization.AreSameDirectory(settings.ActiveWorkspace?.WorkspacePath, fullPath);
-        var scanned = await appsStore.ScanAppsAsync(fullPath, ct).ConfigureAwait(false);
-        var existingAppsInWs = scanned
-            .Where(a => a.IsPresentInWorkspace)
-            .Select(a => a.WorkspaceFileName ?? a.FileName)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var installedNames = scanned
-            .Where(a => a.IsInstalled)
-            .Select(a => a.FileName)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var installedInWs = scanned
-            .Where(a => a.IsInstalled && a.IsPresentInWorkspace)
-            .Select(a => a.FileName)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var selectedApps = isSameWorkspace && settings.ActiveWorkspace?.SelectedAppFileNames is { } prevSelected
-            ? prevSelected.Where(n => installedNames.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
-            : installedInWs;
-
-        var state = new ActiveWorkspaceState(
-            WorkspacePath: fullPath,
-            IsInitialized: isSameWorkspace && settings.ActiveWorkspace!.IsInitialized,
-            LastInitializedUtc: isSameWorkspace ? settings.ActiveWorkspace?.LastInitializedUtc : null,
-            AgentsMdExportedUtc: isSameWorkspace ? settings.ActiveWorkspace?.AgentsMdExportedUtc : null,
-            SelectedAppFileNames: selectedApps,
-            StagedItems: isSameWorkspace ? settings.ActiveWorkspace?.StagedItems : [],
-            LastCopiedRelativePaths: isSameWorkspace ? settings.ActiveWorkspace?.LastCopiedRelativePaths : [],
-            WorkspaceApps: existingAppsInWs);
-
-        var updated = settings with
+        ActiveWorkspaceState? resultingState = null;
+        var updateRes = await settingsStore.UpdateAsync(current =>
         {
-            ActiveWorkspace = state,
-            RecentWorkspaces = recent
-        };
-        var saveRes = await settingsStore.SaveAsync(updated, ct).ConfigureAwait(false);
-        return saveRes.IsSuccess
-            ? Result<ActiveWorkspaceState>.Success(state)
-            : Result<ActiveWorkspaceState>.Failure(saveRes.Error!);
+            var recent = WorkspaceStateSync.PrependRecentWorkspace(current.RecentWorkspaces, fullPath);
+
+            var isSameWorkspace = PathNormalization.AreSameDirectory(current.ActiveWorkspace?.WorkspacePath, fullPath);
+            var selectedApps = isSameWorkspace && current.ActiveWorkspace?.SelectedAppFileNames is { } prevSelected
+                ? prevSelected.Where(n => snapshot.InstalledNames.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                : snapshot.InstalledInWorkspace;
+
+            var state = new ActiveWorkspaceState(
+                WorkspacePath: fullPath,
+                IsInitialized: isSameWorkspace && current.ActiveWorkspace!.IsInitialized,
+                LastInitializedUtc: isSameWorkspace ? current.ActiveWorkspace?.LastInitializedUtc : null,
+                AgentsMdExportedUtc: isSameWorkspace ? current.ActiveWorkspace?.AgentsMdExportedUtc : null,
+                SelectedAppFileNames: selectedApps,
+                StagedItems: isSameWorkspace ? current.ActiveWorkspace?.StagedItems : [],
+                LastCopiedRelativePaths: isSameWorkspace ? current.ActiveWorkspace?.LastCopiedRelativePaths : [],
+                WorkspaceApps: snapshot.WorkspaceApps,
+                LastAgentsMdPath: isSameWorkspace ? current.ActiveWorkspace?.LastAgentsMdPath : null,
+                LastReadyWorkspaceArtifacts: isSameWorkspace ? current.ActiveWorkspace?.LastReadyWorkspaceArtifacts : null);
+
+            resultingState = state;
+            return current with
+            {
+                ActiveWorkspace = state,
+                RecentWorkspaces = recent
+            };
+        }, ct).ConfigureAwait(false);
+
+        return updateRes.IsSuccess
+            ? Result<ActiveWorkspaceState>.Success(resultingState!)
+            : Result<ActiveWorkspaceState>.Failure(updateRes.Error!);
     }
 
     public async Task<Result<WorkspaceInitPlan>> PlanInitializationAsync(
@@ -96,48 +84,42 @@ public sealed class WorkspaceSetupHandler(
         }
 
         var result = initRes.Value;
-        var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
         var fullPath = PathNormalization.NormalizeDirectoryPath(result.WorkspacePath);
-        var recent = (settings.RecentWorkspaces ?? [])
-            .Where(p => !PathNormalization.AreSameDirectory(p, fullPath))
-            .Prepend(fullPath)
-            .Take(10)
-            .ToList();
-
         var existingAgentsMd = File.Exists(Path.Combine(fullPath, "AGENTS.md"));
-        var prevAgentsUtc = PathNormalization.AreSameDirectory(settings.ActiveWorkspace?.WorkspacePath, fullPath) && existingAgentsMd
-            ? settings.ActiveWorkspace?.AgentsMdExportedUtc
-            : null;
+        var snapshot = await WorkspaceStateSync.ScanAppsSnapshotAsync(appsStore, fullPath, ct).ConfigureAwait(false);
 
-        var scanned = await appsStore.ScanAppsAsync(fullPath, ct).ConfigureAwait(false);
-        var workspaceApps = scanned
-            .Where(a => a.IsPresentInWorkspace)
-            .Select(a => a.WorkspaceFileName ?? a.FileName)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var installedNames = scanned
-            .Where(a => a.IsInstalled)
-            .Select(a => a.FileName)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var state = new ActiveWorkspaceState(
-            WorkspacePath: fullPath,
-            IsInitialized: true,
-            LastInitializedUtc: DateTimeOffset.UtcNow,
-            AgentsMdExportedUtc: prevAgentsUtc,
-            SelectedAppFileNames: selectedAppFileNames.Where(n => installedNames.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-            StagedItems: stagedItems.ToList(),
-            LastCopiedRelativePaths: result.CopiedRelativePaths,
-            WorkspaceApps: workspaceApps);
-
-        var updated = settings with
+        ActiveWorkspaceState? resultingState = null;
+        var updateRes = await settingsStore.UpdateAsync(current =>
         {
-            ActiveWorkspace = state,
-            RecentWorkspaces = recent
-        };
-        var saveRes = await settingsStore.SaveAsync(updated, ct).ConfigureAwait(false);
-        return saveRes.IsSuccess
-            ? Result<(WorkspaceInitResult, ActiveWorkspaceState)>.Success((result, state))
-            : Result<(WorkspaceInitResult, ActiveWorkspaceState)>.Failure(saveRes.Error!);
+            var recent = WorkspaceStateSync.PrependRecentWorkspace(current.RecentWorkspaces, fullPath);
+
+            var isSameWorkspace = PathNormalization.AreSameDirectory(current.ActiveWorkspace?.WorkspacePath, fullPath);
+            var prevAgentsUtc = isSameWorkspace && existingAgentsMd
+                ? current.ActiveWorkspace?.AgentsMdExportedUtc
+                : null;
+
+            var state = new ActiveWorkspaceState(
+                WorkspacePath: fullPath,
+                IsInitialized: true,
+                LastInitializedUtc: DateTimeOffset.UtcNow,
+                AgentsMdExportedUtc: prevAgentsUtc,
+                SelectedAppFileNames: selectedAppFileNames.Where(n => snapshot.InstalledNames.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                StagedItems: stagedItems.ToList(),
+                LastCopiedRelativePaths: result.CopiedRelativePaths,
+                WorkspaceApps: snapshot.WorkspaceApps,
+                LastAgentsMdPath: isSameWorkspace ? current.ActiveWorkspace?.LastAgentsMdPath : null,
+                LastReadyWorkspaceArtifacts: isSameWorkspace ? current.ActiveWorkspace?.LastReadyWorkspaceArtifacts : null);
+
+            resultingState = state;
+            return current with
+            {
+                ActiveWorkspace = state,
+                RecentWorkspaces = recent
+            };
+        }, ct).ConfigureAwait(false);
+
+        return updateRes.IsSuccess
+            ? Result<(WorkspaceInitResult, ActiveWorkspaceState)>.Success((result, resultingState!))
+            : Result<(WorkspaceInitResult, ActiveWorkspaceState)>.Failure(updateRes.Error!);
     }
 }
