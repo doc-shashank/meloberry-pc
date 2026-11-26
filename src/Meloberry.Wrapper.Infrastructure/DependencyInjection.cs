@@ -4,6 +4,7 @@ using Meloberry.Wrapper.Infrastructure.Common;
 using Meloberry.Wrapper.Infrastructure.GitHub;
 using Meloberry.Wrapper.Infrastructure.Persistence;
 using Meloberry.Wrapper.Infrastructure.Server;
+using Meloberry.Wrapper.Infrastructure.Server.Endpoints;
 using Meloberry.Wrapper.Infrastructure.Workspace;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -32,6 +33,12 @@ public static class DependencyInjection
         services.AddSingleton<IGitHubToolDownloader, GitHubToolDownloader>();
         services.AddSingleton<IGitHubSelfUpdater, GitHubSelfUpdater>();
         services.AddSingleton<IWebAppMountRegistry, WebAppMountRegistry>();
+        services.AddSingleton<SseEventHub>();
+        services.AddSingleton<StaticAssetHost>();
+        services.AddSingleton<AppsEndpoints>();
+        services.AddSingleton<WorkspaceEndpoints>();
+        services.AddSingleton<PromptEndpoints>();
+        services.AddSingleton<SystemEndpoints>();
         services.AddSingleton<LocalHttpWrapperServer>();
 
         return services;

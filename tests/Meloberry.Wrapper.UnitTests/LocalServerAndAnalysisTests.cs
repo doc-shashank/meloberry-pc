@@ -1,18 +1,25 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Meloberry.Wrapper.Application;
 using Meloberry.Wrapper.Application.Abstractions;
+using Meloberry.Wrapper.Application.UseCases;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Models;
 using Meloberry.Wrapper.Infrastructure;
+using Meloberry.Wrapper.Infrastructure.GitHub;
 using Meloberry.Wrapper.Infrastructure.Server;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Meloberry.Wrapper.UnitTests;
 
-public sealed class LocalServerAndAnalysisTests : IAsyncLifetime
+public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
 {
+    [GeneratedRegex(@"(?:import\s+[^""']*?\s+from\s+|import\s*)[""'](\.[^""']+)[""']", RegexOptions.CultureInvariant)]
+    private static partial Regex EsModuleImportRegex();
+
     private readonly string _tempRoot = Path.Combine(Path.GetTempPath(), $"mby_srv_test_{Guid.NewGuid():N}");
     private ServiceProvider? _provider;
     private LocalHttpWrapperServer? _server;
@@ -261,6 +268,180 @@ public sealed class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.True(earlyAttrIdx > 0 && earlyAttrIdx < headCloseIdx, "Expected early theme script inside <head> before </head>.");
         Assert.Contains("mby-wrapper-theme-fallback", html);
         Assert.Contains("mby-theme-applied", html);
+    }
+
+    [Fact]
+    public void HttpEnvelope_MapsAllErrorTypesToExpectedStatusCodes()
+    {
+        Assert.Equal(400, HttpEnvelope.MapStatusCode(ErrorType.Validation));
+        Assert.Equal(404, HttpEnvelope.MapStatusCode(ErrorType.NotFound));
+        Assert.Equal(409, HttpEnvelope.MapStatusCode(ErrorType.Conflict));
+        Assert.Equal(403, HttpEnvelope.MapStatusCode(ErrorType.Security));
+        Assert.Equal(502, HttpEnvelope.MapStatusCode(ErrorType.Network));
+        Assert.Equal(422, HttpEnvelope.MapStatusCode(ErrorType.ExternalProcess));
+        Assert.Equal(500, HttpEnvelope.MapStatusCode(ErrorType.Io));
+    }
+
+    [Fact]
+    public async Task SseEventHub_BroadcastsToSubscribers_AndCompletesCleanly()
+    {
+        var hub = _provider!.GetRequiredService<SseEventHub>();
+        using var shellHttp1 = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
+        using var shellHttp2 = new HttpClient { BaseAddress = new Uri(_server.BaseUrl) };
+
+        using var req1 = new HttpRequestMessage(HttpMethod.Get, $"/api/events?token={Uri.EscapeDataString(_server.AuthToken)}");
+        using var req2 = new HttpRequestMessage(HttpMethod.Get, $"/api/events?token={Uri.EscapeDataString(_server.AuthToken)}");
+        using var resp1 = await shellHttp1.SendAsync(req1, HttpCompletionOption.ResponseHeadersRead);
+        using var resp2 = await shellHttp2.SendAsync(req2, HttpCompletionOption.ResponseHeadersRead);
+
+        Assert.Equal(HttpStatusCode.OK, resp1.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp2.StatusCode);
+
+        await using var s1 = await resp1.Content.ReadAsStreamAsync();
+        await using var s2 = await resp2.Content.ReadAsStreamAsync();
+        using var r1 = new StreamReader(s1, Encoding.UTF8);
+        using var r2 = new StreamReader(s2, Encoding.UTF8);
+
+        Assert.Equal(": connected", await r1.ReadLineAsync());
+        Assert.Equal(string.Empty, await r1.ReadLineAsync());
+        Assert.Equal(": connected", await r2.ReadLineAsync());
+        Assert.Equal(string.Empty, await r2.ReadLineAsync());
+        Assert.True(hub.SubscriberCount >= 2);
+
+        var evt = new WorkspaceFileChangeEvent("workspace", "created", "AGENTS.md", Path.Combine(_tempRoot, "AGENTS.md"), DateTimeOffset.UtcNow);
+        hub.Broadcast("fschange", evt);
+
+        Assert.Equal("event: fschange", await r1.ReadLineAsync());
+        var data1 = await r1.ReadLineAsync();
+        Assert.StartsWith("data: ", data1);
+        Assert.Contains("AGENTS.md", data1);
+
+        Assert.Equal("event: fschange", await r2.ReadLineAsync());
+        var data2 = await r2.ReadLineAsync();
+        Assert.StartsWith("data: ", data2);
+        Assert.Contains("AGENTS.md", data2);
+
+        hub.CompleteAll();
+        Assert.Equal(0, hub.SubscriberCount);
+    }
+
+    [Fact]
+    public async Task StaticAssetHost_BundlesAllEightStylesheets_AndServesModularJsGraph()
+    {
+        using var shellHttp = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
+
+        var htmlResp = await shellHttp.GetAsync("/");
+        Assert.Equal(HttpStatusCode.OK, htmlResp.StatusCode);
+        var html = await htmlResp.Content.ReadAsStringAsync();
+        Assert.Contains($"<meta name=\"mby-token\" content=\"{_server.AuthToken}\"", html);
+        Assert.Contains("<script type=\"module\" src=\"/shell/js/main.js\"></script>", html);
+        Assert.DoesNotContain("window.__MBY_TOKEN__", html);
+        Assert.DoesNotContain("/shell/shell.js", html);
+
+        var oldJsResp = await shellHttp.GetAsync("/shell/shell.js");
+        Assert.Equal(HttpStatusCode.NotFound, oldJsResp.StatusCode);
+
+        var cssResp = await shellHttp.GetAsync("/shell/shell.css");
+        Assert.Equal(HttpStatusCode.OK, cssResp.StatusCode);
+        Assert.Contains("text/css", cssResp.Content.Headers.ContentType?.ToString() ?? string.Empty);
+        var css = await cssResp.Content.ReadAsStringAsync();
+
+        string[] orderedMarkers =
+        [
+            ":root {",
+            "html[data-theme=\"paper\"]",
+            ".app-shell",
+            ".titlebar {",
+            ".setup-grid",
+            ".studio-page-grid",
+            "@media (max-width: 980px)",
+            ".viewer-full",
+            ".modal-backdrop"
+        ];
+
+        var lastIdx = -1;
+        foreach (var marker in orderedMarkers)
+        {
+            var idx = css.IndexOf(marker, StringComparison.Ordinal);
+            Assert.True(idx > lastIdx, $"Expected CSS marker '{marker}' after index {lastIdx}, found at {idx}.");
+            lastIdx = idx;
+        }
+
+        Assert.Contains("html[data-theme=\"paper\"]", StaticAssetHost.PaperThemeFallbackCss);
+        using var bootReq = new HttpRequestMessage(HttpMethod.Get, "/api/bootstrap");
+        bootReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var bootResp = await shellHttp.SendAsync(bootReq);
+        Assert.Equal(HttpStatusCode.OK, bootResp.StatusCode);
+        using var bootDoc = JsonDocument.Parse(await bootResp.Content.ReadAsStringAsync());
+        Assert.Equal(StaticAssetHost.PaperThemeFallbackCss, bootDoc.RootElement.GetProperty("paperThemeFallbackCss").GetString());
+
+        var visited = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var queue = new Queue<Uri>();
+        queue.Enqueue(new Uri(new Uri(_server.BaseUrl), "/shell/js/main.js"));
+
+        while (queue.Count > 0)
+        {
+            var currentUri = queue.Dequeue();
+            var pathKey = currentUri.AbsolutePath;
+            if (visited.ContainsKey(pathKey))
+            {
+                continue;
+            }
+
+            var modResp = await shellHttp.GetAsync(currentUri);
+            Assert.True(modResp.StatusCode == HttpStatusCode.OK, $"Expected 200 OK for module '{pathKey}', got {modResp.StatusCode}.");
+            Assert.Contains("application/javascript", modResp.Content.Headers.ContentType?.ToString() ?? string.Empty);
+
+            var source = await modResp.Content.ReadAsStringAsync();
+            visited[pathKey] = source;
+
+            foreach (Match m in EsModuleImportRegex().Matches(source))
+            {
+                var relSpecifier = m.Groups[1].Value;
+                var nextUri = new Uri(currentUri, relSpecifier);
+                Assert.StartsWith("/shell/js/", nextUri.AbsolutePath, StringComparison.OrdinalIgnoreCase);
+                if (!visited.ContainsKey(nextUri.AbsolutePath))
+                {
+                    queue.Enqueue(nextUri);
+                }
+            }
+        }
+
+        Assert.True(visited.Count >= 12, $"Expected at least 12 ES modules in graph, found {visited.Count}.");
+        var allJs = string.Join("\n", visited.Values);
+        Assert.Contains("window.__onWindowState", allJs);
+        Assert.Contains("window.__onNativeDrop", allJs);
+
+        Assert.Equal(HttpStatusCode.NotFound, (await shellHttp.GetAsync("/shell/js/../shell.html")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await shellHttp.GetAsync("/shell/js/../../missing.js")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await shellHttp.GetAsync("/shell/js/does-not-exist.js")).StatusCode);
+    }
+
+    [Fact]
+    public void DependencyInjection_ResolvesAllSplitHandlersAndInfrastructureClients()
+    {
+        var provider = _provider!;
+        Assert.NotNull(provider.GetRequiredService<ManagedAppsHandler>());
+        Assert.NotNull(provider.GetRequiredService<WorkspaceSetupHandler>());
+        Assert.NotNull(provider.GetRequiredService<WorkspaceMaintenanceHandler>());
+        Assert.NotNull(provider.GetRequiredService<ReadyWorkspaceHandler>());
+        Assert.NotNull(provider.GetRequiredService<LoadSpecCatalogHandler>());
+        Assert.NotNull(provider.GetRequiredService<PromptHandlers>());
+        Assert.NotNull(provider.GetRequiredService<SessionTemplateHandler>());
+        Assert.NotNull(provider.GetRequiredService<ManageLibraryHandler>());
+        Assert.NotNull(provider.GetRequiredService<WorkspaceActionsHandler>());
+        Assert.NotNull(provider.GetRequiredService<CaptureAnalysisHandler>());
+        Assert.NotNull(provider.GetRequiredService<SelfUpdateHandler>());
+        Assert.NotNull(provider.GetRequiredService<SettingsAndPresetsHandler>());
+
+        Assert.NotNull(provider.GetRequiredService<GitHubHttpClientHelper>());
+        Assert.NotNull(provider.GetRequiredService<IGitHubToolDownloader>());
+        Assert.NotNull(provider.GetRequiredService<IGitHubSelfUpdater>());
+        Assert.NotNull(provider.GetRequiredService<IMbyCliClient>());
+        Assert.NotNull(provider.GetRequiredService<IMelomgCliClient>());
+        Assert.NotNull(provider.GetRequiredService<SseEventHub>());
+        Assert.NotNull(provider.GetRequiredService<StaticAssetHost>());
+        Assert.NotNull(provider.GetRequiredService<LocalHttpWrapperServer>());
     }
 
     public async Task DisposeAsync()

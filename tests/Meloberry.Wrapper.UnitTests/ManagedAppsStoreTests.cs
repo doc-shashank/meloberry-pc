@@ -93,6 +93,32 @@ public sealed class ManagedAppsStoreTests : IDisposable
         Assert.Equal("mby.exe", mbyEntry.WorkspaceFileName);
     }
 
+    [Fact]
+    public async Task ManagedAppsStore_ResolveToolExecutableAsync_PrefersOverrideThenWorkspaceEvenWhenVersionsDiffer()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data_resolve"));
+        Directory.CreateDirectory(paths.AppsDirectory);
+        var wsDir = Path.Combine(_tempRoot, "ws_resolve");
+        Directory.CreateDirectory(wsDir);
+
+        var appsMby = Path.Combine(paths.AppsDirectory, "mby-cli-2.0.0.exe");
+        var wsMby = Path.Combine(wsDir, "mby-cli-1.9.0.exe");
+        var overrideMby = Path.Combine(_tempRoot, "custom-mby.exe");
+
+        await File.WriteAllBytesAsync(appsMby, [(byte)'M', (byte)'Z', 0x01]);
+        await File.WriteAllBytesAsync(wsMby, [(byte)'M', (byte)'Z', 0x02]);
+        await File.WriteAllBytesAsync(overrideMby, [(byte)'M', (byte)'Z', 0x03]);
+
+        var store = new ManagedAppsStore(paths);
+
+        Assert.Equal(Path.GetFullPath(overrideMby), await store.ResolveToolExecutableAsync("mby", wsDir, overrideMby));
+        Assert.Equal(Path.GetFullPath(wsMby), await store.ResolveToolExecutableAsync("mby", wsDir, null));
+
+        var emptyWs = Path.Combine(_tempRoot, "empty_ws_resolve");
+        Directory.CreateDirectory(emptyWs);
+        Assert.Equal(Path.GetFullPath(appsMby), await store.ResolveToolExecutableAsync("mby", emptyWs, null));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

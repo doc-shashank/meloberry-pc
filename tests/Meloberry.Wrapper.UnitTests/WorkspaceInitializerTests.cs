@@ -1,4 +1,6 @@
+using System.Text;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Infrastructure.Common;
 using Meloberry.Wrapper.Infrastructure.Persistence;
 using Meloberry.Wrapper.Infrastructure.Workspace;
 using Xunit;
@@ -176,6 +178,62 @@ public sealed class WorkspaceInitializerTests : IDisposable
         Assert.True(overRes.IsSuccess);
         Assert.Equal("from-B", await File.ReadAllTextAsync(Path.Combine(workspaceOver, "notes.txt")));
         Assert.Equal("fig-2", await File.ReadAllTextAsync(Path.Combine(workspaceOver, "Figs", "fig.png")));
+    }
+
+    [Fact]
+    public async Task AtomicFileOps_And_AtomicFileWriter_WriteCopyStreamCleanlyWithoutLeftoverTemps()
+    {
+        var writer = new AtomicFileWriter();
+        var subDir = Path.Combine(_tempRoot, "nested", "dir");
+        var textTarget = Path.Combine(subDir, "notes.txt");
+        var bytesTarget = Path.Combine(subDir, "blob.bin");
+        var copyTarget = Path.Combine(subDir, "copied.bin");
+        var streamTarget = Path.Combine(subDir, "streamed.txt");
+
+        await writer.WriteAllTextAsync(textTarget, "first");
+        await writer.WriteAllTextAsync(textTarget, "second");
+        Assert.Equal("second", await File.ReadAllTextAsync(textTarget));
+
+        await writer.WriteAllBytesAsync(bytesTarget, [1, 2, 3, 4]);
+        Assert.Equal([1, 2, 3, 4], await File.ReadAllBytesAsync(bytesTarget));
+
+        writer.CopyFile(bytesTarget, copyTarget, ".mbytmp");
+        Assert.Equal([1, 2, 3, 4], await File.ReadAllBytesAsync(copyTarget));
+
+        using var ms = new MemoryStream(Encoding.UTF8.GetBytes("stream-payload"));
+        writer.WriteStream(streamTarget, ms);
+        Assert.Equal("stream-payload", await File.ReadAllTextAsync(streamTarget));
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            AtomicFileOps.WriteAllTextAsync(Path.Combine(subDir, "cancelled.txt"), "data", cts.Token));
+
+        var leftoverTemps = Directory.GetFiles(subDir, "*.tmp")
+            .Concat(Directory.GetFiles(subDir, "*.mbytmp"))
+            .ToList();
+        Assert.Empty(leftoverTemps);
+        Assert.False(File.Exists(Path.Combine(subDir, "cancelled.txt")));
+    }
+
+    [Fact]
+    public async Task FileIdentity_AreIdenticalAsync_ComparesLengthsAndSha256()
+    {
+        Directory.CreateDirectory(_tempRoot);
+        var a = Path.Combine(_tempRoot, "a.bin");
+        var bSame = Path.Combine(_tempRoot, "b_same.bin");
+        var cSameLenDiff = Path.Combine(_tempRoot, "c_diff.bin");
+        var dDiffLen = Path.Combine(_tempRoot, "d_short.bin");
+
+        await File.WriteAllBytesAsync(a, [10, 20, 30, 40]);
+        await File.WriteAllBytesAsync(bSame, [10, 20, 30, 40]);
+        await File.WriteAllBytesAsync(cSameLenDiff, [10, 20, 30, 41]);
+        await File.WriteAllBytesAsync(dDiffLen, [10, 20]);
+
+        Assert.True(await FileIdentity.AreIdenticalAsync(a, bSame));
+        Assert.False(await FileIdentity.AreIdenticalAsync(a, cSameLenDiff));
+        Assert.False(await FileIdentity.AreIdenticalAsync(a, dDiffLen));
+        Assert.False(await FileIdentity.AreIdenticalAsync(a, Path.Combine(_tempRoot, "missing.bin")));
     }
 
     public void Dispose()

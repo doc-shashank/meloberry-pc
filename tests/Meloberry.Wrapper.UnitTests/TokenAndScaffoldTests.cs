@@ -323,6 +323,27 @@ public sealed class TokenAndScaffoldTests : IDisposable
         Assert.False(string.IsNullOrWhiteSpace(res.Value.WorkspaceId));
     }
 
+    [Fact]
+    public void SemverComparer_ExtractVersion_HandlesExePrereleaseAndBuildMetadata()
+    {
+        Assert.Equal("2.0.0", SemverComparer.ExtractVersion("mby-cli-2.0.0.exe"));
+        Assert.Equal("2.0.0-rc.1", SemverComparer.ExtractVersion("mby-cli-2.0.0-rc.1.exe"));
+        Assert.Equal("1.2.3", SemverComparer.ExtractVersion("1.2.3+abc123"));
+        Assert.Null(SemverComparer.ExtractVersion(null));
+        Assert.Null(SemverComparer.ExtractVersion("mby.exe"));
+    }
+
+    [Fact]
+    public void SpecCatalogDefaults_GetCategoryForTopic_MapsBlocksQuestionsContainersAndUnknown()
+    {
+        Assert.Equal("block", SpecCatalogDefaults.GetCategoryForTopic("text"));
+        Assert.Equal("block", SpecCatalogDefaults.GetCategoryForTopic("LINK"));
+        Assert.Equal("question", SpecCatalogDefaults.GetCategoryForTopic("mcq"));
+        Assert.Equal("question", SpecCatalogDefaults.GetCategoryForTopic("relabel"));
+        Assert.Equal("container", SpecCatalogDefaults.GetCategoryForTopic("session"));
+        Assert.Equal("other", SpecCatalogDefaults.GetCategoryForTopic("unknown-topic"));
+    }
+
     public void Dispose()
     {
         try
