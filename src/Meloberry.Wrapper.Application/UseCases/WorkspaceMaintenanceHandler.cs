@@ -16,13 +16,20 @@ public sealed class WorkspaceMaintenanceHandler(
         WorkspaceResetScope scope,
         CancellationToken ct = default)
     {
-        var wsPath = await ResolveWorkspacePathAsync(workspacePathOverride, ct).ConfigureAwait(false);
+        var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
+        var wsPath = !string.IsNullOrWhiteSpace(workspacePathOverride)
+            ? workspacePathOverride
+            : settings.ActiveWorkspace?.WorkspacePath;
         if (string.IsNullOrWhiteSpace(wsPath))
         {
             return Result<WorkspaceResetPlan>.Failure(WrapperErrors.InvalidWorkspaceDir("No Active Workspace selected."));
         }
 
-        return await maintenance.PlanResetAsync(wsPath, scope, ct).ConfigureAwait(false);
+        var tracked = settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, wsPath)
+            ? settings.ActiveWorkspace.LastReadyWorkspaceArtifacts
+            : null;
+
+        return await maintenance.PlanResetAsync(wsPath, scope, tracked, ct).ConfigureAwait(false);
     }
 
     public async Task<Result<(WorkspaceResetResult ResetResult, ActiveWorkspaceState? UpdatedWorkspace)>> ExecuteResetAsync(
@@ -41,7 +48,11 @@ public sealed class WorkspaceMaintenanceHandler(
                 WrapperErrors.InvalidWorkspaceDir("No Active Workspace selected."));
         }
 
-        var res = await maintenance.ExecuteResetAsync(wsPath, scope, ct).ConfigureAwait(false);
+        var tracked = settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, wsPath)
+            ? settings.ActiveWorkspace.LastReadyWorkspaceArtifacts
+            : null;
+
+        var res = await maintenance.ExecuteResetAsync(wsPath, scope, tracked, ct).ConfigureAwait(false);
         if (res.IsFailure)
         {
             return Result<(WorkspaceResetResult, ActiveWorkspaceState?)>.Failure(res.Error!);
@@ -53,9 +64,12 @@ public sealed class WorkspaceMaintenanceHandler(
             var scanned = await appsStore.ScanAppsAsync(updatedWs.WorkspacePath, ct).ConfigureAwait(false);
             var remainingApps = scanned.Where(a => a.IsPresentInWorkspace).Select(a => a.WorkspaceFileName ?? a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             var remainingInstalled = scanned.Where(a => a.IsInstalled && a.IsPresentInWorkspace).Select(a => a.FileName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var clearReadyState = scope == WorkspaceResetScope.UndoReadyWorkspace || res.Value.RemovedAgentsMd;
             updatedWs = updatedWs with
             {
-                AgentsMdExportedUtc = res.Value.RemovedAgentsMd ? null : updatedWs.AgentsMdExportedUtc,
+                AgentsMdExportedUtc = clearReadyState ? null : updatedWs.AgentsMdExportedUtc,
+                LastAgentsMdPath = clearReadyState ? null : updatedWs.LastAgentsMdPath,
+                LastReadyWorkspaceArtifacts = clearReadyState ? null : updatedWs.LastReadyWorkspaceArtifacts,
                 WorkspaceApps = remainingApps,
                 SelectedAppFileNames = remainingInstalled
             };

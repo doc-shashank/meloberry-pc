@@ -2,6 +2,7 @@ using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Domain.Services;
 
 namespace Meloberry.Wrapper.Infrastructure.Workspace;
 
@@ -10,9 +11,15 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
 {
     private const long MaxPreviewBytes = 512 * 1024;
 
-    public async Task<Result<AgentsMdStatus>> GetStatusAsync(string workspacePath, CancellationToken ct = default)
+    public Task<Result<AgentsMdStatus>> GetStatusAsync(string workspacePath, CancellationToken ct = default)
+        => GetStatusAsync(workspacePath, null, ct);
+
+    public async Task<Result<AgentsMdStatus>> GetStatusAsync(
+        string workspacePath,
+        string? targetPathOverride,
+        CancellationToken ct = default)
     {
-        var pathRes = ResolveAgentsMdPath(workspacePath);
+        var pathRes = ResolveAgentsMdPath(workspacePath, targetPathOverride);
         if (pathRes.IsFailure)
         {
             return Result<AgentsMdStatus>.Failure(pathRes.Error!);
@@ -27,9 +34,21 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
         try
         {
             var info = new FileInfo(agentsMdPath);
-            var preview = info.Length <= MaxPreviewBytes
-                ? await File.ReadAllTextAsync(agentsMdPath, ct).ConfigureAwait(false)
-                : "(AGENTS.md exceeds 512 KB preview limit — open the workspace folder to inspect.)";
+            string preview;
+            int charCount;
+            int approxTokens;
+            if (info.Length <= MaxPreviewBytes)
+            {
+                preview = await File.ReadAllTextAsync(agentsMdPath, ct).ConfigureAwait(false);
+                charCount = preview.Length;
+                approxTokens = AgentsMdComposer.EstimateTokens(preview);
+            }
+            else
+            {
+                preview = "(AGENTS.md exceeds 512 KB preview limit — open the workspace folder to inspect.)";
+                charCount = (int)Math.Min(int.MaxValue, info.Length);
+                approxTokens = (int)Math.Max(1, info.Length / 4);
+            }
 
             return Result<AgentsMdStatus>.Success(new AgentsMdStatus(
                 fullWs,
@@ -37,7 +56,9 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
                 Exists: true,
                 SizeBytes: info.Length,
                 LastModifiedUtc: new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero),
-                Preview: preview));
+                Preview: preview,
+                ApproximateTokens: approxTokens,
+                CharacterCount: charCount));
         }
         catch (OperationCanceledException)
         {
@@ -49,13 +70,21 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
         }
     }
 
-    public async Task<Result<AgentsMdStatus>> WriteAsync(
+    public Task<Result<AgentsMdStatus>> WriteAsync(
         string workspacePath,
         string content,
         bool overwriteConfirmed,
         CancellationToken ct = default)
+        => WriteAsync(workspacePath, null, content, overwriteConfirmed, ct);
+
+    public async Task<Result<AgentsMdStatus>> WriteAsync(
+        string workspacePath,
+        string? targetDirectoryOverride,
+        string content,
+        bool overwriteConfirmed,
+        CancellationToken ct = default)
     {
-        var pathRes = ResolveAgentsMdPath(workspacePath);
+        var pathRes = ResolveAgentsMdPath(workspacePath, targetDirectoryOverride);
         if (pathRes.IsFailure)
         {
             return Result<AgentsMdStatus>.Failure(pathRes.Error!);
@@ -70,7 +99,7 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
         string? tmpPath = null;
         try
         {
-            Directory.CreateDirectory(fullWs);
+            Directory.CreateDirectory(Path.GetDirectoryName(agentsMdPath)!);
             tmpPath = $"{agentsMdPath}.{Guid.NewGuid():N}.tmp";
             await File.WriteAllTextAsync(tmpPath, content, ct).ConfigureAwait(false);
             File.Move(tmpPath, agentsMdPath, overwrite: true);
@@ -86,7 +115,9 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
                 Exists: true,
                 SizeBytes: info.Length,
                 LastModifiedUtc: new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero),
-                Preview: preview));
+                Preview: preview,
+                ApproximateTokens: AgentsMdComposer.EstimateTokens(content),
+                CharacterCount: content.Length));
         }
         catch (Exception ex)
         {
@@ -99,7 +130,7 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
         }
     }
 
-    private static Result<(string FullWs, string AgentsMdPath)> ResolveAgentsMdPath(string workspacePath)
+    private static Result<(string FullWs, string AgentsMdPath)> ResolveAgentsMdPath(string workspacePath, string? targetPathOverride)
     {
         if (string.IsNullOrWhiteSpace(workspacePath))
         {
@@ -109,8 +140,24 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
         try
         {
             var fullWs = Path.GetFullPath(workspacePath.Trim());
-            var target = Path.GetFullPath(Path.Combine(fullWs, "AGENTS.md"));
             var normalizedWs = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
+            string candidate;
+            if (string.IsNullOrWhiteSpace(targetPathOverride))
+            {
+                candidate = Path.Combine(fullWs, "AGENTS.md");
+            }
+            else
+            {
+                var trimmed = targetPathOverride.Trim();
+                var combined = Path.IsPathRooted(trimmed)
+                    ? trimmed
+                    : Path.Combine(fullWs, trimmed);
+                candidate = trimmed.EndsWith("AGENTS.md", StringComparison.OrdinalIgnoreCase)
+                    ? combined
+                    : Path.Combine(combined, "AGENTS.md");
+            }
+
+            var target = Path.GetFullPath(candidate);
             if (!target.StartsWith(normalizedWs, StringComparison.OrdinalIgnoreCase))
             {
                 return Result<(string, string)>.Failure(WrapperErrors.InvalidPath(target));

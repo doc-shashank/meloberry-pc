@@ -152,7 +152,10 @@ public static class SessionScaffoldGenerator
                     break;
 
                 case "callout":
-                    var tone = modes.FirstOrDefault(m => m is "pearl" or "clinical" or "warning") ?? "pearl";
+                    var tone = (!string.IsNullOrWhiteSpace(inst.Subtype)
+                        && inst.Subtype is "pearl" or "clinical" or "warning"
+                        ? inst.Subtype
+                        : modes.FirstOrDefault(m => m is "pearl" or "clinical" or "warning")) ?? "pearl";
                     blocks.Add(new Dictionary<string, object?>
                     {
                         ["kind"] = "callout",
@@ -163,8 +166,11 @@ public static class SessionScaffoldGenerator
                     break;
 
                 case "table":
-                    var hideable = modes.Contains("hideableCols", StringComparer.OrdinalIgnoreCase);
-                    var sticky = modes.Contains("stickyFirstCol", StringComparer.OrdinalIgnoreCase);
+                    var hasTableSubtype = !string.IsNullOrWhiteSpace(inst.Subtype);
+                    var hideable = string.Equals(inst.Subtype, "hideableCols", StringComparison.OrdinalIgnoreCase)
+                        || (!hasTableSubtype && modes.Contains("hideableCols", StringComparer.OrdinalIgnoreCase));
+                    var sticky = string.Equals(inst.Subtype, "stickyFirstCol", StringComparison.OrdinalIgnoreCase)
+                        || (!hasTableSubtype && modes.Contains("stickyFirstCol", StringComparer.OrdinalIgnoreCase));
                     var tableObj = new Dictionary<string, object?>
                     {
                         ["kind"] = "table",
@@ -257,7 +263,9 @@ public static class SessionScaffoldGenerator
             switch (inst.Topic.ToLowerInvariant())
             {
                 case "flashcard":
-                    var diagramMode = modes.Contains("diagram", StringComparer.OrdinalIgnoreCase);
+                    var diagramMode = !string.Equals(inst.Subtype, "text", StringComparison.OrdinalIgnoreCase)
+                        && (string.Equals(inst.Subtype, "diagram", StringComparison.OrdinalIgnoreCase)
+                            || modes.Contains("diagram", StringComparer.OrdinalIgnoreCase));
                     if (diagramMode) requiresImage = true;
                     questions.Add(new Dictionary<string, object?>
                     {
@@ -270,19 +278,25 @@ public static class SessionScaffoldGenerator
                     break;
 
                 case "fill-blank":
+                    var hasFillSubtype = !string.IsNullOrWhiteSpace(inst.Subtype);
                     questions.Add(new Dictionary<string, object?>
                     {
                         ["type"] = "fill-blank",
                         ["text"] = $"Fill-in-the-blank prompt {num}: the target term is {{{{answer}}}}.",
-                        ["fuzzy"] = modes.Contains("fuzzy", StringComparer.OrdinalIgnoreCase),
-                        ["caseSensitive"] = modes.Contains("caseSensitive", StringComparer.OrdinalIgnoreCase),
+                        ["fuzzy"] = string.Equals(inst.Subtype, "fuzzy", StringComparison.OrdinalIgnoreCase)
+                            || (!hasFillSubtype && modes.Contains("fuzzy", StringComparer.OrdinalIgnoreCase)),
+                        ["caseSensitive"] = string.Equals(inst.Subtype, "caseSensitive", StringComparison.OrdinalIgnoreCase)
+                            || (!hasFillSubtype && modes.Contains("caseSensitive", StringComparer.OrdinalIgnoreCase)),
                         ["explanation"] = $"Explanation placeholder {num}."
                     });
                     break;
 
                 case "assertion-reason":
-                    var hasBothFalse = modes.Contains("both-false", StringComparer.OrdinalIgnoreCase);
-                    var scheme = hasBothFalse || modes.Contains("5opt", StringComparer.OrdinalIgnoreCase) ? "5opt" : "4opt";
+                    var hasBothFalse = modes.Contains("both-false", StringComparer.OrdinalIgnoreCase)
+                        || string.Equals(inst.Subtype, "both-false", StringComparison.OrdinalIgnoreCase);
+                    var scheme = inst.Subtype is "4opt" or "5opt"
+                        ? inst.Subtype
+                        : (hasBothFalse || modes.Contains("5opt", StringComparer.OrdinalIgnoreCase) ? "5opt" : "4opt");
                     var answer = hasBothFalse ? "both-false" : "both-explain";
                     questions.Add(new Dictionary<string, object?>
                     {
@@ -296,18 +310,23 @@ public static class SessionScaffoldGenerator
                     break;
 
                 case "spot-error":
+                    var hasSpotSubtype = !string.IsNullOrWhiteSpace(inst.Subtype);
                     questions.Add(new Dictionary<string, object?>
                     {
                         ["type"] = "spot-error",
                         ["text"] = $"Statement {num} with [valid span] and [~~incorrect term~~ -> corrected term].",
-                        ["requireFix"] = modes.Contains("requireFix", StringComparer.OrdinalIgnoreCase),
-                        ["allowNoError"] = modes.Contains("allowNoError", StringComparer.OrdinalIgnoreCase),
+                        ["requireFix"] = string.Equals(inst.Subtype, "requireFix", StringComparison.OrdinalIgnoreCase)
+                            || (!hasSpotSubtype && modes.Contains("requireFix", StringComparer.OrdinalIgnoreCase)),
+                        ["allowNoError"] = string.Equals(inst.Subtype, "allowNoError", StringComparison.OrdinalIgnoreCase)
+                            || (!hasSpotSubtype && modes.Contains("allowNoError", StringComparer.OrdinalIgnoreCase)),
                         ["explanation"] = $"Spot-error explanation {num}."
                     });
                     break;
 
                 case "diff":
-                    var diffMode = modes.FirstOrDefault(m => m is "fill" or "spot-wrong" or "rearrange") ?? "fill";
+                    var diffMode = (inst.Subtype is "fill" or "spot-wrong" or "rearrange"
+                        ? inst.Subtype
+                        : modes.FirstOrDefault(m => m is "fill" or "spot-wrong" or "rearrange")) ?? "fill";
                     var rowCellA = diffMode switch
                     {
                         "spot-wrong" => "~~Incorrect~~ -> Correct",
@@ -338,11 +357,11 @@ public static class SessionScaffoldGenerator
                         new() { ["orderGroup"] = 1, ["text"] = "Step 1" },
                         new() { ["orderGroup"] = 2, ["text"] = "Step 2A" }
                     };
-                    if (modes.Contains("parallel", StringComparer.OrdinalIgnoreCase))
+                    if (modes.Contains("parallel", StringComparer.OrdinalIgnoreCase) || string.Equals(inst.Subtype, "parallel", StringComparison.OrdinalIgnoreCase))
                     {
                         steps.Add(new Dictionary<string, object?> { ["orderGroup"] = 2, ["text"] = "Step 2B (parallel)" });
                     }
-                    if (modes.Contains("distractors", StringComparer.OrdinalIgnoreCase))
+                    if (modes.Contains("distractors", StringComparer.OrdinalIgnoreCase) || string.Equals(inst.Subtype, "distractors", StringComparison.OrdinalIgnoreCase))
                     {
                         steps.Add(new Dictionary<string, object?> { ["isDistractor"] = true, ["text"] = "Distractor step" });
                     }
@@ -358,8 +377,12 @@ public static class SessionScaffoldGenerator
 
                 case "relabel":
                     requiresImage = true;
-                    var relMode = modes.FirstOrDefault(m => m is "reveal" or "bank" or "recall") ?? "bank";
-                    var relStyle = modes.FirstOrDefault(m => m is "solid" or "blur" or "pixelate" or "whiteout") ?? "blur";
+                    var relMode = (inst.Subtype is "reveal" or "bank" or "recall"
+                        ? inst.Subtype
+                        : modes.FirstOrDefault(m => m is "reveal" or "bank" or "recall")) ?? "bank";
+                    var relStyle = (inst.Subtype is "solid" or "blur" or "pixelate" or "whiteout"
+                        ? inst.Subtype
+                        : modes.FirstOrDefault(m => m is "solid" or "blur" or "pixelate" or "whiteout")) ?? "blur";
                     questions.Add(new Dictionary<string, object?>
                     {
                         ["type"] = "relabel",
@@ -376,7 +399,9 @@ public static class SessionScaffoldGenerator
                     break;
 
                 default:
-                    var multi = modes.Contains("multi", StringComparer.OrdinalIgnoreCase);
+                    var multi = !string.Equals(inst.Subtype, "single", StringComparison.OrdinalIgnoreCase)
+                        && (string.Equals(inst.Subtype, "multi", StringComparison.OrdinalIgnoreCase)
+                            || modes.Contains("multi", StringComparer.OrdinalIgnoreCase));
                     questions.Add(new Dictionary<string, object?>
                     {
                         ["type"] = "mcq",
@@ -458,9 +483,35 @@ public static class SessionScaffoldGenerator
         foreach (var sel in comp.Selections.Where(s => s.Enabled))
         {
             var count = Math.Clamp(sel.DesiredCount ?? 1, 1, 50);
-            for (var i = 1; i <= count; i++)
+            if (sel.ModeCounts is { Count: > 0 } && sel.ModeCounts.Values.Any(v => v > 0))
             {
-                list.Add(new OrderedSpecInstance($"{sel.Topic}_{i}", sel.Topic, i));
+                var emitted = 0;
+                foreach (var kv in sel.ModeCounts)
+                {
+                    if (kv.Value <= 0 || string.IsNullOrWhiteSpace(kv.Key))
+                    {
+                        continue;
+                    }
+
+                    for (var c = 0; c < kv.Value && emitted < count; c++)
+                    {
+                        emitted++;
+                        list.Add(new OrderedSpecInstance($"{sel.Topic}_{emitted}", sel.Topic, emitted, kv.Key));
+                    }
+                }
+
+                while (emitted < count)
+                {
+                    emitted++;
+                    list.Add(new OrderedSpecInstance($"{sel.Topic}_{emitted}", sel.Topic, emitted));
+                }
+            }
+            else
+            {
+                for (var i = 1; i <= count; i++)
+                {
+                    list.Add(new OrderedSpecInstance($"{sel.Topic}_{i}", sel.Topic, i));
+                }
             }
         }
 

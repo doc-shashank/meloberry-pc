@@ -46,7 +46,9 @@ public interface IWorkspaceInitializer
 public interface IAgentsMdFileWriter
 {
     Task<Result<AgentsMdStatus>> GetStatusAsync(string workspacePath, CancellationToken ct = default);
+    Task<Result<AgentsMdStatus>> GetStatusAsync(string workspacePath, string? targetPathOverride, CancellationToken ct = default);
     Task<Result<AgentsMdStatus>> WriteAsync(string workspacePath, string content, bool overwriteConfirmed, CancellationToken ct = default);
+    Task<Result<AgentsMdStatus>> WriteAsync(string workspacePath, string? targetDirectoryOverride, string content, bool overwriteConfirmed, CancellationToken ct = default);
 }
 
 /// <summary>Executes `mby` CLI commands out-of-process with MBY_AGENT=1.</summary>
@@ -133,8 +135,8 @@ public interface IWebAppMountRegistry
 /// <summary>Plans/executes recursive workspace Reset and offline outdated-tool detection against apps\.</summary>
 public interface IWorkspaceMaintenanceService
 {
-    Task<Result<WorkspaceResetPlan>> PlanResetAsync(string workspacePath, WorkspaceResetScope scope, CancellationToken ct = default);
-    Task<Result<WorkspaceResetResult>> ExecuteResetAsync(string workspacePath, WorkspaceResetScope scope, CancellationToken ct = default);
+    Task<Result<WorkspaceResetPlan>> PlanResetAsync(string workspacePath, WorkspaceResetScope scope, IReadOnlyList<string>? trackedReadyArtifacts = null, CancellationToken ct = default);
+    Task<Result<WorkspaceResetResult>> ExecuteResetAsync(string workspacePath, WorkspaceResetScope scope, IReadOnlyList<string>? trackedReadyArtifacts = null, CancellationToken ct = default);
     Task<Result<IReadOnlyList<OutdatedWorkspaceTool>>> DetectOutdatedToolsAsync(string workspacePath, CancellationToken ct = default);
     Task<Result<WorkspaceToolUpdateResult>> UpdateOutdatedToolsAsync(string workspacePath, CancellationToken ct = default);
 }

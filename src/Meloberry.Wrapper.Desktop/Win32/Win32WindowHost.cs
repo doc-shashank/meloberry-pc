@@ -24,7 +24,7 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
 
     public event Action<Size>? Resized;
     public event Action<bool>? MaximizedChanged;
-    public event Action<string>? FolderDropped;
+    public event Action<IReadOnlyList<string>>? FilesDropped;
 
     public Win32WindowHost()
     {
@@ -317,13 +317,22 @@ internal sealed class Win32WindowHost : IAppShutdownCoordinator
             var count = Win32Native.DragQueryFileW(hDrop, 0xFFFFFFFF, null, 0);
             if (count > 0)
             {
-                var len = Win32Native.DragQueryFileW(hDrop, 0, null, 0);
-                var buf = new char[len + 1];
-                _ = Win32Native.DragQueryFileW(hDrop, 0, buf, (uint)buf.Length);
-                var path = new string(buf, 0, (int)len);
-                if (!string.IsNullOrWhiteSpace(path))
+                var paths = new List<string>((int)count);
+                for (uint i = 0; i < count; i++)
                 {
-                    FolderDropped?.Invoke(path);
+                    var len = Win32Native.DragQueryFileW(hDrop, i, null, 0);
+                    var buf = new char[len + 1];
+                    _ = Win32Native.DragQueryFileW(hDrop, i, buf, (uint)buf.Length);
+                    var path = new string(buf, 0, (int)len);
+                    if (!string.IsNullOrWhiteSpace(path))
+                    {
+                        paths.Add(path);
+                    }
+                }
+
+                if (paths.Count > 0)
+                {
+                    FilesDropped?.Invoke(paths);
                 }
             }
         }

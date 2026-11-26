@@ -62,6 +62,48 @@ public sealed class WorkspaceMaintenanceTests : IDisposable
     }
 
     [Fact]
+    public async Task UndoReadyWorkspace_DeletesTrackedAgentsMdArtifacts_WhilePreservingAllExecutables()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data_undo"));
+        Directory.CreateDirectory(paths.AppsDirectory);
+        var ws = Path.Combine(_tempRoot, "ws_undo");
+        var subMod = Path.Combine(ws, "module1");
+        Directory.CreateDirectory(subMod);
+
+        await File.WriteAllBytesAsync(Path.Combine(ws, "mby-cli-2.1.1.exe"), [(byte)'M', (byte)'Z', 1]);
+        await File.WriteAllTextAsync(Path.Combine(ws, "AGENTS.md"), "# Root AGENTS");
+        await File.WriteAllTextAsync(Path.Combine(subMod, "AGENTS.md"), "# Sub AGENTS");
+        await File.WriteAllTextAsync(Path.Combine(ws, "notes.md"), "keep");
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(
+            ActiveWorkspace: new ActiveWorkspaceState(
+                ws,
+                true,
+                AgentsMdExportedUtc: DateTimeOffset.UtcNow,
+                LastAgentsMdPath: Path.Combine(subMod, "AGENTS.md"),
+                LastReadyWorkspaceArtifacts: ["AGENTS.md", "module1/AGENTS.md"])));
+
+        var appsStore = new ManagedAppsStore(paths);
+        var handler = new WorkspaceMaintenanceHandler(new WorkspaceMaintenanceService(paths, appsStore), appsStore, settingsStore);
+
+        var planRes = await handler.PlanResetAsync(ws, WorkspaceResetScope.UndoReadyWorkspace);
+        Assert.True(planRes.IsSuccess);
+        Assert.Empty(planRes.Value.ExecutablesToRemove);
+        Assert.Equal(2, planRes.Value.TotalCount);
+
+        var execRes = await handler.ExecuteResetAsync(ws, WorkspaceResetScope.UndoReadyWorkspace);
+        Assert.True(execRes.IsSuccess);
+        Assert.False(File.Exists(Path.Combine(ws, "AGENTS.md")));
+        Assert.False(File.Exists(Path.Combine(subMod, "AGENTS.md")));
+        Assert.True(File.Exists(Path.Combine(ws, "mby-cli-2.1.1.exe")));
+        Assert.True(File.Exists(Path.Combine(ws, "notes.md")));
+        Assert.Null(execRes.Value.UpdatedWorkspace?.AgentsMdExportedUtc);
+        Assert.Null(execRes.Value.UpdatedWorkspace?.LastAgentsMdPath);
+        Assert.Null(execRes.Value.UpdatedWorkspace?.LastReadyWorkspaceArtifacts);
+    }
+
+    [Fact]
     public async Task DetectAndUpdateOutdatedTools_FindsOlderRootAndSubfolderExes_AndReplacesWithAppsLatest()
     {
         var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data2"));

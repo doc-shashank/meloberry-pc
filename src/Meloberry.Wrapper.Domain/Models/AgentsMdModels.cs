@@ -31,7 +31,9 @@ public sealed record AgentsMdStatus(
     bool Exists,
     long? SizeBytes = null,
     DateTimeOffset? LastModifiedUtc = null,
-    string? Preview = null);
+    string? Preview = null,
+    int? ApproximateTokens = null,
+    int? CharacterCount = null);
 
 /// <summary>Inputs required to deterministically render a tailored workspace AGENTS.md.</summary>
 public sealed record AgentsMdComposeInput(
@@ -56,4 +58,5 @@ public sealed record AgentsMdExportResult(
     int ApproximateTokens,
     IReadOnlyList<string> IncludedTopics,
     string MarkdownPreview,
-    IReadOnlyList<string>? Warnings = null);
+    IReadOnlyList<string>? Warnings = null,
+    int? CharacterCount = null);

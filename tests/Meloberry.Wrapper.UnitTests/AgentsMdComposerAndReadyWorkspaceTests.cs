@@ -81,6 +81,20 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
         Assert.True(statusRes.IsSuccess);
         Assert.True(statusRes.Value.Exists);
         Assert.Equal(exportedText, statusRes.Value.Preview);
+        Assert.True(statusRes.Value.SizeBytes > 0);
+        Assert.Equal(exportedText.Length, statusRes.Value.CharacterCount);
+        Assert.True(statusRes.Value.ApproximateTokens > 0);
+
+        // Subfolder export accumulates tracked Ready Workspace artifacts
+        var subDir = Path.Combine(workspace, "submod");
+        Directory.CreateDirectory(subDir);
+        var subExport = await handler.ReadyWorkspaceAsync(new ReadyWorkspaceRequest(draft, OverwriteConfirmed: false, TargetDirectory: subDir));
+        Assert.True(subExport.IsSuccess);
+        Assert.Equal(Path.Combine(subDir, "AGENTS.md"), subExport.Value.OutputPath);
+        var savedSettings = await settingsStore.LoadAsync();
+        Assert.NotNull(savedSettings.ActiveWorkspace?.LastReadyWorkspaceArtifacts);
+        Assert.Contains("AGENTS.md", savedSettings.ActiveWorkspace!.LastReadyWorkspaceArtifacts!);
+        Assert.Contains("submod/AGENTS.md", savedSettings.ActiveWorkspace!.LastReadyWorkspaceArtifacts!);
 
         var conflict = await handler.ReadyWorkspaceAsync(new ReadyWorkspaceRequest(draft, OverwriteConfirmed: false));
         Assert.True(conflict.IsFailure);
@@ -102,12 +116,13 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
                 "Membrane Basics",
                 [
                     new("text", true, 2, "Keep concise"),
-                    new("callout", true, 1, "Highlight Na+ channel", ["clinical"])
+                    new("callout", true, 2, "Highlight Na+ channel", ["pearl", "clinical"],
+                        ModeCounts: new Dictionary<string, int> { ["pearl"] = 1, ["clinical"] = 1 })
                 ],
                 OrderedItems:
                 [
                     new("t1", "text", 1),
-                    new("c1", "callout", 1),
+                    new("c1", "callout", 1, Subtype: "pearl"),
                     new("t2", "text", 2)
                 ]),
             new("q1", ComponentKind.Quiz, "Quick Check", []) // Empty quiz -> 5 MCQs fallback!
@@ -128,8 +143,8 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
 
         var composed = PromptComposer.Compose(sessionDraft, SpecCatalogDefaults.BuiltInFallbackCatalog);
         Assert.Contains("### 1. [A1] Article: Membrane Basics", composed.Markdown);
-        Assert.Contains("`text #1` -> `callout #1` -> `text #2`", composed.Markdown);
-        Assert.Contains("`clinical`", composed.Markdown);
+        Assert.Contains("`text #1` -> `callout:pearl #1` -> `text #2`", composed.Markdown);
+        Assert.Contains("`pearl` \u00d71, `clinical` \u00d71", composed.Markdown);
         Assert.Contains("### 2. [Q1] Quiz: Quick Check", composed.Markdown);
         Assert.Contains("| `mcq` | 5 | `mixed` | Default fallback (no quiz types selected) |", composed.Markdown);
 

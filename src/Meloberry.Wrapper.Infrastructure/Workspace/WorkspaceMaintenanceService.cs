@@ -17,6 +17,7 @@ public sealed class WorkspaceMaintenanceService(
     public async Task<Result<WorkspaceResetPlan>> PlanResetAsync(
         string workspacePath,
         WorkspaceResetScope scope,
+        IReadOnlyList<string>? trackedReadyArtifacts = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(workspacePath))
@@ -37,6 +38,60 @@ public sealed class WorkspaceMaintenanceService(
         if (!Directory.Exists(fullWs))
         {
             return Result<WorkspaceResetPlan>.Success(new WorkspaceResetPlan(fullWs, scope, [], null));
+        }
+
+        if (scope == WorkspaceResetScope.UndoReadyWorkspace)
+        {
+            var fullRoot = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
+            var candidateRels = trackedReadyArtifacts is { Count: > 0 }
+                ? trackedReadyArtifacts
+                : ["AGENTS.md"];
+
+            var artifactsToRemove = new List<string>();
+            foreach (var rawRel in candidateRels)
+            {
+                if (string.IsNullOrWhiteSpace(rawRel))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var normalizedRel = rawRel.Trim().Replace('/', Path.DirectorySeparatorChar);
+                    var candidate = Path.GetFullPath(Path.IsPathRooted(normalizedRel) ? normalizedRel : Path.Combine(fullWs, normalizedRel));
+                    if (!candidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (candidate.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (File.Exists(candidate))
+                    {
+                        artifactsToRemove.Add(Path.GetRelativePath(fullWs, candidate).Replace('\\', '/'));
+                    }
+                }
+                catch
+                {
+                    // Skip malformed artifact path entries.
+                }
+            }
+
+            artifactsToRemove = artifactsToRemove
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var rootAgentsRel = artifactsToRemove.FirstOrDefault(p => string.Equals(p, "AGENTS.md", StringComparison.OrdinalIgnoreCase));
+            return Result<WorkspaceResetPlan>.Success(new WorkspaceResetPlan(
+                fullWs,
+                scope,
+                [],
+                rootAgentsRel,
+                artifactsToRemove));
         }
 
         var scannedApps = await appsStore.ScanAppsAsync(null, ct).ConfigureAwait(false);
@@ -76,9 +131,10 @@ public sealed class WorkspaceMaintenanceService(
     public async Task<Result<WorkspaceResetResult>> ExecuteResetAsync(
         string workspacePath,
         WorkspaceResetScope scope,
+        IReadOnlyList<string>? trackedReadyArtifacts = null,
         CancellationToken ct = default)
     {
-        var planRes = await PlanResetAsync(workspacePath, scope, ct).ConfigureAwait(false);
+        var planRes = await PlanResetAsync(workspacePath, scope, trackedReadyArtifacts, ct).ConfigureAwait(false);
         if (planRes.IsFailure)
         {
             return Result<WorkspaceResetResult>.Failure(planRes.Error!);
@@ -106,7 +162,31 @@ public sealed class WorkspaceMaintenanceService(
             }
 
             var removedAgents = false;
-            if (!string.IsNullOrWhiteSpace(plan.AgentsMdToRemove))
+            var removedArtifacts = new List<string>();
+            if (scope == WorkspaceResetScope.UndoReadyWorkspace && plan.ReadyArtifactsToRemove is { Count: > 0 })
+            {
+                foreach (var rel in plan.ReadyArtifactsToRemove)
+                {
+                    var candidate = Path.GetFullPath(Path.Combine(plan.WorkspacePath, rel.Replace('/', Path.DirectorySeparatorChar)));
+                    if (!candidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase)
+                        || candidate.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Result<WorkspaceResetResult>.Failure(WrapperErrors.InvalidPath(candidate));
+                    }
+
+                    if (File.Exists(candidate))
+                    {
+                        File.Delete(candidate);
+                        removed.Add(rel);
+                        removedArtifacts.Add(rel);
+                        if (string.Equals(Path.GetFileName(candidate), "AGENTS.md", StringComparison.OrdinalIgnoreCase))
+                        {
+                            removedAgents = true;
+                        }
+                    }
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(plan.AgentsMdToRemove))
             {
                 var agentsTarget = Path.GetFullPath(Path.Combine(plan.WorkspacePath, "AGENTS.md"));
                 if (agentsTarget.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(agentsTarget))
@@ -116,7 +196,11 @@ public sealed class WorkspaceMaintenanceService(
                 }
             }
 
-            return Result<WorkspaceResetResult>.Success(new WorkspaceResetResult(plan.WorkspacePath, removed, removedAgents));
+            return Result<WorkspaceResetResult>.Success(new WorkspaceResetResult(
+                plan.WorkspacePath,
+                removed,
+                removedAgents,
+                removedArtifacts.Count > 0 ? removedArtifacts : null));
         }
         catch (Exception ex)
         {

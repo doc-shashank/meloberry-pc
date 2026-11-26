@@ -209,9 +209,7 @@ public static class PromptComposer
                 foreach (var item in comp.Selections)
                 {
                     var qty = item.DesiredCount is > 0 ? item.DesiredCount.Value.ToString() : "Auto";
-                    var modes = item.Modes is { Count: > 0 }
-                        ? string.Join(", ", item.Modes.Select(m => $"`{m}`"))
-                        : "—";
+                    var modes = FormatModesCell(item);
                     var notes = string.IsNullOrWhiteSpace(item.Notes)
                         ? "—"
                         : item.Notes.Trim()
@@ -225,7 +223,10 @@ public static class PromptComposer
 
             if (comp.OrderedItems is { Count: > 0 })
             {
-                var seq = string.Join(" -> ", comp.OrderedItems.Select(o => $"`{o.Topic} #{o.InstanceNumber}`"));
+                var seq = string.Join(" -> ", comp.OrderedItems.Select(o =>
+                    string.IsNullOrWhiteSpace(o.Subtype)
+                        ? $"`{o.Topic} #{o.InstanceNumber}`"
+                        : $"`{o.Topic}:{o.Subtype} #{o.InstanceNumber}`"));
                 sb.AppendLine();
                 sb.AppendLine($"- **Exact Sequence**: {seq}");
             }
@@ -426,5 +427,37 @@ public static class PromptComposer
         }
 
         return filePath;
+    }
+
+    private static string FormatModesCell(ShoppingListSelection item)
+    {
+        var parts = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (item.ModeCounts is { Count: > 0 })
+        {
+            foreach (var kv in item.ModeCounts)
+            {
+                if (kv.Value > 0 && !string.IsNullOrWhiteSpace(kv.Key))
+                {
+                    parts.Add($"`{kv.Key}` \u00d7{kv.Value}");
+                    seen.Add(kv.Key);
+                }
+            }
+        }
+
+        if (item.Modes is { Count: > 0 })
+        {
+            foreach (var m in item.Modes)
+            {
+                if (!string.IsNullOrWhiteSpace(m) && !seen.Contains(m))
+                {
+                    parts.Add($"`{m}`");
+                    seen.Add(m);
+                }
+            }
+        }
+
+        return parts.Count > 0 ? string.Join(", ", parts) : "—";
     }
 }

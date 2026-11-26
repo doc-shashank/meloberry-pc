@@ -50,6 +50,11 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
     [GeneratedRegex(@"/viewer/([A-Za-z0-9]+)/", RegexOptions.CultureInvariant)]
     private static partial Regex ViewerRefererRegex();
 
+    [GeneratedRegex(@"<head(\s[^>]*)?>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex HeadOpenTagRegex();
+
+    private static readonly Lazy<IReadOnlyDictionary<string, string>> IconMapLazy = new(BuildEmbeddedIconMap);
+
     private readonly IWrapperMetadataProvider _metadataProvider;
     private readonly IWrapperDataPaths _dataPaths;
     private readonly ISettingsStore _settingsStore;
@@ -251,6 +256,19 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                 return;
             }
 
+            if (path == "/shell/icons.json" && method is "GET" or "HEAD")
+            {
+                ctx.Response.Headers["Cache-Control"] = "public, max-age=3600";
+                await WriteJsonAsync(ctx.Response, 200, IconMapLazy.Value, ct).ConfigureAwait(false);
+                return;
+            }
+
+            if (path.StartsWith("/shell/icons/", StringComparison.OrdinalIgnoreCase) && method is "GET" or "HEAD")
+            {
+                await ServeEmbeddedIconAsync(ctx.Response, path["/shell/icons/".Length..], ct).ConfigureAwait(false);
+                return;
+            }
+
             if (path == "/api/events" && method == "GET")
             {
                 var queryToken = req.QueryString["token"];
@@ -308,7 +326,7 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
                 if (!string.IsNullOrWhiteSpace(settings.ActiveWorkspace?.WorkspacePath))
                 {
                     _fileWatcher.UpdateActiveWorkspace(settings.ActiveWorkspace.WorkspacePath);
-                    var st = await _readyWorkspace.GetStatusAsync(settings.ActiveWorkspace.WorkspacePath, ct).ConfigureAwait(false);
+                    var st = await _readyWorkspace.GetStatusAsync(settings.ActiveWorkspace.WorkspacePath, targetDirectoryOverride: null, ct: ct).ConfigureAwait(false);
                     if (st.IsSuccess)
                     {
                         agentsStatus = st.Value;
@@ -485,8 +503,38 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
             case ("/api/workspace/agents-md/status", "GET"):
             {
                 var ws = req.QueryString["workspacePath"];
-                var res = await _readyWorkspace.GetStatusAsync(ws, ct).ConfigureAwait(false);
+                var targetDir = req.QueryString["targetDirectory"];
+                var res = await _readyWorkspace.GetStatusAsync(ws, targetDir, ct).ConfigureAwait(false);
                 await WriteResultAsync(resp, res, ct).ConfigureAwait(false);
+                return;
+            }
+
+            case ("/api/workspace/subfolders", "GET"):
+            {
+                var ws = req.QueryString["workspacePath"];
+                if (string.IsNullOrWhiteSpace(ws))
+                {
+                    var settings = await _settingsStore.LoadAsync(ct).ConfigureAwait(false);
+                    ws = settings.ActiveWorkspace?.WorkspacePath;
+                }
+
+                if (string.IsNullOrWhiteSpace(ws) || !PathNormalization.TryNormalizeDirectoryPath(ws, out var fullWs))
+                {
+                    await WriteJsonAsync(resp, 200, new { hasSubfolders = false, subfolders = Array.Empty<object>() }, ct).ConfigureAwait(false);
+                    return;
+                }
+
+                var subfolders = Directory.Exists(fullWs)
+                    ? new DirectoryInfo(fullWs)
+                        .EnumerateDirectories("*", SearchOption.TopDirectoryOnly)
+                        .Where(d => (d.Attributes & (FileAttributes.Hidden | FileAttributes.System)) == 0
+                            && !d.Name.StartsWith(".", StringComparison.Ordinal))
+                        .OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+                        .Select(d => new { name = d.Name, fullPath = d.FullName })
+                        .ToList<object>()
+                    : [];
+
+                await WriteJsonAsync(resp, 200, new { hasSubfolders = subfolders.Count > 0, subfolders }, ct).ConfigureAwait(false);
                 return;
             }
 
@@ -1037,6 +1085,21 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
             string.Equals(ext, ".html", StringComparison.OrdinalIgnoreCase))
         {
             var html = await File.ReadAllTextAsync(target, Encoding.UTF8, ct).ConfigureAwait(false);
+            var settings = await _settingsStore.LoadAsync(ct).ConfigureAwait(false);
+            if (settings.OverrideWebAppTheme && !string.IsNullOrWhiteSpace(settings.ThemeMode))
+            {
+                var earlyScript = BuildViewerEarlyThemeScript(settings.ThemeMode);
+                var headMatch = HeadOpenTagRegex().Match(html);
+                if (headMatch.Success)
+                {
+                    html = html.Insert(headMatch.Index + headMatch.Length, "\n" + earlyScript);
+                }
+                else
+                {
+                    html = earlyScript + html;
+                }
+            }
+
             var bridge = BuildViewerThemeBridgeScript(Port);
             var bodyClose = html.LastIndexOf("</body>", StringComparison.OrdinalIgnoreCase);
             html = bodyClose >= 0 ? html.Insert(bodyClose, bridge) : html + bridge;
@@ -1051,12 +1114,25 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         resp.Close();
     }
 
+    private static string BuildViewerEarlyThemeScript(string themeMode)
+    {
+        var safeTheme = JsonSerializer.Serialize(themeMode);
+        var paperCss = string.Equals(themeMode, "paper", StringComparison.OrdinalIgnoreCase)
+            ? """
+              <style id="mby-wrapper-theme-fallback">
+              html[data-theme="paper"] { --bg:#f7f3e9;--surface:#fffdf8;--text:#2c241b;--muted:#6f6254;--accent:#9a3412;--accent-soft:#ffedd5;--select:#1d4ed8;--select-soft:#e0e7ff;--table-hideable-bg:#eef2e6;--table-hideable-color:#3f6212;--border:#e7dcc8;--callout-pearl-bg:#fef7e0;--callout-clinical-bg:#eef7fb;--callout-warning-bg:#fdf0ed; }
+              </style>
+              """
+            : string.Empty;
+        return $"{paperCss}<script>(function(){{if(window.__mbyOrigTheme===undefined){{window.__mbyOrigTheme=document.documentElement.getAttribute('data-theme');}}document.documentElement.setAttribute('data-theme',{safeTheme});}})();</script>";
+    }
+
     private static string BuildViewerThemeBridgeScript(int shellPort) => $$"""
 <script>
 (() => {
   const allowed127 = "http://127.0.0.1:{{shellPort}}";
   const allowedLocal = "http://localhost:{{shellPort}}";
-  const origTheme = document.documentElement.getAttribute("data-theme");
+  const origTheme = window.__mbyOrigTheme !== undefined ? window.__mbyOrigTheme : document.documentElement.getAttribute("data-theme");
   window.addEventListener("message", ev => {
     if (ev.origin !== allowed127 && ev.origin !== allowedLocal) return;
     const d = ev.data;
@@ -1076,6 +1152,11 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
       if (origTheme !== null && origTheme !== "") document.documentElement.setAttribute("data-theme", origTheme);
       else document.documentElement.removeAttribute("data-theme");
     }
+    try {
+      if (ev.source) {
+        ev.source.postMessage({ type: "mby-theme-applied", theme: d.override ? (d.theme || null) : origTheme }, ev.origin);
+      }
+    } catch {}
   });
 })();
 </script>
@@ -1083,8 +1164,11 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
 
     private async Task ServeEmbeddedShellHtmlAsync(HttpListenerResponse resp, CancellationToken ct)
     {
+        var meta = _metadataProvider.GetMetadata();
         var html = ReadEmbeddedText("WebAssets.shell.html");
-        html = html.Replace("__MBY_TOKEN_VALUE__", _token, StringComparison.Ordinal);
+        html = html.Replace("__MBY_TOKEN_VALUE__", _token, StringComparison.Ordinal)
+            .Replace("__MBY_VERSION_VALUE__", WebUtility.HtmlEncode(meta.Version), StringComparison.Ordinal)
+            .Replace("__MBY_PRODUCT_NAME__", WebUtility.HtmlEncode(meta.ProductName), StringComparison.Ordinal);
         var bytes = Encoding.UTF8.GetBytes(html);
         resp.ContentType = "text/html; charset=utf-8";
         resp.Headers["Cache-Control"] = "no-store";
@@ -1093,6 +1177,64 @@ public sealed partial class LocalHttpWrapperServer : IAsyncDisposable, IDisposab
         resp.StatusCode = 200;
         await resp.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
         resp.Close();
+    }
+
+    private async Task ServeEmbeddedIconAsync(HttpListenerResponse resp, string rawKey, CancellationToken ct)
+    {
+        var key = rawKey.Trim().TrimStart('/');
+        if (key.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+        {
+            key = key[..^4];
+        }
+
+        if (!IconMapLazy.Value.TryGetValue(key, out var svg))
+        {
+            resp.StatusCode = 404;
+            resp.Close();
+            return;
+        }
+
+        var bytes = Encoding.UTF8.GetBytes(svg);
+        resp.ContentType = "image/svg+xml; charset=utf-8";
+        resp.Headers["Cache-Control"] = "public, max-age=3600";
+        resp.StatusCode = 200;
+        await resp.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+        resp.Close();
+    }
+
+    private static IReadOnlyDictionary<string, string> BuildEmbeddedIconMap()
+    {
+        var asm = typeof(LocalHttpWrapperServer).Assembly;
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        const string Marker = ".WebAssets.icons.";
+
+        foreach (var resName in asm.GetManifestResourceNames())
+        {
+            var idx = resName.IndexOf(Marker, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0 || !resName.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var tail = resName[(idx + Marker.Length)..^4];
+            var dot = tail.IndexOf('.');
+            if (dot <= 0)
+            {
+                continue;
+            }
+
+            var key = string.Concat(tail.AsSpan(0, dot), "/", tail.AsSpan(dot + 1));
+            using var stream = asm.GetManifestResourceStream(resName);
+            if (stream is null)
+            {
+                continue;
+            }
+
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            dict[key] = reader.ReadToEnd().Trim();
+        }
+
+        return dict;
     }
 
     private async Task ServeEmbeddedResourceAsync(HttpListenerResponse resp, string suffix, string contentType, CancellationToken ct)

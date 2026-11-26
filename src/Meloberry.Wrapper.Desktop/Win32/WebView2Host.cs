@@ -73,7 +73,7 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
         var env = await CoreWebView2Environment.CreateAsync(null, dataPaths.WebView2UserDataDirectory);
         _controller = await env.CreateCoreWebView2ControllerAsync(windowHost.Handle);
         _controller.Bounds = windowHost.GetClientBounds();
-        _controller.AllowExternalDrop = false;
+        _controller.AllowExternalDrop = true;
 
         var shellAuthority = new Uri(startUrl).GetLeftPart(UriPartial.Authority);
         var viewerAuthority = new Uri(viewerBaseUrl).GetLeftPart(UriPartial.Authority);
@@ -88,16 +88,9 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
 
         windowHost.MaximizedChanged += isMax => PushWindowState(isMax);
 
-        windowHost.FolderDropped += path =>
-        {
-            if (_controller is not null)
-            {
-                var jsonPath = JsonSerializer.Serialize(path);
-                _ = _controller.CoreWebView2.ExecuteScriptAsync($"window.__onWin32Drop && window.__onWin32Drop({jsonPath});");
-            }
-        };
+        windowHost.FilesDropped += paths => DispatchNativeDrop(paths, view: null, target: null);
 
-        _controller.CoreWebView2.WebMessageReceived += (_, e) => HandleWebMessage(e.TryGetWebMessageAsString());
+        _controller.CoreWebView2.WebMessageReceived += (_, e) => HandleWebMessage(e);
         _controller.CoreWebView2.NavigationCompleted += (_, _) => PushWindowState(windowHost.IsMaximized);
 
         _controller.CoreWebView2.NavigationStarting += (_, e) =>
@@ -145,8 +138,18 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
         _ = _controller.CoreWebView2.ExecuteScriptAsync($"window.__onWindowState && window.__onWindowState({{ maximized: {flag} }});");
     }
 
-    private void HandleWebMessage(string? messageJson)
+    private void HandleWebMessage(CoreWebView2WebMessageReceivedEventArgs args)
     {
+        string? messageJson = null;
+        try
+        {
+            messageJson = args.TryGetWebMessageAsString();
+        }
+        catch
+        {
+            messageJson = args.WebMessageAsJson;
+        }
+
         if (string.IsNullOrWhiteSpace(messageJson))
         {
             return;
@@ -174,12 +177,71 @@ internal sealed class WebView2Host(Win32WindowHost windowHost, IWrapperDataPaths
                 case "window.close":
                     windowHost.RequestShutdown();
                     break;
+                case "native-drop":
+                {
+                    var view = doc.RootElement.TryGetProperty("view", out var vEl) && vEl.ValueKind == JsonValueKind.String
+                        ? vEl.GetString()
+                        : null;
+                    var target = doc.RootElement.TryGetProperty("target", out var tEl) && tEl.ValueKind == JsonValueKind.String
+                        ? tEl.GetString()
+                        : null;
+                    var paths = new List<string>();
+                    if (args.AdditionalObjects is { Count: > 0 })
+                    {
+                        foreach (var obj in args.AdditionalObjects)
+                        {
+                            if (obj is CoreWebView2File file && !string.IsNullOrWhiteSpace(file.Path))
+                            {
+                                paths.Add(file.Path);
+                            }
+                        }
+                    }
+
+                    if (paths.Count > 0)
+                    {
+                        DispatchNativeDrop(paths, view, target);
+                    }
+                    break;
+                }
             }
         }
         catch
         {
             // Ignore malformed messages from page scripts.
         }
+    }
+
+    private void DispatchNativeDrop(IReadOnlyList<string> paths, string? view, string? target)
+    {
+        if (_controller?.CoreWebView2 is null || paths.Count == 0)
+        {
+            return;
+        }
+
+        var items = new List<object>(paths.Count);
+        foreach (var rawPath in paths)
+        {
+            if (string.IsNullOrWhiteSpace(rawPath))
+            {
+                continue;
+            }
+
+            var kind = Directory.Exists(rawPath)
+                ? "folder"
+                : (File.Exists(rawPath) ? "file" : null);
+            if (kind is not null)
+            {
+                items.Add(new { path = rawPath, kind });
+            }
+        }
+
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        var payloadJson = JsonSerializer.Serialize(new { view, target, items });
+        _ = _controller.CoreWebView2.ExecuteScriptAsync($"window.__onNativeDrop && window.__onNativeDrop({payloadJson});");
     }
 
     private static void ExtractEmbeddedLoaderIfNeeded(string targetPath)

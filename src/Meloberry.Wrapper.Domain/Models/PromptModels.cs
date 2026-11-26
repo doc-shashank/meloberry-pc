@@ -29,13 +29,15 @@ public sealed record ShoppingListSelection(
     bool Enabled,
     int? DesiredCount = null,
     string? Notes = null,
-    IReadOnlyList<string>? Modes = null);
+    IReadOnlyList<string>? Modes = null,
+    IReadOnlyDictionary<string, int>? ModeCounts = null);
 
 /// <summary>Single ordered block/question instance inside a component's Organizer track.</summary>
 public sealed record OrderedSpecInstance(
     string Id,
     string Topic,
-    int InstanceNumber);
+    int InstanceNumber,
+    string? Subtype = null);
 
 /// <summary>Ordered article or quiz component inside a Prompt Studio blueprint.</summary>
 public sealed record PromptComponentPlan(

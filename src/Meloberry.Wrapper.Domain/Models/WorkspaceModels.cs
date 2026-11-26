@@ -80,7 +80,9 @@ public sealed record ActiveWorkspaceState(
     IReadOnlyList<string>? SelectedAppFileNames = null,
     IReadOnlyList<StagedCopyItem>? StagedItems = null,
     IReadOnlyList<string>? LastCopiedRelativePaths = null,
-    IReadOnlyList<string>? WorkspaceApps = null);
+    IReadOnlyList<string>? WorkspaceApps = null,
+    string? LastAgentsMdPath = null,
+    IReadOnlyList<string>? LastReadyWorkspaceArtifacts = null);
 
 /// <summary>Compiled WebApp folder auto-discovered inside the Active Workspace.</summary>
 public sealed record DiscoveredWebApp(
@@ -92,24 +94,40 @@ public sealed record DiscoveredWebApp(
 public enum WorkspaceResetScope
 {
     ExecutablesOnly,
-    ExecutablesAndAgentsMd
+    ExecutablesAndAgentsMd,
+    UndoReadyWorkspace
 }
 
-/// <summary>Preview of recognized executables (and optionally AGENTS.md) that Reset will remove.</summary>
+/// <summary>Preview of recognized executables (and optionally AGENTS.md / Ready artifacts) that Reset will remove.</summary>
 public sealed record WorkspaceResetPlan(
     string WorkspacePath,
     WorkspaceResetScope Scope,
     IReadOnlyList<string> ExecutablesToRemove,
-    string? AgentsMdToRemove)
+    string? AgentsMdToRemove,
+    IReadOnlyList<string>? ReadyArtifactsToRemove = null)
 {
-    public int TotalCount => ExecutablesToRemove.Count + (string.IsNullOrWhiteSpace(AgentsMdToRemove) ? 0 : 1);
+    public int TotalCount
+    {
+        get
+        {
+            var extraArtifacts = 0;
+            if (ReadyArtifactsToRemove is { Count: > 0 })
+            {
+                extraArtifacts = string.IsNullOrWhiteSpace(AgentsMdToRemove)
+                    ? ReadyArtifactsToRemove.Count
+                    : ReadyArtifactsToRemove.Count(p => !string.Equals(p, AgentsMdToRemove, StringComparison.OrdinalIgnoreCase));
+            }
+            return ExecutablesToRemove.Count + (string.IsNullOrWhiteSpace(AgentsMdToRemove) ? 0 : 1) + extraArtifacts;
+        }
+    }
 }
 
 /// <summary>Result of executing Active Workspace Reset.</summary>
 public sealed record WorkspaceResetResult(
     string WorkspacePath,
     IReadOnlyList<string> RemovedRelativePaths,
-    bool RemovedAgentsMd);
+    bool RemovedAgentsMd,
+    IReadOnlyList<string>? RemovedReadyArtifacts = null);
 
 /// <summary>Represents an older Meloberry executable found inside the Active Workspace compared against apps\.</summary>
 public sealed record OutdatedWorkspaceTool(

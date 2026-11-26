@@ -9,7 +9,8 @@ namespace Meloberry.Wrapper.Application.UseCases;
 /// <summary>Request payload for exporting a targeted AGENTS.md into the Active Workspace.</summary>
 public sealed record ReadyWorkspaceRequest(
     PromptDraft Draft,
-    bool OverwriteConfirmed = false);
+    bool OverwriteConfirmed = false,
+    string? TargetDirectory = null);
 
 /// <summary>
 /// Exports a tailored <c>AGENTS.md</c> file containing the workspace playbook and live targeted CLI schemas
@@ -23,7 +24,10 @@ public sealed class ReadyWorkspaceHandler(
     ISettingsStore settingsStore,
     LoadSpecCatalogHandler specLoader)
 {
-    public async Task<Result<AgentsMdStatus>> GetStatusAsync(string? workspacePathOverride, CancellationToken ct = default)
+    public async Task<Result<AgentsMdStatus>> GetStatusAsync(
+        string? workspacePathOverride,
+        string? targetDirectoryOverride = null,
+        CancellationToken ct = default)
     {
         var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
         var wsPath = !string.IsNullOrWhiteSpace(workspacePathOverride)
@@ -35,7 +39,23 @@ public sealed class ReadyWorkspaceHandler(
             return Result<AgentsMdStatus>.Failure(WrapperErrors.InvalidWorkspaceDir("No Active Workspace selected."));
         }
 
-        return await agentsMdWriter.GetStatusAsync(wsPath, ct).ConfigureAwait(false);
+        string? resolvedOverride = targetDirectoryOverride;
+        if (string.IsNullOrWhiteSpace(resolvedOverride)
+            && settings.ActiveWorkspace is not null
+            && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, wsPath)
+            && !string.IsNullOrWhiteSpace(settings.ActiveWorkspace.LastAgentsMdPath)
+            && File.Exists(settings.ActiveWorkspace.LastAgentsMdPath))
+        {
+            resolvedOverride = settings.ActiveWorkspace.LastAgentsMdPath;
+        }
+
+        var statusRes = await agentsMdWriter.GetStatusAsync(wsPath, resolvedOverride, ct).ConfigureAwait(false);
+        if (statusRes.IsSuccess && !statusRes.Value.Exists && !string.IsNullOrWhiteSpace(resolvedOverride) && string.IsNullOrWhiteSpace(targetDirectoryOverride))
+        {
+            return await agentsMdWriter.GetStatusAsync(wsPath, null, ct).ConfigureAwait(false);
+        }
+
+        return statusRes;
     }
 
     public async Task<Result<AgentsMdExportResult>> ReadyWorkspaceAsync(
@@ -59,7 +79,28 @@ public sealed class ReadyWorkspaceHandler(
             return Result<AgentsMdExportResult>.Failure(WrapperErrors.InvalidWorkspaceDir(wsPath));
         }
 
-        var preStatus = await agentsMdWriter.GetStatusAsync(fullWs, ct).ConfigureAwait(false);
+        string? validatedTargetDir = null;
+        if (!string.IsNullOrWhiteSpace(request.TargetDirectory))
+        {
+            var candidate = Path.IsPathRooted(request.TargetDirectory.Trim())
+                ? request.TargetDirectory.Trim()
+                : Path.Combine(fullWs, request.TargetDirectory.Trim());
+            if (!PathNormalization.TryNormalizeDirectoryPath(candidate, out var fullTarget))
+            {
+                return Result<AgentsMdExportResult>.Failure(WrapperErrors.InvalidPath(request.TargetDirectory));
+            }
+
+            var wsPrefix = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
+            if (!PathNormalization.AreSameDirectory(fullTarget, fullWs)
+                && !fullTarget.StartsWith(wsPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result<AgentsMdExportResult>.Failure(WrapperErrors.InvalidPath(fullTarget));
+            }
+
+            validatedTargetDir = fullTarget;
+        }
+
+        var preStatus = await agentsMdWriter.GetStatusAsync(fullWs, validatedTargetDir, ct).ConfigureAwait(false);
         if (preStatus.IsFailure)
         {
             return Result<AgentsMdExportResult>.Failure(preStatus.Error!);
@@ -247,7 +288,7 @@ public sealed class ReadyWorkspaceHandler(
             ExternalAttachments: distinctExternalAttachments);
 
         var markdown = AgentsMdComposer.Compose(composeInput);
-        var writeRes = await agentsMdWriter.WriteAsync(fullWs, markdown, request.OverwriteConfirmed, ct).ConfigureAwait(false);
+        var writeRes = await agentsMdWriter.WriteAsync(fullWs, validatedTargetDir, markdown, request.OverwriteConfirmed, ct).ConfigureAwait(false);
         if (writeRes.IsFailure)
         {
             return Result<AgentsMdExportResult>.Failure(writeRes.Error!);
@@ -255,7 +296,18 @@ public sealed class ReadyWorkspaceHandler(
 
         if (settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, fullWs))
         {
-            var updatedState = settings.ActiveWorkspace with { AgentsMdExportedUtc = DateTimeOffset.UtcNow };
+            var relArtifact = Path.GetRelativePath(fullWs, writeRes.Value.AgentsMdPath).Replace('\\', '/');
+            var artifacts = (settings.ActiveWorkspace.LastReadyWorkspaceArtifacts ?? [])
+                .Concat([relArtifact])
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var updatedState = settings.ActiveWorkspace with
+            {
+                AgentsMdExportedUtc = DateTimeOffset.UtcNow,
+                LastAgentsMdPath = writeRes.Value.AgentsMdPath,
+                LastReadyWorkspaceArtifacts = artifacts
+            };
             await settingsStore.SaveAsync(settings with { ActiveWorkspace = updatedState }, ct).ConfigureAwait(false);
         }
 
@@ -270,7 +322,8 @@ public sealed class ReadyWorkspaceHandler(
             ApproximateTokens: AgentsMdComposer.EstimateTokens(markdown),
             IncludedTopics: included,
             MarkdownPreview: markdown,
-            Warnings: warnings.Count > 0 ? warnings : null));
+            Warnings: warnings.Count > 0 ? warnings : null,
+            CharacterCount: markdown.Length));
     }
 
     private static string InferCategory(string topic) => topic.ToLowerInvariant() switch

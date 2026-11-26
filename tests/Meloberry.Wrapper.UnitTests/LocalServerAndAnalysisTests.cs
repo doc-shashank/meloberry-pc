@@ -40,11 +40,31 @@ public sealed class LocalServerAndAnalysisTests : IAsyncLifetime
         using var viewerHttp = new HttpClient { BaseAddress = new Uri(_server.ViewerBaseUrl) };
         Assert.NotEqual(_server.Port, _server.ViewerPort);
 
-        // Shell GET / has frame-ancestors 'none', X-Frame-Options: DENY, and Cache-Control: no-store.
+        // Shell GET / has frame-ancestors 'none', X-Frame-Options: DENY, Cache-Control: no-store, and real injected version.
         var rootResp = await shellHttp.GetAsync("/");
         Assert.Equal(HttpStatusCode.OK, rootResp.StatusCode);
         Assert.Equal("DENY", rootResp.Headers.GetValues("X-Frame-Options").Single());
         Assert.True(rootResp.Headers.CacheControl?.NoStore);
+        var shellHtml = await rootResp.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("__MBY_VERSION_VALUE__", shellHtml);
+        Assert.DoesNotContain("__MBY_PRODUCT_NAME__", shellHtml);
+        Assert.DoesNotContain("v1.0.0", shellHtml);
+
+        // Icon registry serves UI, parent specs (incl. live case/match/numeric), and derivative subtype icons.
+        var iconsJsonResp = await shellHttp.GetAsync("/shell/icons.json");
+        Assert.Equal(HttpStatusCode.OK, iconsJsonResp.StatusCode);
+        using (var iconsDoc = System.Text.Json.JsonDocument.Parse(await iconsJsonResp.Content.ReadAsStringAsync()))
+        {
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/nav-setup", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/distribute", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("specs/callout-pearl", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("specs/case", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("specs/match", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("specs/numeric", out _));
+        }
+        var svgResp = await shellHttp.GetAsync("/shell/icons/ui/nav-setup.svg");
+        Assert.Equal(HttpStatusCode.OK, svgResp.StatusCode);
+        Assert.Contains("image/svg+xml", svgResp.Content.Headers.ContentType?.ToString() ?? string.Empty);
 
         // Missing token must fail with 403.
         var unauth = await shellHttp.GetAsync("/api/bootstrap");
@@ -154,6 +174,70 @@ public sealed class LocalServerAndAnalysisTests : IAsyncLifetime
         using var reader = new StreamReader(stream, Encoding.UTF8);
         var hello = await reader.ReadLineAsync();
         Assert.Equal(": connected", hello);
+    }
+
+    [Fact]
+    public async Task Server_EnumeratesVisibleSubfolders_AndInjectsEarlyThemeIntoMountedWebAppHead()
+    {
+        using var shellHttp = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
+        using var viewerHttp = new HttpClient { BaseAddress = new Uri(_server.ViewerBaseUrl) };
+
+        // Setup workspace with visible + dot/hidden subdirectories
+        var wsRoot = Path.Combine(_tempRoot, "subfolders_ws");
+        Directory.CreateDirectory(wsRoot);
+        Directory.CreateDirectory(Path.Combine(wsRoot, "Chapter1"));
+        Directory.CreateDirectory(Path.Combine(wsRoot, "Chapter2"));
+        Directory.CreateDirectory(Path.Combine(wsRoot, ".git"));
+        var hiddenDir = Directory.CreateDirectory(Path.Combine(wsRoot, "SecretHidden"));
+        hiddenDir.Attributes |= FileAttributes.Hidden;
+
+        using var subReq = new HttpRequestMessage(HttpMethod.Get, $"/api/workspace/subfolders?workspacePath={Uri.EscapeDataString(wsRoot)}");
+        subReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var subResp = await shellHttp.SendAsync(subReq);
+        Assert.Equal(HttpStatusCode.OK, subResp.StatusCode);
+        using (var subDoc = System.Text.Json.JsonDocument.Parse(await subResp.Content.ReadAsStringAsync()))
+        {
+            Assert.True(subDoc.RootElement.GetProperty("hasSubfolders").GetBoolean());
+            var names = subDoc.RootElement.GetProperty("subfolders")
+                .EnumerateArray()
+                .Select(e => e.GetProperty("name").GetString())
+                .ToList();
+            Assert.Contains("Chapter1", names);
+            Assert.Contains("Chapter2", names);
+            Assert.DoesNotContain(".git", names);
+            Assert.DoesNotContain("SecretHidden", names);
+        }
+
+        // Enable paper theme override in settings
+        using var putSetReq = new HttpRequestMessage(HttpMethod.Put, "/api/settings")
+        {
+            Content = new StringContent("{\"themeMode\":\"paper\",\"overrideWebAppTheme\":true}", Encoding.UTF8, "application/json")
+        };
+        putSetReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var putSetResp = await shellHttp.SendAsync(putSetReq);
+        Assert.Equal(HttpStatusCode.OK, putSetResp.StatusCode);
+
+        var webDir = Path.Combine(_tempRoot, "themed_web");
+        Directory.CreateDirectory(webDir);
+        await File.WriteAllTextAsync(Path.Combine(webDir, "index.html"), "<!DOCTYPE html><html><head><title>App</title></head><body>ok</body></html>");
+        await File.WriteAllTextAsync(Path.Combine(webDir, "app.js"), "console.log('themed');");
+
+        using var openReq = new HttpRequestMessage(HttpMethod.Post, "/api/viewer/open")
+        {
+            Content = new StringContent($"{{\"path\":{System.Text.Json.JsonSerializer.Serialize(webDir)}}}", Encoding.UTF8, "application/json")
+        };
+        openReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var openResp = await shellHttp.SendAsync(openReq);
+        Assert.Equal(HttpStatusCode.OK, openResp.StatusCode);
+        using var openDoc = System.Text.Json.JsonDocument.Parse(await openResp.Content.ReadAsStringAsync());
+        var viewerUrl = openDoc.RootElement.GetProperty("url").GetString()!;
+
+        var html = await viewerHttp.GetStringAsync(viewerUrl);
+        var headCloseIdx = html.IndexOf("</head>", StringComparison.OrdinalIgnoreCase);
+        var earlyAttrIdx = html.IndexOf("setAttribute('data-theme',\"paper\")", StringComparison.Ordinal);
+        Assert.True(earlyAttrIdx > 0 && earlyAttrIdx < headCloseIdx, "Expected early theme script inside <head> before </head>.");
+        Assert.Contains("mby-wrapper-theme-fallback", html);
+        Assert.Contains("mby-theme-applied", html);
     }
 
     public async Task DisposeAsync()
