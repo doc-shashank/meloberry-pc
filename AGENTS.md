@@ -180,7 +180,7 @@ Wrapper/
 ### Root & Installer
 - `.gitignore`: Excludes `.NET` build/publish artifacts (`bin/`, `obj/`, `/app/`, `installer/Output/`), binaries, WebView2 runtime state, and local IDE files.
 - `AGENTS.md`: Workspace guide defining repository structure, per-file summaries, Clean Architecture summaries, and mandatory agent directives.
-- `Directory.Build.props`: Single source of truth for version (`1.1.1`), product metadata, self-update repo coordinates, nullable/implicit usings, and `TreatWarningsAsErrors`.
+- `Directory.Build.props`: Single source of truth for version (`1.1.2`), product metadata, self-update repo coordinates, nullable/implicit usings, and `TreatWarningsAsErrors`.
 - `Meloberry.Wrapper.sln`: Visual Studio solution uniting all four `src/` projects and both `tests/` projects.
 - `installer/build-installer.ps1`: Publishes the single-file Win64 desktop executable and compiles the Inno Setup installer using the version from `Directory.Build.props`.
 - `installer/mby-pc.iss`: Inno Setup script packaging `mby-pc-<version>.exe` into `mby-pc-setup-<version>.exe`.
