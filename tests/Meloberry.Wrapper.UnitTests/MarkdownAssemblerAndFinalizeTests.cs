@@ -296,6 +296,139 @@ public sealed class MarkdownAssemblerAndFinalizeTests : IDisposable
         Assert.Contains("Image (`assets/heart.png`)", composed.Markdown);
     }
 
+    [Theory]
+    [InlineData("relabel", "prompt: Label A\nboxes:\n  - label: A\n    rect: [0.1,0.1,0.2,0.2]")]
+    [InlineData("diagram-explore", "- Landmark A: Desc")]
+    [InlineData("mcq", "Stem?\n- [x] A\n- [ ] B")]
+    [InlineData("flashcard", ":::front\nFront\n:::back\nBack")]
+    [InlineData("spot-error", "The [~~wrong~~ -> right] value.")]
+    [InlineData("numeric", "Compute x.")]
+    [InlineData("case", "Patient presents with chest pain.")]
+    public void WorkspaceMarkdownAssembler_PromotesYamlImagePath_ForAllImageCapableTopics(string topic, string body)
+    {
+        var raw = $"imagePath: assets/fig_01.png\n{body}";
+        var kind = topic == "diagram-explore" ? ComponentKind.Article : ComponentKind.Quiz;
+        var container = kind == ComponentKind.Article ? ContainerKind.StandaloneArticle : ContainerKind.StandaloneQuiz;
+        var draft = new PromptDraft(
+            Container: container,
+            Title: "Image Promotion",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "c1",
+                    kind,
+                    "Unit",
+                    [new(topic, true, 1)],
+                    [new("s1", topic, 1, null, new SpecContentSource(SpecContentMode.RawText, raw))])
+            ]);
+
+        var res = WorkspaceMarkdownAssembler.Assemble(draft, new Dictionary<string, string>(), allowPlaceholders: false);
+        Assert.True(res.IsSuccess);
+        var md = res.Value.Files.Values.Single();
+        Assert.Contains("image=\"assets/fig_01.png\"", md);
+        Assert.DoesNotContain("imagePath:", md);
+        Assert.Contains("assets/fig_01.png", res.Value.ReferencedAssetPaths);
+    }
+
+    [Fact]
+    public void WorkspaceMarkdownAssembler_WrapsSpacesInAngleBrackets_AndCollectsAngleBracketedAssets()
+    {
+        var draft = new PromptDraft(
+            Container: ContainerKind.StandaloneArticle,
+            Title: "Space Paths",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "a1",
+                    ComponentKind.Article,
+                    "Figures",
+                    [new("image", true, 2), new("text", true, 1)],
+                    [
+                        new("s1", "image", 1, null, new SpecContentSource(SpecContentMode.ImageFile, null, null, "assets/My Fig.png", "Cap", "Alt")),
+                        new("s2", "image", 2, null, new SpecContentSource(SpecContentMode.RawText, "assets/Second (1).png")),
+                        new("s3", "text", 1, null, new SpecContentSource(SpecContentMode.RawText, "See ![Inline](<assets/Inline Fig.png> \"Inline Cap\")."))
+                    ])
+            ]);
+
+        var res = WorkspaceMarkdownAssembler.Assemble(draft, new Dictionary<string, string>(), allowPlaceholders: false);
+        Assert.True(res.IsSuccess);
+        var md = res.Value.Files.Values.Single();
+        Assert.Contains("![Alt](<assets/My Fig.png> \"Cap\")", md);
+        Assert.Contains("![](<assets/Second (1).png>)", md);
+        Assert.Contains("assets/My Fig.png", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/Second (1).png", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/Inline Fig.png", res.Value.ReferencedAssetPaths);
+    }
+
+    [Fact]
+    public void WorkspaceMarkdownAssembler_ImageFileMode_PreventsDoubleWrapping_GuardsEmptyBody_AndWrapsFlashcardSubdirectives()
+    {
+        var draft = new PromptDraft(
+            Container: ContainerKind.StandaloneQuiz,
+            Title: "ImageFile Guards",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Quiz",
+                    [new("mcq", true, 3), new("flashcard", true, 1), new("numeric", true, 1)],
+                    [
+                        new("s1", "mcq", 1, null, new SpecContentSource(SpecContentMode.ImageFile, ":::mcq{multi=true}\nStem?\n- [x] A\n- [ ] B\n:::", null, "assets/ecg.png")),
+                        new("s2", "mcq", 2, null, new SpecContentSource(SpecContentMode.ImageFile, ":::mcq{image=\"assets/custom.png\"}\nStem 2?\n- [x] A\n- [ ] B\n:::", null, "assets/ecg.png")),
+                        new("s3", "mcq", 3, null, new SpecContentSource(SpecContentMode.ImageFile, null, null, "assets/blank_body.png")),
+                        new("s4", "flashcard", 1, "diagram", new SpecContentSource(SpecContentMode.ImageFile, ":::front\nIdentify structure\n:::back\nMitral valve", null, "assets/valve.png")),
+                        new("s5", "numeric", 1, null, new SpecContentSource(SpecContentMode.ImageFile, null, null, "assets/graph.png"))
+                    ])
+            ]);
+
+        var strictRes = WorkspaceMarkdownAssembler.Assemble(draft, new Dictionary<string, string>(), allowPlaceholders: false);
+        Assert.True(strictRes.IsSuccess);
+        Assert.Equal(2, strictRes.Value.MissingContentSpecs.Count);
+        Assert.Contains(strictRes.Value.MissingContentSpecs, m => m.SpecId == "s3");
+        Assert.Contains(strictRes.Value.MissingContentSpecs, m => m.SpecId == "s5");
+
+        var strictMd = strictRes.Value.Files.Values.Single();
+        Assert.DoesNotContain(":::mcq{image=\"assets/ecg.png\"}\n:::mcq", strictMd);
+        Assert.Contains(":::mcq{multi=true image=\"assets/ecg.png\"}", strictMd);
+        Assert.Contains(":::mcq{image=\"assets/custom.png\"}", strictMd);
+        Assert.DoesNotContain(":::mcq{image=\"assets/blank_body.png\"}\n:::", strictMd);
+        Assert.Contains(":::flashcard{image=\"assets/valve.png\"}\n:::front\nIdentify structure\n:::back\nMitral valve\n:::", strictMd);
+        Assert.DoesNotContain(":::front{image=", strictMd);
+
+        var phRes = WorkspaceMarkdownAssembler.Assemble(draft, new Dictionary<string, string>(), allowPlaceholders: true);
+        Assert.True(phRes.IsSuccess);
+        Assert.Empty(phRes.Value.MissingContentSpecs);
+        Assert.Contains("s3", phRes.Value.PlaceholderSpecsUsed);
+        Assert.Contains("s5", phRes.Value.PlaceholderSpecsUsed);
+
+        var phMd = phRes.Value.Files.Values.Single();
+        Assert.Contains(":::mcq{image=\"assets/blank_body.png\"}", phMd);
+        Assert.DoesNotContain(":::mcq{image=\"assets/blank_body.png\"}\n:::", phMd);
+        Assert.Contains("assets/blank_body.png", phRes.Value.ReferencedAssetPaths);
+        Assert.Contains(":::numeric{", phMd);
+        Assert.Contains("answer=", phMd);
+        Assert.Contains("image=\"assets/graph.png\"", phMd);
+
+        var readiness = PromptComposer.Compose(draft with { WorkflowMode = WorkflowMode.Direct }, SpecCatalogDefaults.BuiltInFallbackCatalog);
+        Assert.Contains("3 filled, 2 empty", readiness.Markdown);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

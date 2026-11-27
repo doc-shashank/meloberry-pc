@@ -27,7 +27,7 @@
         <span class="step-connector" data-step-connector="0" aria-hidden="true"></span>
         <button type="button" class="step-node" data-view="format" id="stepFormat">
           <span class="step-dot-wrap" aria-hidden="true"><span class="step-dot"></span></span>
-          <span class="step-label">Format</span>
+          <span class="step-label">Details</span>
         </button>
         <span class="step-connector" data-step-connector="1" aria-hidden="true"></span>
         <button type="button" class="step-node" data-view="organize" id="stepOrganize">
@@ -37,7 +37,7 @@
         <span class="step-connector" data-step-connector="2" aria-hidden="true"></span>
         <button type="button" class="step-node" data-view="review" id="stepReview">
           <span class="step-dot-wrap" aria-hidden="true"><span class="step-dot"></span></span>
-          <span class="step-label">Review</span>
+          <span class="step-label">Finalize</span>
         </button>
         <span class="step-connector" data-step-connector="3" aria-hidden="true"></span>
         <button type="button" class="step-node" data-view="viewer" id="stepViewer">
@@ -220,17 +220,17 @@
           </div>
         </main>
 
-        <!-- Step 2: Format -->
+        <!-- Step 2: Project Details (Zero-Mode) -->
         <main id="viewFormat" class="view-panel">
           <div class="step-centered-grid">
             <header class="step-hero">
-              <h1 class="step-hero-title">Suit Yourself</h1>
-              <p class="step-hero-sub">Choose your container type and authoring format, then add study notes and reference attachments.</p>
+              <h1 class="step-hero-title">Project Details</h1>
+              <p class="step-hero-sub">Set your study module container, title, and optional reference files or study notes.</p>
             </header>
 
             <section class="card">
               <div class="card-head">
-                <h3>Container &amp; Format</h3>
+                <h3>Module Info</h3>
                 <div class="segmented segmented-inline" id="containerTabs">
                   <button class="seg-btn active" data-container="session">Session</button>
                   <button class="seg-btn" data-container="standaloneArticle">Article</button>
@@ -239,66 +239,27 @@
               </div>
 
               <div class="form-grid">
-                <label id="formatTitleField" class="field field-span2">
+                <label class="field field-span2">
                   <span>Title</span>
                   <input id="promptTitle" type="text" class="input" placeholder="e.g., Chapter 2: Action Potentials" />
                 </label>
-                <label id="formatAuthoringField" class="field hidden">
-                  <span>Format</span>
-                  <select id="promptFormat" class="select select-h30 full-width">
-                    <option value="markdownDirectory">Markdown Directory</option>
-                    <option value="singleMarkdown">Single Markdown</option>
-                    <option value="json">Strict JSON</option>
-                  </select>
-                </label>
                 <label class="field field-span2">
                   <span>Description</span>
-                  <input id="promptDescription" type="text" class="input" placeholder="Scope or focus..." />
+                  <input id="promptDescription" type="text" class="input" placeholder="Optional scope or focus..." />
                 </label>
-              </div>
-
-              <div class="wf-mode-section">
-                <div class="wf-mode-header">
-                  <span class="muted" style="font-weight:700;">Authoring Workflow Mode</span>
-                  <span id="workflowModeHint" class="wf-mode-hint">Direct authoring: fill spec contents directly in Organize and build with zero prompt overhead.</span>
-                </div>
-                <div class="wf-mode-cards" id="workflowModeCards" role="radiogroup" aria-label="Authoring Workflow Mode">
-                  <button class="wf-mode-card active" type="button" data-wf-mode="direct" aria-pressed="true">
-                    <div class="wf-mode-card-head">
-                      <span class="wf-mode-card-title">Direct</span>
-                      <span class="pill pill-accent">Author Yourself</span>
-                    </div>
-                    <div class="wf-mode-card-desc">Fill specs &amp; extract PDF figures in Organize, then compile directly with zero prompt overhead.</div>
-                  </button>
-                  <button class="wf-mode-card" type="button" data-wf-mode="liveAgent" aria-pressed="false">
-                    <div class="wf-mode-card-head">
-                      <span class="wf-mode-card-title">Live Agent</span>
-                      <span class="pill">AI Drives App</span>
-                    </div>
-                    <div class="wf-mode-card-desc">Hand off to an AI coding agent in your workspace so it edits Organize &amp; builds live via <code>mby-pc.bat</code>.</div>
-                  </button>
-                  <button class="wf-mode-card" type="button" data-wf-mode="classicPrompt" aria-pressed="false">
-                    <div class="wf-mode-card-head">
-                      <span class="wf-mode-card-title">Classic Prompt</span>
-                      <span class="pill">One-Shot</span>
-                    </div>
-                    <div class="wf-mode-card-desc">Compose a full standalone prompt &amp; <code>AGENTS.md</code> playbook for copy-paste into any AI chat.</div>
-                  </button>
-                </div>
               </div>
             </section>
 
             <section id="formatNotesCard" class="card notes-card">
               <div class="card-head">
-                <div class="row gap-8 wrap">
-                  <h3 id="formatNotesHeading">Reference PDFs &amp; Files</h3>
-                  <span id="liveAgentShimBadge" class="pill pill-ok hidden">mby-pc.bat live bridge</span>
-                </div>
-                <button id="btnAttachPromptFiles" class="btn btn-h30 btn-ghost">+ Attach PDF / File</button>
+                <h3>Reference Files &amp; Study Notes <span class="muted">(Optional)</span></h3>
+                <button id="btnAttachPromptFiles" class="btn btn-h30 btn-ghost">+ Attach Files / PDFs</button>
               </div>
-              <div id="formatNotesHint" class="muted mb-8">Attach reference PDFs here so <code>melomg</code> can extract figures directly in Organize.</div>
-              <textarea id="promptSourceText" class="textarea fixed-textarea hidden" rows="8" placeholder="Paste study text or instructions..."></textarea>
               <div id="promptAttachmentsList" class="chip-row hidden"></div>
+              <details id="studyNotesDisclosure" class="notes-disclosure mt-8">
+                <summary class="notes-disclosure-summary">Add raw study notes or AI instructions</summary>
+                <textarea id="promptSourceText" class="textarea fixed-textarea mt-8" rows="7" placeholder="Paste source notes, lecture highlights, or instructions..."></textarea>
+              </details>
             </section>
           </div>
         </main>
@@ -347,24 +308,32 @@
           </div>
         </main>
 
-        <!-- Step 4: Review -->
+        <!-- Step 4: Finalize (Two-Tab Hub) -->
         <main id="viewReview" class="view-panel">
           <div class="step-centered-grid review-grid">
-            <header class="step-hero">
-              <h1 class="step-hero-title">Review and Finalize</h1>
-              <p class="step-hero-sub">Inspect the composed prompt, ready your workspace AGENTS.md, scaffold templates, or copy for your AI agent.</p>
-            </header>
+            <div class="step-hero-row">
+              <header class="step-hero">
+                <h1 class="step-hero-title">Finalize &amp; Build</h1>
+                <p id="reviewHeroSub" class="step-hero-sub">Verify every spec is filled and compile your offline WebApp, or hand off to an AI agent.</p>
+              </header>
+              <div class="segmented segmented-inline" id="finalizeDestinationTabs" role="tablist">
+                <button class="seg-btn active" type="button" role="tab" data-finalize-tab="direct" aria-selected="true">Build Directly</button>
+                <button class="seg-btn" type="button" role="tab" data-finalize-tab="ai" aria-selected="false">Hand Off to AI</button>
+              </div>
+            </div>
 
             <section class="card review-actions-bar">
-              <div class="row gap-8 wrap">
-                <div id="finalizeCtaGroup" class="finalize-cta-group">
-                  <button id="btnFinalizeWebApp" class="btn btn-h32 btn-primary btn-finalize" type="button">Finalize &amp; Build WebApp</button>
-                  <label id="chkAllowPlaceholdersWrap" class="check-label"><input id="chkAllowPlaceholders" type="checkbox" /> Allow Placeholders</label>
-                </div>
+              <!-- Tab 1: Build Directly controls -->
+              <div id="directActionsGroup" class="row gap-8 wrap">
+                <button id="btnFinalizeWebApp" class="btn btn-h32 btn-primary btn-finalize" type="button">Finalize &amp; Build WebApp</button>
+                <label id="chkAllowPlaceholdersWrap" class="check-label"><input id="chkAllowPlaceholders" type="checkbox" /> Allow Placeholders</label>
+              </div>
 
-                <button id="btnCopyLiveHandoff" class="btn btn-h32 btn-primary hidden" type="button">
+              <!-- Tab 2: Hand Off to AI controls -->
+              <div id="aiActionsGroup" class="row gap-8 wrap hidden">
+                <button id="btnCopyLiveHandoff" class="btn btn-h32 btn-primary" type="button">
                   <span class="icon-slot" data-icon="ui/copy"></span>
-                  <span>Copy Live Handoff Prompt</span>
+                  <span id="btnCopyHandoffLabel">Copy Handoff Prompt</span>
                 </button>
 
                 <div class="menu-wrap" id="readyWsMenuWrap">
@@ -377,20 +346,6 @@
                     <button id="optReadyWsChoose" class="dropdown-item" type="button">
                       <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/folder-open"></span><span>Choose...</span></span>
                       <small>Pick a subfolder inside Active Workspace</small>
-                    </button>
-                  </div>
-                </div>
-
-                <div class="menu-wrap" id="actionsMenuWrap">
-                  <button id="btnWorkspaceActions" class="btn btn-h32 btn-accent-soft" type="button">Actions &#9662;</button>
-                  <div id="actionsMenu" class="dropdown-menu dropdown-menu-left hidden">
-                    <button id="optExportRawJson" class="dropdown-item" type="button">
-                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/code"></span><span>Export Raw Session JSON</span></span>
-                      <small>Strict mby JSON blueprint (requires non-empty Qty)</small>
-                    </button>
-                    <button id="optGenerateTemplate" class="dropdown-item" type="button">
-                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/wand"></span><span>Generate Template...</span></span>
-                      <small>Export raw JSON &amp; run mby apply to create draft session</small>
                     </button>
                   </div>
                 </div>
@@ -412,21 +367,44 @@
                     </button>
                   </div>
                 </div>
+
+                <button id="btnBuildNowSecondary" class="btn btn-h32 btn-ghost" type="button" title="Compile current draft into WebApp">Build Now</button>
               </div>
-              <div class="muted" id="promptMetrics">0/0 specs filled</div>
+
+              <!-- Shared Utilities (Right side) -->
+              <div class="row gap-8 wrap">
+                <div class="menu-wrap" id="actionsMenuWrap">
+                  <button id="btnWorkspaceActions" class="btn btn-h30 btn-ghost" type="button">Export &#9662;</button>
+                  <div id="actionsMenu" class="dropdown-menu hidden">
+                    <button id="optExportRawJson" class="dropdown-item" type="button">
+                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/code"></span><span>Export Raw Session JSON</span></span>
+                      <small>Strict mby JSON blueprint</small>
+                    </button>
+                    <button id="optGenerateTemplate" class="dropdown-item" type="button">
+                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/wand"></span><span>Generate Template...</span></span>
+                      <small>Export raw JSON &amp; run mby apply</small>
+                    </button>
+                  </div>
+                </div>
+                <div class="muted" id="promptMetrics">0/0 specs filled</div>
+              </div>
             </section>
 
             <section class="card preview-card review-preview-card">
               <div class="card-head">
                 <div class="row gap-10 wrap">
                   <h3 id="reviewPreviewHeading">Build Readiness</h3>
-                  <div class="segmented segmented-inline" id="reviewWorkflowModeTabs">
-                    <button class="seg-btn active" type="button" data-wf-mode="direct">Direct</button>
-                    <button class="seg-btn" type="button" data-wf-mode="liveAgent">Live Agent</button>
-                    <button class="seg-btn" type="button" data-wf-mode="classicPrompt">Classic Prompt</button>
+                  <div class="segmented segmented-inline hidden" id="aiHandoffStyleTabs">
+                    <button class="seg-btn active" type="button" data-ai-style="liveAgent">Live Agent (mby-pc.bat)</button>
+                    <button class="seg-btn" type="button" data-ai-style="classicPrompt">One-Shot Prompt</button>
                   </div>
+                  <select id="promptFormat" class="select select-h30 hidden" aria-label="One-Shot Output Format">
+                    <option value="markdownDirectory">Markdown Directory</option>
+                    <option value="singleMarkdown">Single Markdown</option>
+                    <option value="json">Strict JSON</option>
+                  </select>
                 </div>
-                <label id="chkUseMelomgWrap" class="check-label"><input id="chkUseMelomg" type="checkbox" checked /> <code>melomg</code> PDF guidance</label>
+                <label id="chkUseMelomgWrap" class="check-label hidden"><input id="chkUseMelomg" type="checkbox" checked /> <code>melomg</code> PDF guidance</label>
               </div>
               <div id="liveAgentHandoffBanner" class="live-handoff-banner hidden">
                 <span><strong>1.</strong> Copy prompt</span>
@@ -637,7 +615,10 @@
           <h3 id="specContentModalTitle">Edit Spec Content</h3>
           <span id="specContentTopicBadge" class="pill pill-accent"></span>
         </div>
-        <button id="btnCloseSpecContentModal" class="btn btn-xs btn-ghost" type="button">Close</button>
+        <div class="row gap-6">
+          <button id="btnToggleSpecSyntax" class="btn btn-xs btn-ghost hidden" type="button" aria-expanded="false">? Syntax</button>
+          <button id="btnCloseSpecContentModal" class="btn btn-xs btn-ghost" type="button">Close</button>
+        </div>
       </div>
       <div class="modal-body spec-content-modal-body">
         <div class="row-between wrap gap-8">
@@ -685,16 +666,16 @@
           <p class="muted" style="margin:6px 0 0;">If the file does not start with <code>:::</code>, Finalize smart-wraps it for this spec automatically.</p>
         </div>
 
-        <div id="specMelomgExtractor" class="melomg-extractor-box hidden">
-          <div class="row-between wrap gap-8">
-            <strong>Extract Figure via <code>melomg</code></strong>
+        <details id="specMelomgDetails" class="melomg-extractor-box hidden">
+          <summary class="melomg-details-summary">
+            <span>Extract Figure from PDF via <code>melomg</code></span>
             <span id="specMelomgStatus" class="muted"></span>
-          </div>
-          <div id="specMelomgMissing" class="row-between wrap gap-8 hidden">
+          </summary>
+          <div id="specMelomgMissing" class="row-between wrap gap-8 hidden mt-8">
             <span class="muted"><code>melomg</code> CLI is not installed yet. Install it in Setup or attach a local image path manually.</span>
             <button id="btnSpecMelomgGoSetup" class="btn btn-xs btn-primary" type="button">Install in Setup</button>
           </div>
-          <div id="specMelomgControls">
+          <div id="specMelomgControls" class="mt-8">
             <div class="melomg-extractor-grid">
               <label class="field">
                 <span>Source PDF</span>
@@ -728,7 +709,7 @@
               </div>
             </div>
           </div>
-        </div>
+        </details>
       </div>
       <div class="modal-foot">
         <button id="btnClearSpecContent" class="btn btn-h30 btn-danger-ghost" type="button">Clear Content</button>

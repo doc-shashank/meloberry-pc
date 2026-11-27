@@ -30,16 +30,16 @@ function syncStagedCopyBarVisibility() {
 
 export function loadWorkspaceDraftState() {
   const aws = state.settings.activeWorkspace;
-  const customInstalled = new Set(
+  const customPending = new Set(
     state.apps
-      .filter(a => a.isInstalled && a.kind === "customExecutable")
+      .filter(a => a.isInstalled && a.kind === "customExecutable" && !a.isPresentInWorkspace)
       .map(a => a.fileName)
   );
 
   if (aws && aws.workspacePath) {
     document.getElementById("setupWsPath").value = aws.workspacePath;
     state.selectedAppNames = new Set(
-      (aws.selectedAppFileNames || []).filter(n => customInstalled.has(n))
+      (aws.selectedAppFileNames || []).filter(n => customPending.has(n))
     );
     state.stagedItems = [...(aws.stagedItems || [])];
   } else {
@@ -132,8 +132,8 @@ export function renderAppsCart() {
   state.apps.forEach(app => {
     const isManagedCli = app.kind === "mby" || app.kind === "melomg";
     const card = document.createElement("div");
-    const checked = isManagedCli ? app.isInstalled : state.selectedAppNames.has(app.fileName);
-    card.className = `app-card ${checked ? "selected" : ""}`;
+    const checked = !isManagedCli && state.selectedAppNames.has(app.fileName);
+    card.className = `app-card${isManagedCli ? " app-card-central" : ""}${checked ? " selected" : ""}`;
 
     const top = document.createElement("div");
     top.className = "app-card-top";

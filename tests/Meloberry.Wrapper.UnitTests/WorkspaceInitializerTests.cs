@@ -461,6 +461,70 @@ public sealed class WorkspaceInitializerTests : IDisposable
         Assert.Equal("assets/scan.bmp", doc.RootElement.GetProperty("relativePath").GetString());
     }
 
+    [Fact]
+    public async Task ImportWorkspaceAssetHandler_SanitizesSpacesAndParens_AndPreservesInWorkspacePaths()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data_import_san"));
+        var ws = Path.Combine(_tempRoot, "ws_import_san");
+        var externalDir = Path.Combine(_tempRoot, "external_san");
+        Directory.CreateDirectory(ws);
+        Directory.CreateDirectory(externalDir);
+
+        var extImg = Path.Combine(externalDir, "Figure 1 (final).png");
+        await File.WriteAllBytesAsync(extImg, [0x89, 0x50, 0x4E, 0x47]);
+
+        var inWsDir = Path.Combine(ws, "figs");
+        Directory.CreateDirectory(inWsDir);
+        var inWsImg = Path.Combine(inWsDir, "My Local (2).png");
+        await File.WriteAllBytesAsync(inWsImg, [0x89, 0x50, 0x4E, 0x47]);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+        var handler = new ImportWorkspaceAssetHandler(settingsStore, new AtomicFileWriter());
+
+        var extRes = await handler.ImportAsync(ws, extImg, "image");
+        Assert.True(extRes.IsSuccess);
+        Assert.True(extRes.Value.Copied);
+        Assert.Equal("assets/Figure_1_final.png", extRes.Value.RelativePath);
+        Assert.True(File.Exists(Path.Combine(ws, "assets", "Figure_1_final.png")));
+
+        var inRes = await handler.ImportAsync(ws, inWsImg, "image");
+        Assert.True(inRes.IsSuccess);
+        Assert.False(inRes.Value.Copied);
+        Assert.Equal("figs/My Local (2).png", inRes.Value.RelativePath);
+    }
+
+    [Fact]
+    public async Task WorkspaceSetupHandler_InitializeAndReselect_ClearsSelectedAppFileNames()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data_setup_clear"));
+        Directory.CreateDirectory(paths.AppsDirectory);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "custom-tool.exe"), [(byte)'M', (byte)'Z', 0x90, 0x01]);
+
+        var ws = Path.Combine(_tempRoot, "ws_setup_clear");
+        Directory.CreateDirectory(ws);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        var appsStore = new ManagedAppsStore(paths);
+        var initializer = new WorkspaceInitializer(paths, new WebAppAnalysisStore(), new WorkspaceShimWriter());
+        var handler = new WorkspaceSetupHandler(initializer, appsStore, settingsStore, new WorkspaceDirectoryBrowser());
+
+        var res = await handler.InitializeWorkspaceAsync(ws, ["custom-tool.exe"], [], ConflictPolicy.SkipExisting);
+        Assert.True(res.IsSuccess);
+        Assert.Empty(res.Value.State.SelectedAppFileNames ?? []);
+
+        var persisted = await settingsStore.LoadAsync();
+        Assert.NotNull(persisted.ActiveWorkspace);
+        Assert.Empty(persisted.ActiveWorkspace!.SelectedAppFileNames ?? []);
+
+        var wsOther = Path.Combine(_tempRoot, "ws_setup_clear_other");
+        Directory.CreateDirectory(wsOther);
+        Assert.True((await handler.SelectWorkspaceAsync(wsOther)).IsSuccess);
+        var reselected = await handler.SelectWorkspaceAsync(ws);
+        Assert.True(reselected.IsSuccess);
+        Assert.Empty(reselected.Value.SelectedAppFileNames ?? []);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

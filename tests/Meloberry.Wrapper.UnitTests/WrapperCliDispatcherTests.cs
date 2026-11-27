@@ -1,10 +1,12 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Meloberry.Wrapper.Application;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Application.UseCases;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Infrastructure;
 using Meloberry.Wrapper.Infrastructure.Cli;
 using Meloberry.Wrapper.Infrastructure.Persistence;
 using Meloberry.Wrapper.Infrastructure.Server;
@@ -214,6 +216,171 @@ public sealed class WrapperCliDispatcherTests : IDisposable
         Assert.Contains(snapshot, p => p.GetProperty("action").GetString() == "activity" && p.GetProperty("state").GetString() == "running");
         Assert.Contains(snapshot, p => p.GetProperty("action").GetString() == "activity" && p.GetProperty("state").GetString() == "done" && p.GetProperty("exitCode").GetInt32() == 0);
         Assert.Contains(snapshot, p => p.GetProperty("action").GetString() == "activity" && p.GetProperty("state").GetString() == "error" && p.GetProperty("exitCode").GetInt32() == 2);
+    }
+
+    [Fact]
+    public async Task WrapperCliDispatcher_PreservesFlagValues_AllowsFinalizeSwitchWithJson_AndPrintsHumanTextWhenGuiRunning()
+    {
+        var dataDir = Path.Combine(_tempRoot, "cli_flags_data");
+        var ws = Path.Combine(_tempRoot, "cli_flags_ws");
+        Directory.CreateDirectory(ws);
+
+        using var provider = BuildFullServerProvider(dataDir);
+        var settingsStore = provider.GetRequiredService<ISettingsStore>();
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+
+        var dispatcher = provider.GetRequiredService<WrapperCliDispatcher>();
+
+        var cTitle = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(
+            ["--cli", "--workspace", ws, "draft", "patch", "--title", "--json", "--desc", "--launch"],
+            cTitle));
+
+        var draftStore = provider.GetRequiredService<IWorkspaceDraftStore>();
+        var patched = await draftStore.LoadAsync(ws);
+        Assert.Equal("--json", patched.Title);
+        Assert.Equal("--launch", patched.Description);
+        Assert.DoesNotContain("\"success\"", cTitle.StdOut);
+
+        var cAddComp = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "comp", "add", "article", "--title", "Notes", "--json"], cAddComp));
+        var compId = JsonDocument.Parse(cAddComp.StdOut).RootElement.GetProperty("data").GetProperty("targetComponentId").GetString()!;
+
+        var cAddSpec = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "spec", "add", compId, "text", "--json"], cAddSpec));
+        var specId = JsonDocument.Parse(cAddSpec.StdOut).RootElement.GetProperty("data").GetProperty("targetSpecId").GetString()!;
+
+        var cRaw = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(
+            ["--cli", "--workspace", ws, "draft", "spec", "set-content", specId, "--raw", "--workspace"],
+            cRaw));
+
+        var afterRaw = await draftStore.LoadAsync(ws);
+        var spec = afterRaw.Components!.Single(c => c.Id == compId).OrderedItems!.Single(s => s.Id == specId);
+        Assert.Equal("--workspace", spec.Content!.RawText);
+
+        var server = provider.GetRequiredService<LocalHttpWrapperServer>();
+        var ipc = provider.GetRequiredService<IRuntimeIpcRegistry>();
+        server.Start();
+        try
+        {
+            await ipc.WriteCurrentAsync(server.Port, server.ViewerPort, server.AuthToken);
+            var cLiveText = new CaptureConsole();
+            Assert.Equal(0, await dispatcher.RunAsync(
+                ["--cli", "--workspace", ws, "draft", "patch", "--title", "Live Human Output"],
+                cLiveText));
+
+            var textOut = cLiveText.StdOut.Trim();
+            Assert.False(textOut.StartsWith('{'), $"Expected human summary text, got raw JSON: {textOut}");
+            Assert.Contains("Updated draft metadata", textOut);
+
+            var cUiView = new CaptureConsole();
+            Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "ui", "view", "organize"], cUiView));
+            Assert.False(cUiView.StdOut.Trim().StartsWith('{'), $"Expected human summary for ui view, got: {cUiView.StdOut}");
+
+            var cFinJson = new CaptureConsole();
+            var finExit = await dispatcher.RunAsync(["--cli", "--workspace", ws, "finalize", "--allow-placeholders", "--json"], cFinJson);
+            Assert.NotEqual(0, finExit);
+            using (var errDoc = JsonDocument.Parse(cFinJson.StdErr))
+            {
+                Assert.False(errDoc.RootElement.GetProperty("success").GetBoolean());
+                Assert.Equal("Cli.NotFound", errDoc.RootElement.GetProperty("error").GetProperty("code").GetString());
+            }
+
+            var cPatchPh = new CaptureConsole();
+            Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "patch", "--allow-placeholders", "true", "--json"], cPatchPh));
+            using (var patchDoc = JsonDocument.Parse(cPatchPh.StdOut))
+            {
+                Assert.True(patchDoc.RootElement.GetProperty("success").GetBoolean());
+                Assert.True(patchDoc.RootElement.GetProperty("data").GetProperty("draft").GetProperty("allowPlaceholdersOnFinalize").GetBoolean());
+            }
+        }
+        finally
+        {
+            ipc.CleanupCurrent();
+            await server.DisposeAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData("details", "format")]
+    [InlineData("project", "format")]
+    [InlineData("finalize", "review")]
+    [InlineData("format", "format")]
+    [InlineData("review", "review")]
+    public async Task WrapperCliDispatcher_MapsUiViewAliases_AndBroadcastsCanonicalView(string cliArg, string expectedCanonicalView)
+    {
+        var dataDir = Path.Combine(_tempRoot, $"cli_alias_{cliArg}");
+        var ws = Path.Combine(_tempRoot, $"ws_alias_{cliArg}");
+        Directory.CreateDirectory(ws);
+
+        using var provider = BuildFullServerProvider(dataDir);
+        var settingsStore = provider.GetRequiredService<ISettingsStore>();
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+
+        var server = provider.GetRequiredService<LocalHttpWrapperServer>();
+        var sseHub = provider.GetRequiredService<SseEventHub>();
+        var ipc = provider.GetRequiredService<IRuntimeIpcRegistry>();
+        var dispatcher = provider.GetRequiredService<WrapperCliDispatcher>();
+
+        server.Start();
+        try
+        {
+            await ipc.WriteCurrentAsync(server.Port, server.ViewerPort, server.AuthToken);
+
+            using var sseCts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+            using var sseClient = new HttpClient { BaseAddress = new Uri(server.BaseUrl), Timeout = Timeout.InfiniteTimeSpan };
+            using var sseResp = await sseClient.GetAsync($"/api/events?token={server.AuthToken}", HttpCompletionOption.ResponseHeadersRead, sseCts.Token);
+            Assert.Equal(HttpStatusCode.OK, sseResp.StatusCode);
+
+            var received = new List<string>();
+            var readerTask = Task.Run(async () =>
+            {
+                using var sr = new StreamReader(await sseResp.Content.ReadAsStreamAsync(sseCts.Token));
+                while (!sseCts.IsCancellationRequested)
+                {
+                    var line = await sr.ReadLineAsync(sseCts.Token);
+                    if (line is null) break;
+                    if (line.Length > 0) received.Add(line);
+                }
+            }, sseCts.Token);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (sseHub.SubscriberCount == 0 && sw.ElapsedMilliseconds < 1500)
+            {
+                await Task.Delay(20);
+            }
+
+            var con = new CaptureConsole();
+            var exitCode = await dispatcher.RunAsync(["--cli", "--workspace", ws, "ui", "view", cliArg, "--json"], con);
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(con.StdOut);
+            Assert.Equal(expectedCanonicalView, doc.RootElement.GetProperty("data").GetProperty("view").GetString());
+
+            await Task.Delay(120);
+            sseCts.Cancel();
+            try { await readerTask; } catch (OperationCanceledException) { }
+
+            var joined = string.Join("\n", received);
+            Assert.Contains("event: view-requested", joined);
+            Assert.Contains($"\"view\":\"{expectedCanonicalView}\"", joined);
+        }
+        finally
+        {
+            ipc.CleanupCurrent();
+            await server.DisposeAsync();
+        }
+    }
+
+    private static ServiceProvider BuildFullServerProvider(string dataDir)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IAppShutdownCoordinator>(new NoopShutdown());
+        services.AddSingleton<INativeDialogService>(new NoopDialogs());
+        services.AddSingleton<IExternalUrlLauncher>(new NoopLauncher());
+        services.AddWrapperApplication(typeof(LocalHttpWrapperServer).Assembly);
+        services.AddWrapperInfrastructure(dataDir);
+        return services.BuildServiceProvider();
     }
 
     private static ServiceProvider BuildTestServiceProvider(WrapperDataPaths paths)

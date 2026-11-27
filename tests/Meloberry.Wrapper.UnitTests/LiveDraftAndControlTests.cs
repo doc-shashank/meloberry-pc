@@ -256,6 +256,115 @@ public sealed class LiveDraftAndControlTests : IDisposable
         Assert.Equal(["patch-meta", "add-comp", "add-spec", "update-spec", "set-content"], observedOps);
     }
 
+    [Fact]
+    public async Task LiveDraftHandler_GetDraftAsync_PreservesPresetSubtypesOnFreshWorkspace()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data_subtypes"));
+        var ws = Path.Combine(_tempRoot, "ws_fresh");
+        Directory.CreateDirectory(ws);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+
+        var draftStore = new WorkspaceDraftStore();
+        var handler = new LiveDraftHandler(draftStore, settingsStore);
+
+        var res = await handler.GetDraftAsync(ws);
+        Assert.True(res.IsSuccess);
+
+        var article = res.Value.Draft.Components!.Single(c => c.Id == "a1");
+        var quiz = res.Value.Draft.Components!.Single(c => c.Id == "q1");
+
+        var callouts = article.OrderedItems!.Where(i => i.Topic == "callout").Select(i => i.Subtype).ToList();
+        Assert.Equal(["pearl", "clinical"], callouts);
+
+        var tables = article.OrderedItems!.Where(i => i.Topic == "table").Select(i => i.Subtype).ToList();
+        Assert.Equal(["hideableCols"], tables);
+
+        var mcqs = quiz.OrderedItems!.Where(i => i.Topic == "mcq").Select(i => i.Subtype).ToList();
+        Assert.Equal(5, mcqs.Count);
+        Assert.All(mcqs, s => Assert.Equal("mixed", s));
+
+        var flashcards = quiz.OrderedItems!.Where(i => i.Topic == "flashcard").Select(i => i.Subtype).ToList();
+        Assert.Equal(5, flashcards.Count);
+        Assert.All(flashcards, s => Assert.Equal("text", s));
+    }
+
+    [Fact]
+    public async Task LiveDraftHandler_SynthesizesFromEmptyOrderedItems_AndClearsStaleModeCounts()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data_empty_ordered"));
+        var ws = Path.Combine(_tempRoot, "ws_empty_ordered");
+        Directory.CreateDirectory(ws);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+        var draftStore = new WorkspaceDraftStore();
+        await draftStore.SaveAsync(ws, new PromptDraft(
+            Container: ContainerKind.StandaloneArticle,
+            Title: "Empty Ordered",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "a1",
+                    ComponentKind.Article,
+                    "Article",
+                    [new("callout", true, 1, ModeCounts: new Dictionary<string, int> { ["pearl"] = 1 })],
+                    [])
+            ]));
+
+        var handler = new LiveDraftHandler(draftStore, settingsStore);
+        var loaded = await handler.GetDraftAsync(ws);
+        Assert.True(loaded.IsSuccess);
+        var spec = Assert.Single(loaded.Value.Draft.Components!.Single().OrderedItems!);
+        Assert.Equal("pearl", spec.Subtype);
+
+        var cleared = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            Op: "update-spec",
+            TargetId: spec.Id,
+            Subtype: ""));
+        Assert.True(cleared.IsSuccess);
+        var updatedComp = cleared.Value.Draft.Components!.Single();
+        Assert.Null(updatedComp.OrderedItems!.Single().Subtype);
+        Assert.Null(updatedComp.Selections.Single(s => s.Topic == "callout").ModeCounts);
+    }
+
+    [Fact]
+    public async Task LiveDraftHandler_PatchMeta_TracksWorkflowModeExplicitlyChanged()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data_wf"));
+        var ws = Path.Combine(_tempRoot, "ws_wf");
+        Directory.CreateDirectory(ws);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+
+        var draftStore = new WorkspaceDraftStore();
+        var handler = new LiveDraftHandler(draftStore, settingsStore);
+
+        var events = new List<LiveDraftChangedEvent>();
+        handler.DraftChanged += evt => events.Add(evt);
+
+        var titlePatch = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            Op: "patch-meta",
+            Title: "New Title Only"));
+        Assert.True(titlePatch.IsSuccess);
+        Assert.Single(events);
+        Assert.False(events[0].WorkflowModeExplicitlyChanged);
+
+        var modePatch = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            Op: "patch-meta",
+            WorkflowMode: WorkflowMode.ClassicPrompt));
+        Assert.True(modePatch.IsSuccess);
+        Assert.Equal(2, events.Count);
+        Assert.True(events[1].WorkflowModeExplicitlyChanged);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

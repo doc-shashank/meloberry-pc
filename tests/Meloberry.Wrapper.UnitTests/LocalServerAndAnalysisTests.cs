@@ -357,7 +357,7 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
             Assert.Contains(viewId, html);
         }
 
-        foreach (var heading in new[] { "Setup Workspace", "Suit Yourself", "Decide the organization", "Review and Finalize" })
+        foreach (var heading in new[] { "Setup Workspace", "Project Details", "Decide the organization", "Finalize &amp; Build" })
         {
             Assert.Contains(heading, html);
         }
@@ -473,8 +473,9 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
             }
         }
 
-        Assert.True(visited.Count >= 16, $"Expected at least 16 ES modules in graph, found {visited.Count}.");
+        Assert.True(visited.Count >= 17, $"Expected at least 17 ES modules in graph, found {visited.Count}.");
         Assert.True(visited.ContainsKey("/shell/js/ui/workspaceTree.js"));
+        Assert.True(visited.ContainsKey("/shell/js/ui/nativeDrop.js"));
         Assert.False(visited.ContainsKey("/shell/js/views/prompt/numberWipe.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/organizeDrag.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/organizeFlip.js"));
@@ -640,11 +641,17 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.DoesNotContain("init-footer-card", html);
         Assert.Contains("id=\"btnCopyStagedItems\"", html);
         Assert.Contains("id=\"stagedCopyBar\"", html);
-        // Phase 5: 3-card workflow mode picker & Direct Readiness checklist
-        Assert.Contains("id=\"workflowModeCards\"", html);
+        // Option B: Zero-Mode Step 2 Details & Two-Tab Step 4 Finalize Hub
+        Assert.DoesNotContain("id=\"workflowModeCards\"", html);
+        Assert.Contains("id=\"studyNotesDisclosure\"", html);
+        Assert.Contains("id=\"finalizeDestinationTabs\"", html);
+        Assert.Contains("id=\"aiHandoffStyleTabs\"", html);
         Assert.Contains("id=\"directReadinessPanel\"", html);
         Assert.Contains("id=\"liveAgentHandoffBanner\"", html);
         Assert.Contains("id=\"btnCopyLiveHandoff\"", html);
+        // Phase 4: Collapsible ? Syntax & melomg <details> in spec modal
+        Assert.Contains("id=\"btnToggleSpecSyntax\"", html);
+        Assert.Contains("id=\"specMelomgDetails\"", html);
         // Phase 6: Dedicated Live Agent Activity popover
         Assert.Contains("id=\"agentActivityWrap\"", html);
         Assert.Contains("id=\"agentActivityPopover\"", html);
@@ -653,6 +660,10 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         var css = await http.GetStringAsync("/shell/shell.css");
         Assert.Contains(".row-between", css);
         Assert.Contains(".agent-activity-popover", css);
+        Assert.Contains(".app-card-central", css);
+        Assert.Contains(".notes-disclosure", css);
+        Assert.Contains(".org-spec-edit", css);
+        Assert.Contains(".inspector-ai-notes", css);
 
         var chromeJs = await http.GetStringAsync("/shell/js/ui/chrome.js");
         Assert.Contains("recordAgentActivity", chromeJs);
@@ -662,12 +673,210 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         var mainJs = await http.GetStringAsync("/shell/js/main.js");
         Assert.Contains("recordAgentActivity", mainJs);
         Assert.Contains("payload.op === \"patch-meta\"", mainJs);
-        Assert.Contains("/api/workspace/import-asset", mainJs);
         Assert.DoesNotContain("activeWorkspace.isInitialized", mainJs);
+
+        var nativeDropJs = await http.GetStringAsync("/shell/js/ui/nativeDrop.js");
+        Assert.Contains("/api/workspace/import-asset", nativeDropJs);
 
         var reviewJs = await http.GetStringAsync("/shell/js/views/prompt/review.js");
         Assert.Contains("renderDirectReadinessPanel", reviewJs);
-        Assert.Contains("flushLiveDraftSave", reviewJs);
+        Assert.Contains("ensureFreshComposedPrompt", reviewJs);
+    }
+
+    [Fact]
+    public async Task ShellHtmlAndCss_ImplementOptionB_StepperDetailsFinalizeModalAndSetupCards()
+    {
+        using var http = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
+        var html = await http.GetStringAsync("/");
+        var css = await http.GetStringAsync("/shell/shell.css");
+
+        Assert.Matches(new Regex(@"data-view=""setup""[^>]*>[\s\S]*?<span class=""step-label"">Setup</span>", RegexOptions.CultureInvariant), html);
+        Assert.Matches(new Regex(@"data-view=""format""[^>]*>[\s\S]*?<span class=""step-label"">Details</span>", RegexOptions.CultureInvariant), html);
+        Assert.Matches(new Regex(@"data-view=""organize""[^>]*>[\s\S]*?<span class=""step-label"">Organize</span>", RegexOptions.CultureInvariant), html);
+        Assert.Matches(new Regex(@"data-view=""review""[^>]*>[\s\S]*?<span class=""step-label"">Finalize</span>", RegexOptions.CultureInvariant), html);
+        Assert.Matches(new Regex(@"data-view=""viewer""[^>]*>[\s\S]*?<span class=""step-label"">Viewer</span>", RegexOptions.CultureInvariant), html);
+
+        Assert.DoesNotContain("id=\"workflowModeCards\"", html);
+        Assert.DoesNotContain("id=\"workflowModeHint\"", html);
+        Assert.DoesNotContain("id=\"reviewWorkflowModeTabs\"", html);
+
+        var formatStart = html.IndexOf("id=\"viewFormat\"", StringComparison.Ordinal);
+        var organizeStart = html.IndexOf("id=\"viewOrganize\"", StringComparison.Ordinal);
+        var reviewStart = html.IndexOf("id=\"viewReview\"", StringComparison.Ordinal);
+        var viewerStart = html.IndexOf("id=\"viewViewer\"", StringComparison.Ordinal);
+        Assert.True(formatStart > 0 && organizeStart > formatStart && reviewStart > organizeStart && viewerStart > reviewStart);
+
+        var formatSection = html[formatStart..organizeStart];
+        Assert.Contains("Project Details", formatSection);
+        Assert.Contains("id=\"studyNotesDisclosure\"", formatSection);
+        Assert.DoesNotContain("id=\"promptFormat\"", formatSection);
+
+        var reviewSection = html[reviewStart..viewerStart];
+        Assert.Contains("id=\"finalizeDestinationTabs\"", reviewSection);
+        Assert.Contains("id=\"directActionsGroup\"", reviewSection);
+        Assert.Contains("id=\"aiActionsGroup\"", reviewSection);
+        Assert.Contains("id=\"btnBuildNowSecondary\"", reviewSection);
+        Assert.Contains("id=\"aiHandoffStyleTabs\"", reviewSection);
+        Assert.Contains("id=\"promptFormat\"", reviewSection);
+
+        var modalStart = html.IndexOf("id=\"specContentModal\"", StringComparison.Ordinal);
+        Assert.True(modalStart > 0);
+        var modalHtml = html[modalStart..];
+        Assert.Contains("id=\"btnToggleSpecSyntax\"", modalHtml);
+        Assert.Contains("aria-expanded=\"false\"", modalHtml);
+        Assert.Contains("<details id=\"specMelomgDetails\"", modalHtml);
+        Assert.Contains("class=\"melomg-details-summary\"", modalHtml);
+        Assert.DoesNotContain("id=\"specMelomgExtractor\"", modalHtml);
+
+        Assert.Contains(".app-card-central", css);
+        Assert.Contains(".notes-disclosure", css);
+        Assert.Contains(".org-spec-edit", css);
+        Assert.Contains(".inspector-ai-notes", css);
+        Assert.Contains(".melomg-details-summary", css);
+        Assert.DoesNotContain(".wf-mode-cards", css);
+    }
+
+    [Fact]
+    public async Task LiveControlEndpoints_FinalizeFromUi_SkipsAgentActivity_TagsSourceUi_AndDedupsSignalBroadcast()
+    {
+        var dataDir = Path.Combine(_tempRoot, "fin_ui_data");
+        var ws = Path.Combine(_tempRoot, "fin_ui_ws");
+        Directory.CreateDirectory(ws);
+        await File.WriteAllTextAsync(Path.Combine(ws, "intro.md"), "# Hello\nBody");
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IAppShutdownCoordinator>(new NoopShutdown());
+        services.AddSingleton<INativeDialogService>(new NoopDialogs());
+        services.AddSingleton<IExternalUrlLauncher>(new NoopLauncher());
+        services.AddWrapperApplication(typeof(LocalHttpWrapperServer).Assembly);
+        services.AddWrapperInfrastructure(dataDir);
+        services.AddSingleton<IMbyCliClient>(new StubSignalEmittingBatchClient(ws));
+
+        await using var provider = services.BuildServiceProvider();
+        var paths = provider.GetRequiredService<IWrapperDataPaths>();
+        Directory.CreateDirectory(paths.AppsDirectory);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "mby-cli-2.1.2.exe"), [(byte)'M', (byte)'Z', 1]);
+
+        var settingsStore = provider.GetRequiredService<ISettingsStore>();
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+
+        var draftStore = provider.GetRequiredService<IWorkspaceDraftStore>();
+        await draftStore.SaveAsync(ws, new PromptDraft(
+            Container: ContainerKind.StandaloneArticle,
+            Title: "UI Finalize Dedup",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [new("text", true, 1)],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "a1",
+                    ComponentKind.Article,
+                    "Intro",
+                    [new("text", true, 1)],
+                    [new("s1", "text", 1, null, new SpecContentSource(SpecContentMode.MarkdownFile, null, "intro.md"))])
+            ]));
+
+        var server = provider.GetRequiredService<LocalHttpWrapperServer>();
+        var sseHub = provider.GetRequiredService<SseEventHub>();
+        server.Start();
+        try
+        {
+            using var sseCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var sseClient = new HttpClient { BaseAddress = new Uri(server.BaseUrl), Timeout = Timeout.InfiniteTimeSpan };
+            using var sseResp = await sseClient.GetAsync($"/api/events?token={server.AuthToken}", HttpCompletionOption.ResponseHeadersRead, sseCts.Token);
+            Assert.Equal(HttpStatusCode.OK, sseResp.StatusCode);
+
+            var received = new List<string>();
+            var readerTask = Task.Run(async () =>
+            {
+                using var sr = new StreamReader(await sseResp.Content.ReadAsStreamAsync(sseCts.Token));
+                while (!sseCts.IsCancellationRequested)
+                {
+                    var line = await sr.ReadLineAsync(sseCts.Token);
+                    if (line is null) break;
+                    if (line.Length > 0) received.Add(line);
+                }
+            }, sseCts.Token);
+
+            var waitSw = System.Diagnostics.Stopwatch.StartNew();
+            while (sseHub.SubscriberCount == 0 && waitSw.ElapsedMilliseconds < 1500)
+            {
+                await Task.Delay(20);
+            }
+
+            using var apiClient = new HttpClient { BaseAddress = new Uri(server.BaseUrl) };
+            using (var selReq = new HttpRequestMessage(HttpMethod.Post, "/api/workspace/select")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new { path = ws }), Encoding.UTF8, "application/json")
+            })
+            {
+                selReq.Headers.Add("X-Mby-Token", server.AuthToken);
+                Assert.Equal(HttpStatusCode.OK, (await apiClient.SendAsync(selReq)).StatusCode);
+            }
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/api/live/finalize")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    workspacePath = ws,
+                    allowPlaceholders = false,
+                    verifyStaticOnly = true,
+                    source = "ui"
+                }), Encoding.UTF8, "application/json")
+            };
+            req.Headers.Add("X-Mby-Token", server.AuthToken);
+
+            var finResp = await apiClient.SendAsync(req);
+            var finJson = await finResp.Content.ReadAsStringAsync();
+            Assert.True(finResp.StatusCode == HttpStatusCode.OK, $"Expected 200 OK, got {(int)finResp.StatusCode}: {finJson}");
+            using var finDoc = JsonDocument.Parse(finJson);
+            var webAppDir = finDoc.RootElement.GetProperty("webAppDirectory").GetString()!;
+
+            await File.WriteAllTextAsync(
+                Path.Combine(ws, MbyCliSignal.SignalFileName),
+                $"version=1\nevent=webapp_built\nid=dup-after-1\npath={Path.GetFileName(webAppDir)}\ntitle=UI Finalize Dedup\n");
+
+            await Task.Delay(350);
+            sseCts.Cancel();
+            try { await readerTask; } catch (OperationCanceledException) { }
+
+            var joined = string.Join("\n", received);
+            Assert.DoesNotContain("event: agent-activity", joined);
+            Assert.Equal(1, received.Count(l => l == "event: webapp-built"));
+            Assert.Contains("\"source\":\"ui\"", joined);
+        }
+        finally
+        {
+            await server.DisposeAsync();
+        }
+    }
+
+    private sealed class StubSignalEmittingBatchClient(string ws) : IMbyCliClient
+    {
+        public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+
+        public async Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default)
+        {
+            var webDir = Path.Combine(ws, "ui_finalize_dedup_web");
+            Directory.CreateDirectory(webDir);
+            await File.WriteAllTextAsync(Path.Combine(webDir, "index.html"), "<html><body>ok</body></html>", ct);
+            await File.WriteAllTextAsync(Path.Combine(webDir, "app.js"), "console.log('ok');", ct);
+            await File.WriteAllTextAsync(
+                Path.Combine(ws, MbyCliSignal.SignalFileName),
+                "version=1\nevent=webapp_built\nid=dup-during-1\npath=ui_finalize_dedup_web\ntitle=UI Finalize Dedup\n",
+                ct);
+            await Task.Delay(120, ct);
+            return Result<MbyBatchExecutionResult>.Success(new MbyBatchExecutionResult("Session_UiFin1", webDir, 3));
+        }
     }
 
     public async Task DisposeAsync()

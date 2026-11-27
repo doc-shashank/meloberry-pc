@@ -253,7 +253,8 @@ public sealed record LiveDraftChangedEvent(
     string Summary,
     string? TargetComponentId = null,
     string? TargetSpecId = null,
-    string? Op = null);
+    string? Op = null,
+    bool WorkflowModeExplicitlyChanged = false);
 
 /// <summary>Surgical draft mutation command executed via GUI or `mby-pc.bat draft`.</summary>
 public sealed record LiveDraftMutationRequest(

@@ -184,6 +184,49 @@ export function openSpecInspectorPopover(anchorBtn, comp, inst, onMutated) {
     head.appendChild(doneBtn);
     pop.appendChild(head);
 
+    const contentSec = document.createElement("div");
+    contentSec.className = "inspector-section";
+    const c = liveInst.content;
+    const topicLower = (liveInst.topic || "").toLowerCase();
+    const hasImg = c?.mode === "imageFile" && Boolean(c.imagePath?.trim());
+    const imgNeedsBody = hasImg && topicLower !== "image" && !c.rawText?.trim();
+    const hasMd = c?.mode === "markdownFile" && Boolean(c.markdownFilePath?.trim());
+    const hasRaw = c?.mode === "rawText" && Boolean(c.rawText?.trim());
+    const hasAnyContent = (hasImg && !imgNeedsBody) || hasMd || hasRaw;
+    const cLabel = hasImg ? (imgNeedsBody ? "Image (needs body)" : "Image") : (hasMd ? ".md File" : (hasRaw ? "Raw Text" : "Empty"));
+    const cBar = document.createElement("div");
+    cBar.className = "inspector-content-bar";
+    cBar.innerHTML = `<span class="inspector-label" style="margin:0">Spec Content: <strong>${escapeHtml(cLabel)}</strong></span>`;
+    const cBtns = document.createElement("div");
+    cBtns.className = "row gap-6";
+
+    const editContentBtn = document.createElement("button");
+    editContentBtn.type = "button";
+    editContentBtn.className = "btn btn-xs btn-primary";
+    editContentBtn.textContent = hasAnyContent ? "Edit Content" : "Add Content";
+    editContentBtn.onclick = e => {
+      e.stopPropagation();
+      emit("spec:open-content-modal", { compId: comp.id, instId: liveInst.id, focusMelomg: false });
+    };
+    cBtns.appendChild(editContentBtn);
+
+    const imgTopics = new Set(["image", "diagram-explore", "relabel", "flashcard", "mcq", "spot-error", "numeric", "case"]);
+    if (imgTopics.has(topicLower)) {
+      const figBtn = document.createElement("button");
+      figBtn.type = "button";
+      figBtn.className = "btn btn-xs btn-ghost";
+      figBtn.textContent = "Extract Figure";
+      figBtn.onclick = e => {
+        e.stopPropagation();
+        emit("spec:open-content-modal", { compId: comp.id, instId: liveInst.id, focusMelomg: true });
+      };
+      cBtns.appendChild(figBtn);
+    }
+
+    cBar.appendChild(cBtns);
+    contentSec.appendChild(cBar);
+    pop.appendChild(contentSec);
+
     if (primaryGroup && primaryGroup.options.length > 0) {
       const sec = document.createElement("div");
       sec.className = "inspector-section";
@@ -253,13 +296,14 @@ export function openSpecInspectorPopover(anchorBtn, comp, inst, onMutated) {
       pop.appendChild(sec);
     });
 
-    const noteSec = document.createElement("div");
-    noteSec.className = "inspector-section";
-    noteSec.innerHTML = `<div class="inspector-label">Instructions for <code>${escapeHtml(liveInst.topic)}</code></div>`;
+    const noteDetails = document.createElement("details");
+    noteDetails.className = "inspector-section inspector-ai-notes";
+    if (sel.notes?.trim()) noteDetails.open = true;
+    noteDetails.innerHTML = '<summary class="inspector-label">AI Prompt Instructions (optional)</summary>';
     const ta = document.createElement("textarea");
-    ta.className = "textarea fixed-textarea";
+    ta.className = "textarea fixed-textarea mt-8";
     ta.rows = 3;
-    ta.placeholder = "Specific instructions for this spec...";
+    ta.placeholder = "Optional instructions when handing off to an AI agent...";
     ta.value = sel.notes || "";
     ta.oninput = e => {
       emit("prompt:preset-modified");
@@ -269,49 +313,8 @@ export function openSpecInspectorPopover(anchorBtn, comp, inst, onMutated) {
       if (dot) dot.classList.toggle("hidden", !sel.notes.trim());
       emit("prompt:schedule-preview", 120);
     };
-    noteSec.appendChild(ta);
-    pop.appendChild(noteSec);
-
-    const contentSec = document.createElement("div");
-    contentSec.className = "inspector-section";
-    const c = liveInst.content;
-    const hasImg = c?.mode === "imageFile" && Boolean(c.imagePath?.trim());
-    const hasMd = c?.mode === "markdownFile" && Boolean(c.markdownFilePath?.trim());
-    const hasRaw = c?.mode === "rawText" && Boolean(c.rawText?.trim());
-    const hasAnyContent = hasImg || hasMd || hasRaw;
-    const cLabel = hasImg ? "Image" : (hasMd ? ".md File" : (hasRaw ? "Raw Text" : "Empty"));
-    const cBar = document.createElement("div");
-    cBar.className = "inspector-content-bar";
-    cBar.innerHTML = `<span class="inspector-label" style="margin:0">Spec Content: <strong>${escapeHtml(cLabel)}</strong></span>`;
-    const cBtns = document.createElement("div");
-    cBtns.className = "row gap-6";
-
-    const editContentBtn = document.createElement("button");
-    editContentBtn.type = "button";
-    editContentBtn.className = "btn btn-xs btn-primary";
-    editContentBtn.textContent = hasAnyContent ? "Edit Content" : "Add Content";
-    editContentBtn.onclick = e => {
-      e.stopPropagation();
-      emit("spec:open-content-modal", { compId: comp.id, instId: liveInst.id, focusMelomg: false });
-    };
-    cBtns.appendChild(editContentBtn);
-
-    const imgTopics = new Set(["image", "diagram-explore", "relabel", "flashcard", "mcq", "spot-error", "numeric", "case"]);
-    if (imgTopics.has((liveInst.topic || "").toLowerCase())) {
-      const figBtn = document.createElement("button");
-      figBtn.type = "button";
-      figBtn.className = "btn btn-xs btn-ghost";
-      figBtn.textContent = "Extract Figure";
-      figBtn.onclick = e => {
-        e.stopPropagation();
-        emit("spec:open-content-modal", { compId: comp.id, instId: liveInst.id, focusMelomg: true });
-      };
-      cBtns.appendChild(figBtn);
-    }
-
-    cBar.appendChild(cBtns);
-    contentSec.appendChild(cBar);
-    pop.appendChild(contentSec);
+    noteDetails.appendChild(ta);
+    pop.appendChild(noteDetails);
 
     const foot = document.createElement("div");
     foot.className = "inspector-foot";

@@ -21,6 +21,13 @@ public sealed class WrapperCliDispatcher(
     LiveGuiIpcClient liveGui,
     ToolProxyRunner toolProxy)
 {
+    private static readonly HashSet<string> ValueTakingFlags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "--title", "--desc", "--target", "--container", "--format", "--mode",
+        "--subtype", "--qty", "--notes", "--modes",
+        "--image", "--caption", "--alt", "--file", "--raw", "--out", "-o"
+    };
+
     private const string PrimeGrammarText = """
         mby-pc.bat (Meloberry PC Workspace Shim & Live Control)
         Tool Proxy (uses %LOCALAPPDATA%\Meloberry\apps\ in caller CWD):
@@ -34,7 +41,7 @@ public sealed class WrapperCliDispatcher(
           .\mby-pc.bat draft spec add <compId> <topic> [--subtype S] [--qty N] | update <specId> [--subtype S] [--notes N] [--modes a,b] | rm <specId> | move <specId> <index>
           .\mby-pc.bat draft spec set-content <specId> [--raw TEXT | --file REL_MD_PATH | --image REL_IMG_PATH [--caption C] [--alt A] | --clear | -]
           .\mby-pc.bat finalize [--allow-placeholders] [--out DIR] [--json]
-          .\mby-pc.bat ui view <setup|format|organize|review|viewer> | viewer-open <webDir>
+          .\mby-pc.bat ui view <setup|details|format|organize|finalize|review|viewer> | viewer-open <webDir>
         """;
 
     public async Task<int> RunAsync(
@@ -73,6 +80,26 @@ public sealed class WrapperCliDispatcher(
                     commandArgs.Add(args[j]);
                 }
                 break;
+            }
+
+            if (ValueTakingFlags.Contains(token) && i + 1 < args.Length)
+            {
+                commandArgs.Add(token);
+                commandArgs.Add(args[++i]);
+                continue;
+            }
+
+            // --allow-placeholders takes an explicit bool value in `draft patch`, or acts as a switch in `finalize`.
+            if (string.Equals(token, "--allow-placeholders", StringComparison.OrdinalIgnoreCase))
+            {
+                commandArgs.Add(token);
+                if (i + 1 < args.Length &&
+                    (string.Equals(args[i + 1], "true", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(args[i + 1], "false", StringComparison.OrdinalIgnoreCase)))
+                {
+                    commandArgs.Add(args[++i]);
+                }
+                continue;
             }
 
             if (string.Equals(token, "--workspace", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
@@ -307,7 +334,7 @@ public sealed class WrapperCliDispatcher(
         var target = rest[1];
         var payload = action switch
         {
-            "view" => new LiveUiApiRequest("view", View: target),
+            "view" => new LiveUiApiRequest("view", View: NormalizeUiViewAlias(target)),
             "viewer-open" => new LiveUiApiRequest("viewer-open", Path: target),
             "activity" => new LiveUiApiRequest("activity", Message: target),
             _ => null
@@ -495,6 +522,13 @@ public sealed class WrapperCliDispatcher(
         return null;
     }
 
+    internal static string NormalizeUiViewAlias(string raw) => raw.Trim().ToLowerInvariant() switch
+    {
+        "details" or "project" => "format",
+        "finalize" => "review",
+        var other => other
+    };
+
     private static string ResolveWorkspaceRoot(string? explicitWs)
     {
         var candidate = !string.IsNullOrWhiteSpace(explicitWs) ? explicitWs : Environment.CurrentDirectory;
@@ -531,11 +565,63 @@ public sealed class WrapperCliDispatcher(
         {
             using var doc = JsonDocument.Parse(rawBody);
             await console.Out.WriteLineAsync(JsonSerializer.Serialize(new { success = true, data = doc.RootElement }, HttpEnvelope.JsonOptions)).ConfigureAwait(false);
+            return;
         }
-        else
+
+        try
         {
-            await console.Out.WriteLineAsync(rawBody).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(rawBody);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("summary", out var sum) && sum.ValueKind == JsonValueKind.String)
+            {
+                await console.Out.WriteLineAsync(sum.GetString()!).ConfigureAwait(false);
+                return;
+            }
+
+            if (root.TryGetProperty("workspaceId", out var wsId) && wsId.ValueKind == JsonValueKind.String)
+            {
+                var webDir = root.TryGetProperty("webAppDirectory", out var wd) && wd.ValueKind == JsonValueKind.String ? wd.GetString() : string.Empty;
+                await console.Out.WriteLineAsync($"Built {wsId.GetString()} -> {webDir}").ConfigureAwait(false);
+                return;
+            }
+
+            if (root.TryGetProperty("guiRunning", out var guiRun) && guiRun.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                var activeWs = root.TryGetProperty("activeWorkspace", out var aw) && aw.ValueKind == JsonValueKind.String ? aw.GetString() : string.Empty;
+                var mby = root.TryGetProperty("resolvedTools", out var rt) && rt.TryGetProperty("mby", out var mv) && mv.ValueKind == JsonValueKind.String ? mv.GetString() : "not installed";
+                var melomg = root.TryGetProperty("resolvedTools", out var rt2) && rt2.TryGetProperty("melomg", out var mlv) && mlv.ValueKind == JsonValueKind.String ? mlv.GetString() : "not installed";
+                await console.Out.WriteLineAsync($"GUI: {(guiRun.GetBoolean() ? "running" : "closed")} | Workspace: {activeWs} | mby: {mby} | melomg: {melomg}").ConfigureAwait(false);
+                return;
+            }
+
+            if (root.TryGetProperty("draft", out var draftEl) && draftEl.ValueKind == JsonValueKind.Object)
+            {
+                var title = draftEl.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : string.Empty;
+                await console.Out.WriteLineAsync($"Draft '{title}'").ConfigureAwait(false);
+                return;
+            }
+
+            if (root.TryGetProperty("view", out var viewEl) && viewEl.ValueKind == JsonValueKind.String)
+            {
+                await console.Out.WriteLineAsync($"Switched view to {viewEl.GetString()}").ConfigureAwait(false);
+                return;
+            }
+
+            if (root.TryGetProperty("url", out var urlEl) && urlEl.ValueKind == JsonValueKind.String)
+            {
+                await console.Out.WriteLineAsync($"Opened viewer: {urlEl.GetString()}").ConfigureAwait(false);
+                return;
+            }
+
+            if (root.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True)
+            {
+                await console.Out.WriteLineAsync("OK").ConfigureAwait(false);
+                return;
+            }
         }
+        catch { }
+
+        await console.Out.WriteLineAsync(rawBody).ConfigureAwait(false);
     }
 
     private static Task<int> WriteDomainResultAsync<T>(IWrapperConsole console, bool jsonMode, Result<T> res, string? summary)

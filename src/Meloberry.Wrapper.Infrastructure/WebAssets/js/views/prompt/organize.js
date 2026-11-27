@@ -138,16 +138,20 @@ function removeComponentWithAnimation(comp, cardEl) {
   emit("prompt:refresh");
 }
 
-export function getSpecContentBadge(content) {
+export function getSpecContentBadge(content, topic = "") {
   if (!content || !content.mode || content.mode === "none") return null;
   if (content.mode === "imageFile" && content.imagePath?.trim()) {
-    return { label: "Img", title: `Image: ${content.imagePath.trim()} — click to edit` };
+    const t = String(topic || "").trim().toLowerCase();
+    const needsBody = Boolean(t) && t !== "image" && !content.rawText?.trim();
+    return needsBody
+      ? { label: "Img*", complete: false, title: `Image: ${content.imagePath.trim()} — add directive body before finalizing` }
+      : { label: "Img", complete: true, title: `Image: ${content.imagePath.trim()} — click to edit` };
   }
   if (content.mode === "markdownFile" && content.markdownFilePath?.trim()) {
-    return { label: ".md", title: `Markdown file: ${content.markdownFilePath.trim()} — click to edit` };
+    return { label: ".md", complete: true, title: `Markdown file: ${content.markdownFilePath.trim()} — click to edit` };
   }
   if (content.mode === "rawText" && content.rawText?.trim()) {
-    return { label: "Raw", title: "Raw text content attached — click to edit" };
+    return { label: "Raw", complete: true, title: "Raw text content attached — click to edit" };
   }
   return null;
 }
@@ -190,7 +194,14 @@ function buildSpecTile(comp, inst, onMutated) {
 
   const actions = document.createElement("div");
   actions.className = "org-spec-tile-actions";
-  const badge = getSpecContentBadge(inst.content);
+  const openDirectModal = () => {
+    closeAllDropdowns();
+    materializeOrderedItems(comp);
+    const live = (comp.orderedItems || []).find(o => o.id === inst.id) || inst;
+    emit("spec:open-content-modal", { compId: comp.id, instId: live.id, focusMelomg: false });
+  };
+
+  const badge = getSpecContentBadge(inst.content, inst.topic);
   if (badge) {
     const cBadge = document.createElement("button");
     cBadge.type = "button";
@@ -200,8 +211,7 @@ function buildSpecTile(comp, inst, onMutated) {
     cBadge.onpointerdown = e => e.stopPropagation();
     cBadge.onclick = e => {
       e.stopPropagation();
-      closeAllDropdowns();
-      emit("spec:open-content-modal", { compId: comp.id, instId: inst.id, focusMelomg: false });
+      openDirectModal();
     };
     actions.appendChild(cBadge);
   }
@@ -210,6 +220,17 @@ function buildSpecTile(comp, inst, onMutated) {
   const noteDot = document.createElement("span");
   noteDot.className = `has-note-dot${sel?.notes?.trim() ? "" : " hidden"}`;
   noteDot.title = "Has custom instructions";
+
+  const editContentBtn = document.createElement("button");
+  editContentBtn.type = "button";
+  editContentBtn.className = "org-spec-edit";
+  editContentBtn.title = badge ? "Edit spec content" : "Add spec content";
+  editContentBtn.innerHTML = getIcon("ui/pencil");
+  editContentBtn.onpointerdown = e => e.stopPropagation();
+  editContentBtn.onclick = e => {
+    e.stopPropagation();
+    openDirectModal();
+  };
 
   const rmBtn = document.createElement("button");
   rmBtn.type = "button";
@@ -222,8 +243,14 @@ function buildSpecTile(comp, inst, onMutated) {
     removeSpecWithAnimation(comp, inst.id);
   };
 
-  actions.append(noteDot, rmBtn);
+  actions.append(noteDot, editContentBtn, rmBtn);
   tile.append(left, actions);
+
+  tile.addEventListener("dblclick", e => {
+    if (e.target?.closest?.("button")) return;
+    e.stopPropagation();
+    openDirectModal();
+  });
 
   tile.addEventListener("dragenter", () => {
     state.live.hoveredSpecTarget = { compId: comp.id, specId: inst.id };

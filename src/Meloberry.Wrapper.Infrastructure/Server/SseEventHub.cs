@@ -10,8 +10,102 @@ namespace Meloberry.Wrapper.Infrastructure.Server;
 public sealed class SseEventHub
 {
     private readonly ConcurrentDictionary<Guid, Channel<byte[]>> _clients = new();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _recentWebAppBroadcasts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _activeFinalizeWorkspaces = new(StringComparer.OrdinalIgnoreCase);
 
     public int SubscriberCount => _clients.Count;
+
+    public IDisposable BeginFinalizeSuppression(string? workspacePath)
+    {
+        if (string.IsNullOrWhiteSpace(workspacePath))
+        {
+            return NoopDisposable.Instance;
+        }
+
+        var key = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspacePath));
+        _activeFinalizeWorkspaces.AddOrUpdate(key, 1, (_, count) => count + 1);
+        return new FinalizeSuppressionScope(this, key);
+    }
+
+    public bool IsFinalizeInProgress(string? workspacePath)
+    {
+        if (string.IsNullOrWhiteSpace(workspacePath))
+        {
+            return false;
+        }
+
+        var key = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspacePath));
+        return _activeFinalizeWorkspaces.TryGetValue(key, out var count) && count > 0;
+    }
+
+    private void EndFinalizeSuppression(string key)
+    {
+        while (_activeFinalizeWorkspaces.TryGetValue(key, out var count))
+        {
+            if (count <= 1)
+            {
+                if (_activeFinalizeWorkspaces.TryRemove(key, out _))
+                {
+                    return;
+                }
+            }
+            else if (_activeFinalizeWorkspaces.TryUpdate(key, count - 1, count))
+            {
+                return;
+            }
+        }
+    }
+
+    public void MarkRecentlyBroadcastWebApp(string webAppDir)
+    {
+        if (string.IsNullOrWhiteSpace(webAppDir))
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var key = Path.TrimEndingDirectorySeparator(Path.GetFullPath(webAppDir));
+        _recentWebAppBroadcasts[key] = now;
+
+        // Prune stale dedup entries so dictionary stays bounded over long sessions.
+        foreach (var (k, ts) in _recentWebAppBroadcasts)
+        {
+            if ((now - ts).TotalSeconds > 30)
+            {
+                _recentWebAppBroadcasts.TryRemove(k, out _);
+            }
+        }
+    }
+
+    public bool WasRecentlyBroadcastWebApp(string webAppDir, int windowMs = 3000)
+    {
+        if (string.IsNullOrWhiteSpace(webAppDir))
+        {
+            return false;
+        }
+
+        var key = Path.TrimEndingDirectorySeparator(Path.GetFullPath(webAppDir));
+        return _recentWebAppBroadcasts.TryGetValue(key, out var ts) &&
+               (DateTimeOffset.UtcNow - ts).TotalMilliseconds <= windowMs;
+    }
+
+    private sealed class NoopDisposable : IDisposable
+    {
+        public static readonly NoopDisposable Instance = new();
+        public void Dispose() { }
+    }
+
+    private sealed class FinalizeSuppressionScope(SseEventHub hub, string key) : IDisposable
+    {
+        private int _disposed;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                hub.EndFinalizeSuppression(key);
+            }
+        }
+    }
 
     public async Task HandleStreamAsync(HttpListenerResponse resp, CancellationToken ct)
     {

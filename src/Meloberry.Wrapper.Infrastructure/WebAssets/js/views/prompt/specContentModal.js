@@ -1,7 +1,8 @@
 import { api, fetchAssetBlobUrl } from "../../api.js";
-import { state, emit, escapeHtml, withButtonBusy } from "../../store.js";
+import { state, emit, withButtonBusy } from "../../store.js";
 import { closeAllDropdowns } from "../../ui/dropdowns.js";
 import { switchView, toast } from "../../ui/chrome.js";
+import { materializeOrderedItems } from "./specModes.js";
 
 export const IMAGE_FILE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 
@@ -148,12 +149,17 @@ function collectCandidatePdfPaths() {
 }
 
 function populateMelomgSection(topic, subtype, { focusMelomg }) {
-  const box = document.getElementById("specMelomgExtractor");
+  const box = document.getElementById("specMelomgDetails");
   if (!box) return;
 
   const show = IMAGE_CAPABLE_TOPICS.has((topic || "").toLowerCase());
   box.classList.toggle("hidden", !show);
-  if (!show) return;
+  if (!show) {
+    box.open = false;
+    return;
+  }
+
+  box.open = Boolean(focusMelomg);
 
   const hasMelomg = Boolean(state.resolvedTools?.melomg || state.apps.some(a => a.kind === "melomg" && a.isInstalled));
   const missingEl = document.getElementById("specMelomgMissing");
@@ -284,6 +290,9 @@ function commitModalToSpec() {
 
 export function openSpecContentModal(compId, instId, { focusMelomg = false } = {}) {
   const comp = state.prompt.components.find(c => c.id === compId);
+  if (comp && (!comp.orderedItems || !comp.orderedItems.length)) {
+    materializeOrderedItems(comp);
+  }
   const inst = comp?.orderedItems?.find(o => o.id === instId);
   if (!comp || !inst) return;
 
@@ -294,24 +303,30 @@ export function openSpecContentModal(compId, instId, { focusMelomg = false } = {
   const titleEl = document.getElementById("specContentModalTitle");
   const badgeEl = document.getElementById("specContentTopicBadge");
   const syntaxEl = document.getElementById("specContentSyntaxHint");
+  const syntaxToggleBtn = document.getElementById("btnToggleSpecSyntax");
 
   if (titleEl) titleEl.textContent = spec?.displayName || inst.topic;
   if (badgeEl) {
     badgeEl.textContent = inst.subtype ? `${inst.topic}:${inst.subtype}` : inst.topic;
   }
+  const sig = (spec?.compactSignature || "").trim();
   if (syntaxEl) {
-    const sig = (spec?.compactSignature || "").trim();
     syntaxEl.textContent = sig;
-    syntaxEl.classList.toggle("hidden", !sig);
+    syntaxEl.classList.add("hidden");
+  }
+  if (syntaxToggleBtn) {
+    syntaxToggleBtn.classList.toggle("hidden", !sig);
+    syntaxToggleBtn.setAttribute("aria-expanded", "false");
   }
 
   const content = inst.content || { mode: "none", rawText: "", markdownFilePath: "", imagePath: "", caption: "", altText: "" };
   const topicLower = (inst.topic || "").toLowerCase();
+  const isImageCapable = IMAGE_CAPABLE_TOPICS.has(topicLower);
   draftContentMode = content.mode || "none";
-  if (draftContentMode === "none" && !focusMelomg) {
-    draftContentMode = topicLower === "image" ? "imageFile" : "rawText";
-  } else if (draftContentMode === "none" && focusMelomg && topicLower === "image") {
-    draftContentMode = "imageFile";
+  if (draftContentMode === "none") {
+    draftContentMode = (topicLower === "image" || (focusMelomg && isImageCapable))
+      ? "imageFile"
+      : "rawText";
   }
 
   const rawEl = document.getElementById("specContentRawInput");
@@ -349,6 +364,14 @@ export function initSpecContentModal() {
   wired = true;
 
   document.getElementById("btnCloseSpecContentModal")?.addEventListener("click", closeSpecContentModal);
+  document.getElementById("btnToggleSpecSyntax")?.addEventListener("click", () => {
+    const syntaxEl = document.getElementById("specContentSyntaxHint");
+    const btn = document.getElementById("btnToggleSpecSyntax");
+    if (!syntaxEl || !btn) return;
+    const willShow = syntaxEl.classList.contains("hidden");
+    syntaxEl.classList.toggle("hidden", !willShow);
+    btn.setAttribute("aria-expanded", willShow ? "true" : "false");
+  });
   document.getElementById("btnClearSpecContent")?.addEventListener("click", () => {
     draftContentMode = "none";
     const rawEl = document.getElementById("specContentRawInput");
@@ -524,9 +547,13 @@ export function initSpecContentModal() {
 
       const comp = state.prompt.components.find(c => c.id === modalTarget?.compId);
       const inst = comp?.orderedItems?.find(o => o.id === modalTarget?.instId);
+      const previewWrap = document.getElementById("specMelomgPreviewWrap");
+      let usedDirectImagePane = false;
+
       if (inst) {
         const topicLower = (inst.topic || "").toLowerCase();
-        if (topicLower === "image" || draftContentMode === "imageFile") {
+        const isImageCapable = IMAGE_CAPABLE_TOPICS.has(topicLower);
+        if (isImageCapable && (topicLower === "image" || draftContentMode === "imageFile" || draftContentMode === "none")) {
           const imgPathEl = document.getElementById("specContentImagePath");
           const imgCapEl = document.getElementById("specContentImageCaption");
           if (imgPathEl) imgPathEl.value = d.relativeImagePath;
@@ -534,24 +561,28 @@ export function initSpecContentModal() {
           draftContentMode = "imageFile";
           syncModalTabs(inst.topic);
           await renderDirectImagePreview(d.relativeImagePath);
+          usedDirectImagePane = true;
         } else {
           injectImageIntoRawText(inst.topic, d.relativeImagePath, d.caption || query);
         }
       }
 
       revokePreviewUrl();
-      const blobUrl = await fetchAssetBlobUrl(d.relativeImagePath, wsPath);
-      const previewWrap = document.getElementById("specMelomgPreviewWrap");
-      const previewImg = document.getElementById("specMelomgPreviewImg");
-      const previewPath = document.getElementById("specMelomgPreviewPath");
-      const previewMeta = document.getElementById("specMelomgPreviewMeta");
-      if (previewImg && blobUrl) {
-        activePreviewObjectUrl = blobUrl;
-        previewImg.src = blobUrl;
+      if (usedDirectImagePane) {
+        if (previewWrap) previewWrap.classList.add("hidden");
+      } else {
+        const blobUrl = await fetchAssetBlobUrl(d.relativeImagePath, wsPath);
+        const previewImg = document.getElementById("specMelomgPreviewImg");
+        const previewPath = document.getElementById("specMelomgPreviewPath");
+        const previewMeta = document.getElementById("specMelomgPreviewMeta");
+        if (previewImg && blobUrl) {
+          activePreviewObjectUrl = blobUrl;
+          previewImg.src = blobUrl;
+        }
+        if (previewPath) previewPath.textContent = d.relativeImagePath;
+        if (previewMeta) previewMeta.textContent = d.caption ? `${d.caption} (${d.pixelWidth}x${d.pixelHeight})` : `${d.pixelWidth}x${d.pixelHeight}`;
+        if (previewWrap) previewWrap.classList.remove("hidden");
       }
-      if (previewPath) previewPath.textContent = d.relativeImagePath;
-      if (previewMeta) previewMeta.textContent = d.caption ? `${d.caption} (${d.pixelWidth}x${d.pixelHeight})` : `${d.pixelWidth}x${d.pixelHeight}`;
-      if (previewWrap) previewWrap.classList.remove("hidden");
 
       toast(`Extracted ${d.relativeImagePath}`, "ok");
     });

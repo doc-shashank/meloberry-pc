@@ -87,7 +87,8 @@ internal sealed record LiveFinalizeApiRequest(
     string? WorkspacePath = null,
     bool? AllowPlaceholders = null,
     string? OutputDir = null,
-    bool VerifyStaticOnly = true);
+    bool VerifyStaticOnly = true,
+    string? Source = "agent");
 
 internal sealed record LiveUiApiRequest(
     string? Action,

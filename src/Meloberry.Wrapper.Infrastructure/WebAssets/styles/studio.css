@@ -16,7 +16,24 @@
 
 /* Study Notes & Attachments */
 .notes-card, .preview-card { display: flex; flex-direction: column; }
-#promptSourceText { min-height: 175px; }
+#promptSourceText { min-height: 155px; }
+.notes-disclosure {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  padding: 8px 10px;
+}
+.notes-disclosure-summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--muted);
+  user-select: none;
+  list-style-position: inside;
+}
+.notes-disclosure[open] .notes-disclosure-summary {
+  color: var(--text);
+}
 
 /* Review Step (Step 4) — Viewport Fit with Zero Outer Scrollbar */
 .review-grid {
@@ -56,69 +73,7 @@
   overflow: auto;
 }
 
-/* Workflow Mode Cards & Direct / Live Agent Review Controls */
-.wf-mode-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 10px;
-  margin-top: 10px;
-  border-top: 1px solid var(--border);
-}
-.wf-mode-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.wf-mode-hint {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.4;
-}
-.wf-mode-cards {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-.wf-mode-card {
-  text-align: left;
-  padding: 10px 11px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
-}
-.wf-mode-card:hover {
-  border-color: var(--select);
-}
-.wf-mode-card.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
-}
-.wf-mode-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-}
-.wf-mode-card-title {
-  font-size: 13px;
-  font-weight: 750;
-}
-.wf-mode-card-desc {
-  font-size: 11.5px;
-  color: var(--muted);
-  line-height: 1.38;
-}
+/* Direct & AI Handoff Finalize Controls */
 .live-handoff-banner {
   display: flex;
   align-items: center;
@@ -179,15 +134,6 @@
   border-radius: 10px;
   color: var(--muted);
   font-size: 12.5px;
-}
-@media (max-width: 760px) {
-  .wf-mode-cards { grid-template-columns: minmax(0, 1fr); }
-}
-.finalize-cta-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
 }
 .btn-finalize {
   font-weight: 750;

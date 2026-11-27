@@ -57,9 +57,13 @@ public sealed class WorkspaceSetupHandler(
             var recent = WorkspaceStateSync.PrependRecentWorkspace(current.RecentWorkspaces, fullPath);
 
             var isSameWorkspace = PathNormalization.AreSameDirectory(current.ActiveWorkspace?.WorkspacePath, fullPath);
+            var presentSet = snapshot.InstalledInWorkspace.ToHashSet(StringComparer.OrdinalIgnoreCase);
             var selectedApps = isSameWorkspace && current.ActiveWorkspace?.SelectedAppFileNames is { } prevSelected
-                ? prevSelected.Where(n => snapshot.InstalledNames.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
-                : snapshot.InstalledInWorkspace;
+                ? prevSelected
+                    .Where(n => snapshot.InstalledNames.Contains(n) && !presentSet.Contains(n))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                : [];
 
             var state = new ActiveWorkspaceState(
                 WorkspacePath: fullPath,
@@ -144,7 +148,7 @@ public sealed class WorkspaceSetupHandler(
                 IsInitialized: true,
                 LastInitializedUtc: DateTimeOffset.UtcNow,
                 AgentsMdExportedUtc: prevAgentsUtc,
-                SelectedAppFileNames: selectedAppFileNames.Where(n => snapshot.InstalledNames.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                SelectedAppFileNames: [],
                 StagedItems: [],
                 LastCopiedRelativePaths: mergedCopied,
                 WorkspaceApps: snapshot.WorkspaceApps,

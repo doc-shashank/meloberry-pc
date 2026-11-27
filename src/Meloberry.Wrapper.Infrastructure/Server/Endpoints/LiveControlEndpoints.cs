@@ -105,18 +105,27 @@ public sealed class LiveControlEndpoints(
             {
                 var body = await HttpEnvelope.ReadJsonAsync<LiveFinalizeApiRequest>(req, ct).ConfigureAwait(false)
                     ?? new LiveFinalizeApiRequest();
+                var isAgent = !string.Equals(body.Source, "ui", StringComparison.OrdinalIgnoreCase);
                 var activityId = $"fin_{Guid.NewGuid():N}"[..14];
                 var sw = Stopwatch.StartNew();
-                sseHub.Broadcast("agent-activity", new
+                if (isAgent)
                 {
-                    id = activityId,
-                    state = "running",
-                    message = "Finalizing & building WebApp",
-                    detail = body.OutputDir,
-                    level = "info",
-                    timestampUtc = DateTimeOffset.UtcNow
-                });
+                    sseHub.Broadcast("agent-activity", new
+                    {
+                        id = activityId,
+                        state = "running",
+                        message = "Finalizing & building WebApp",
+                        detail = body.OutputDir,
+                        level = "info",
+                        timestampUtc = DateTimeOffset.UtcNow
+                    });
+                }
 
+                var effectiveWs = !string.IsNullOrWhiteSpace(body.WorkspacePath)
+                    ? body.WorkspacePath
+                    : (await settingsStore.LoadAsync(ct).ConfigureAwait(false)).ActiveWorkspace?.WorkspacePath;
+
+                using var finalizeScope = sseHub.BeginFinalizeSuppression(effectiveWs);
                 var res = await finalizeHandler.FinalizeAsync(new Domain.Models.FinalizeRequest(
                     body.WorkspacePath,
                     body.AllowPlaceholders ?? false,
@@ -126,39 +135,47 @@ public sealed class LiveControlEndpoints(
 
                 if (res.IsFailure)
                 {
-                    sseHub.Broadcast("agent-activity", new
+                    if (isAgent)
                     {
-                        id = activityId,
-                        state = "error",
-                        message = "Finalize failed",
-                        detail = res.Error!.Description,
-                        level = "err",
-                        durationMs = sw.ElapsedMilliseconds,
-                        timestampUtc = DateTimeOffset.UtcNow
-                    });
+                        sseHub.Broadcast("agent-activity", new
+                        {
+                            id = activityId,
+                            state = "error",
+                            message = "Finalize failed",
+                            detail = res.Error!.Description,
+                            level = "err",
+                            durationMs = sw.ElapsedMilliseconds,
+                            timestampUtc = DateTimeOffset.UtcNow
+                        });
+                    }
                     await HttpEnvelope.WriteErrorAsync(resp, res.Error!, ct).ConfigureAwait(false);
                     return true;
                 }
 
                 var fin = res.Value;
                 var viewerUrl = $"{viewerBaseUrl.TrimEnd('/')}{fin.ViewerUrl}";
-                sseHub.Broadcast("agent-activity", new
+                sseHub.MarkRecentlyBroadcastWebApp(fin.WebAppDirectory);
+                if (isAgent)
                 {
-                    id = activityId,
-                    state = "done",
-                    message = $"Built {fin.WorkspaceId}",
-                    detail = fin.WebAppDirectory,
-                    level = "info",
-                    exitCode = 0,
-                    durationMs = sw.ElapsedMilliseconds,
-                    timestampUtc = DateTimeOffset.UtcNow
-                });
+                    sseHub.Broadcast("agent-activity", new
+                    {
+                        id = activityId,
+                        state = "done",
+                        message = $"Built {fin.WorkspaceId}",
+                        detail = fin.WebAppDirectory,
+                        level = "info",
+                        exitCode = 0,
+                        durationMs = sw.ElapsedMilliseconds,
+                        timestampUtc = DateTimeOffset.UtcNow
+                    });
+                }
                 sseHub.Broadcast("webapp-built", new
                 {
                     slotId = fin.SlotId,
                     url = viewerUrl,
                     workspaceId = fin.WorkspaceId,
-                    webAppDirectory = fin.WebAppDirectory
+                    webAppDirectory = fin.WebAppDirectory,
+                    source = isAgent ? "agent" : "ui"
                 });
                 await HttpEnvelope.WriteJsonAsync(resp, 200, fin with { ViewerUrl = viewerUrl }, ct).ConfigureAwait(false);
                 return true;
@@ -204,8 +221,9 @@ public sealed class LiveControlEndpoints(
                 var action = (body?.Action ?? string.Empty).Trim().ToLowerInvariant();
                 if (action == "view" && !string.IsNullOrWhiteSpace(body?.View))
                 {
-                    sseHub.Broadcast("view-requested", new { view = body.View });
-                    await HttpEnvelope.WriteJsonAsync(resp, 200, new { ok = true, view = body.View }, ct).ConfigureAwait(false);
+                    var canonicalView = Cli.WrapperCliDispatcher.NormalizeUiViewAlias(body.View);
+                    sseHub.Broadcast("view-requested", new { view = canonicalView });
+                    await HttpEnvelope.WriteJsonAsync(resp, 200, new { ok = true, view = canonicalView }, ct).ConfigureAwait(false);
                     return true;
                 }
 

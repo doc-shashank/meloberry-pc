@@ -97,8 +97,8 @@ public sealed class ImportWorkspaceAssetHandler(
 
         var targetSubfolder = normalizedKind == "image" ? "assets" : "notes";
         var targetDir = Path.Combine(fullWs, targetSubfolder);
-        var fileName = Path.GetFileName(fullSource);
-        var destPath = ResolveUniqueDestination(targetDir, fileName);
+        var safeFileName = SanitizeFileName(Path.GetFileName(fullSource));
+        var destPath = ResolveUniqueDestination(targetDir, safeFileName);
 
         try
         {
@@ -107,12 +107,32 @@ public sealed class ImportWorkspaceAssetHandler(
         catch (Exception ex)
         {
             return Result<ImportWorkspaceAssetResult>.Failure(
-                WrapperErrors.IoFailure($"Failed to import '{fileName}' into workspace: {ex.Message}"));
+                WrapperErrors.IoFailure($"Failed to import '{safeFileName}' into workspace: {ex.Message}"));
         }
 
         var relCopied = Path.GetRelativePath(fullWs, destPath).Replace('\\', '/');
         return Result<ImportWorkspaceAssetResult>.Success(
             new ImportWorkspaceAssetResult(relCopied, destPath, Copied: true));
+    }
+
+    private static string SanitizeFileName(string fileName)
+    {
+        var ext = Path.GetExtension(fileName);
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        var chars = stem.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '_').ToArray();
+        var collapsed = new string(chars);
+        while (collapsed.Contains("__", StringComparison.Ordinal))
+        {
+            collapsed = collapsed.Replace("__", "_", StringComparison.Ordinal);
+        }
+
+        collapsed = collapsed.Trim('_', '.');
+        if (string.IsNullOrWhiteSpace(collapsed))
+        {
+            collapsed = "asset";
+        }
+
+        return $"{collapsed}{ext}";
     }
 
     private static string ResolveUniqueDestination(string targetDir, string fileName)

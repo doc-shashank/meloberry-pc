@@ -300,7 +300,8 @@ public sealed class LocalHttpWrapperServer : IAsyncDisposable, IDisposable
             summary = evt.Summary,
             targetCompId = evt.TargetComponentId,
             targetSpecId = evt.TargetSpecId,
-            op = evt.Op
+            op = evt.Op,
+            workflowModeChanged = evt.WorkflowModeExplicitlyChanged
         });
     }
 
@@ -319,10 +320,22 @@ public sealed class LocalHttpWrapperServer : IAsyncDisposable, IDisposable
     {
         try
         {
+            var signalDir = Path.GetDirectoryName(fullPath);
+            if (_sseHub.IsFinalizeInProgress(signalDir))
+            {
+                return;
+            }
+
             var token = _cts?.Token ?? CancellationToken.None;
             var res = await _cliSignalHandler.ProcessFileAsync(fullPath, token).ConfigureAwait(false);
             if (res is { IsSuccess: true, Value: { } built })
             {
+                if (_sseHub.IsFinalizeInProgress(signalDir) || _sseHub.WasRecentlyBroadcastWebApp(built.Entry.Path))
+                {
+                    return;
+                }
+
+                _sseHub.MarkRecentlyBroadcastWebApp(built.Entry.Path);
                 _sseHub.Broadcast("webapp-built", new
                 {
                     slotId = built.SlotId,

@@ -44,7 +44,7 @@ internal static class PromptWorkflowModeComposers
                     var label = string.IsNullOrWhiteSpace(item.Subtype)
                         ? $"`{item.Topic} #{item.InstanceNumber}`"
                         : $"`{item.Topic}:{item.Subtype} #{item.InstanceNumber}`";
-                    var status = FormatContentBadge(item.Content);
+                    var status = FormatContentBadge(item.Topic, item.Content);
                     sb.AppendLine($"- {label} (`{item.Id}`): **{status}**");
                 }
             }
@@ -132,7 +132,7 @@ internal static class PromptWorkflowModeComposers
                 foreach (var item in comp.OrderedItems)
                 {
                     var subtypeTag = string.IsNullOrWhiteSpace(item.Subtype) ? string.Empty : $":{item.Subtype}";
-                    var contentStatus = FormatContentBadge(item.Content);
+                    var contentStatus = FormatContentBadge(item.Topic, item.Content);
                     sb.AppendLine($"- `{item.Id}` -> `{item.Topic}{subtypeTag} #{item.InstanceNumber}` — **{contentStatus}**");
                 }
             }
@@ -195,7 +195,7 @@ internal static class PromptWorkflowModeComposers
                 foreach (var item in comp.OrderedItems)
                 {
                     total++;
-                    if (IsContentFilled(item.Content))
+                    if (IsContentFilled(item.Topic, item.Content))
                     {
                         filled++;
                     }
@@ -210,21 +210,27 @@ internal static class PromptWorkflowModeComposers
         return (total, filled, Math.Max(0, total - filled));
     }
 
-    private static bool IsContentFilled(SpecContentSource? content) =>
+    private static bool IsContentFilled(string topic, SpecContentSource? content) =>
         content is not null && content.Mode switch
         {
             SpecContentMode.RawText => !string.IsNullOrWhiteSpace(content.RawText),
             SpecContentMode.MarkdownFile => !string.IsNullOrWhiteSpace(content.MarkdownFilePath),
-            SpecContentMode.ImageFile => !string.IsNullOrWhiteSpace(content.ImagePath),
+            SpecContentMode.ImageFile => !string.IsNullOrWhiteSpace(content.ImagePath) &&
+                                         (string.Equals(topic, "image", StringComparison.OrdinalIgnoreCase) ||
+                                          !string.IsNullOrWhiteSpace(content.RawText)),
             _ => false
         };
 
-    private static string FormatContentBadge(SpecContentSource? content) =>
+    private static string FormatContentBadge(string topic, SpecContentSource? content) =>
         content?.Mode switch
         {
             SpecContentMode.RawText when !string.IsNullOrWhiteSpace(content.RawText) => "RawText",
             SpecContentMode.MarkdownFile when !string.IsNullOrWhiteSpace(content.MarkdownFilePath) => $"MarkdownFile (`{content.MarkdownFilePath}`)",
-            SpecContentMode.ImageFile when !string.IsNullOrWhiteSpace(content.ImagePath) => $"Image (`{content.ImagePath}`)",
+            SpecContentMode.ImageFile when !string.IsNullOrWhiteSpace(content.ImagePath) &&
+                                           (string.Equals(topic, "image", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(content.RawText))
+                => $"Image (`{content.ImagePath}`)",
+            SpecContentMode.ImageFile when !string.IsNullOrWhiteSpace(content.ImagePath)
+                => $"Image only — needs body (`{content.ImagePath}`)",
             _ => "Empty"
         };
 }

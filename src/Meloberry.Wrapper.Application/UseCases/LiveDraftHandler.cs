@@ -2,6 +2,7 @@ using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Domain.Services;
 
 namespace Meloberry.Wrapper.Application.UseCases;
 
@@ -101,6 +102,7 @@ public sealed class LiveDraftHandler(
         }
 
         var finalRes = mutationRes.Value with { Draft = saveRes.Value };
+        var wfExplicit = op == "patch-meta" && string.IsNullOrWhiteSpace(request.TargetId) && request.WorkflowMode.HasValue;
         DraftChanged?.Invoke(new LiveDraftChangedEvent(
             fullWs,
             saveRes.Value,
@@ -108,7 +110,8 @@ public sealed class LiveDraftHandler(
             finalRes.Summary,
             finalRes.TargetComponentId,
             finalRes.TargetSpecId,
-            op));
+            op,
+            wfExplicit));
 
         return Result<LiveDraftMutationResult>.Success(finalRes);
     }
@@ -492,25 +495,17 @@ public sealed class LiveDraftHandler(
 
     private static PromptComponentPlan EnsureOrderedItems(PromptComponentPlan comp)
     {
-        if (comp.OrderedItems is not null)
+        if (comp.OrderedItems is { Count: > 0 })
         {
             return comp;
         }
 
-        var synthesized = new List<OrderedSpecInstance>();
-        var idx = 1;
-        foreach (var sel in comp.Selections.Where(s => s.Enabled))
+        if (comp.OrderedItems is not null && !comp.Selections.Any(s => s.Enabled))
         {
-            var count = sel.DesiredCount.GetValueOrDefault(1);
-            if (count <= 0) count = 1;
-            for (var i = 1; i <= count; i++)
-            {
-                synthesized.Add(new OrderedSpecInstance($"{comp.Id}_{sel.Topic}_{idx}", sel.Topic, i));
-                idx++;
-            }
+            return comp;
         }
 
-        return comp with { OrderedItems = synthesized };
+        return comp with { OrderedItems = SpecOrderExpander.Expand(comp, useGlobalIndexInId: true) };
     }
 
     private static PromptComponentPlan SyncSelectionsFromOrderedItems(
@@ -559,7 +554,7 @@ public sealed class LiveDraftHandler(
                 DesiredCount: count,
                 Notes: notes,
                 Modes: modes,
-                ModeCounts: subtypeCounts.Count > 0 ? subtypeCounts : prev?.ModeCounts));
+                ModeCounts: subtypeCounts.Count > 0 ? subtypeCounts : null));
         }
 
         return comp with

@@ -2,6 +2,7 @@
 .setup-grid { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
 .apps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 8px; }
 .app-card { border: 1px solid var(--border); background: var(--bg); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.app-card-central { padding: 8px 10px; gap: 4px; background: var(--bg); border-color: var(--border); }
 .app-card.selected { border-color: var(--accent); background: var(--accent-soft); }
 .app-card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .check-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; cursor: pointer; }

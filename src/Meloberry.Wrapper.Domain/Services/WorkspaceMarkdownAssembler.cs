@@ -12,8 +12,11 @@ namespace Meloberry.Wrapper.Domain.Services;
 /// </summary>
 public static partial class WorkspaceMarkdownAssembler
 {
-    [GeneratedRegex(@"!\[[^\]]*\]\(([^)\s""]+)(?:\s+""[^""]*"")?\)", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"!\[[^\]]*\]\((?:<([^>\r\n]+)>|([^)\s""]+))(?:\s+""[^""]*"")?\)", RegexOptions.CultureInvariant)]
     private static partial Regex MarkdownImageRegex();
+
+    private static readonly HashSet<string> ImageCapableDirectiveTopics = new(StringComparer.OrdinalIgnoreCase)
+        { "relabel", "diagram-explore", "mcq", "flashcard", "spot-error", "numeric", "case" };
 
     [GeneratedRegex(@"(?:image|imagePath|masks|masksPath)\s*=\s*""([^""]+)""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex DirectiveAssetAttrRegex();
@@ -168,7 +171,11 @@ public static partial class WorkspaceMarkdownAssembler
         {
             if (inst.Content?.Mode == SpecContentMode.ImageFile)
             {
-                if (string.IsNullOrWhiteSpace(inst.Content.ImagePath))
+                var topicLower = inst.Topic.Trim().ToLowerInvariant();
+                var hasImg = !string.IsNullOrWhiteSpace(inst.Content.ImagePath);
+                var needsBody = topicLower != "image" && string.IsNullOrWhiteSpace(inst.Content.RawText);
+
+                if (!hasImg || (needsBody && !allowPlaceholders))
                 {
                     if (!allowPlaceholders)
                     {
@@ -177,12 +184,24 @@ public static partial class WorkspaceMarkdownAssembler
                     }
 
                     placeholdersUsed.Add(inst.Id);
-                    chunks.Add(BuildPlaceholderBody(inst.Topic, inst.Subtype, inst.InstanceNumber, ref requiresPlaceholderImg));
-                    continue;
+                    if (!hasImg)
+                    {
+                        chunks.Add(BuildPlaceholderBody(inst.Topic, inst.Subtype, inst.InstanceNumber, ref requiresPlaceholderImg));
+                        continue;
+                    }
                 }
 
-                var relImg = inst.Content.ImagePath.Trim().Replace('\\', '/');
-                var formattedImg = FormatImageContent(inst, relImg, inst.Content.Caption, inst.Content.AltText, inst.Content.RawText, ref requiresPlaceholderImg);
+                var relImg = inst.Content.ImagePath!.Trim().Replace('\\', '/');
+                string formattedImg;
+                if (needsBody)
+                {
+                    placeholdersUsed.Add(inst.Id);
+                    formattedImg = BuildImageDirectivePlaceholder(topicLower, inst.Subtype, relImg, inst.InstanceNumber);
+                }
+                else
+                {
+                    formattedImg = FormatImageContent(inst, relImg, inst.Content.Caption, inst.Content.AltText, inst.Content.RawText, ref requiresPlaceholderImg);
+                }
                 CollectReferencedAssets(formattedImg, referencedAssets);
                 TryAddRelativeAsset(relImg, referencedAssets);
                 chunks.Add(formattedImg);
@@ -236,6 +255,9 @@ public static partial class WorkspaceMarkdownAssembler
         return raw.TrimStart('\uFEFF').Trim();
     }
 
+    private static string FormatMarkdownImageTarget(string relPath) =>
+        relPath.Any(c => char.IsWhiteSpace(c) || c is '(' or ')') ? $"<{relPath}>" : relPath;
+
     private static string FormatImageContent(
         OrderedSpecInstance inst,
         string relImg,
@@ -253,20 +275,81 @@ public static partial class WorkspaceMarkdownAssembler
             var safeCap = (caption ?? string.Empty).Replace("\\", "\\\\", StringComparison.Ordinal)
                 .Replace("\"", "\\\"", StringComparison.Ordinal)
                 .Replace('\r', ' ').Replace('\n', ' ').Trim();
+            var target = FormatMarkdownImageTarget(relImg);
             return string.IsNullOrWhiteSpace(safeCap)
-                ? $"![{safeAlt}]({relImg})"
-                : $"![{safeAlt}]({relImg} \"{safeCap}\")";
+                ? $"![{safeAlt}]({target})"
+                : $"![{safeAlt}]({target} \"{safeCap}\")";
         }
 
         var body = (rawBody ?? string.Empty).TrimStart('\uFEFF').Trim();
-        var attrs = BuildDefaultDirectiveAttributes(topic, inst.Subtype, topic is "relabel" or "diagram-explore" ? relImg : null, ref requiresPlaceholderImg);
-        if (topic is not ("relabel" or "diagram-explore"))
+        if (StartsWithOuterDirective(body, topic))
         {
-            attrs.Add($"image=\"{relImg}\"");
+            return InjectImageIntoPrefencedDirective(body, relImg);
         }
 
+        var attrs = BuildDefaultDirectiveAttributes(topic, inst.Subtype, relImg, ref requiresPlaceholderImg);
         var header = attrs.Count == 0 ? $":::{topic}" : $":::{topic}{{{string.Join(" ", attrs)}}}";
         return string.IsNullOrWhiteSpace(body) ? $"{header}\n:::" : $"{header}\n{body}\n:::";
+    }
+
+    private static bool StartsWithOuterDirective(string body, string topic)
+    {
+        if (!body.StartsWith(":::", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var nlIdx = body.IndexOf('\n');
+        var firstLine = (nlIdx >= 0 ? body[..nlIdx] : body).TrimEnd('\r').Trim();
+        var afterColons = firstLine.TrimStart(':');
+        if (!afterColons.StartsWith(topic, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (afterColons.Length == topic.Length)
+        {
+            return true;
+        }
+
+        var boundary = afterColons[topic.Length];
+        return boundary is '{' or ' ' or '\t';
+    }
+
+    private static bool IsInnerSubDirective(string content)
+    {
+        var nlIdx = content.IndexOf('\n');
+        var firstLine = (nlIdx >= 0 ? content[..nlIdx] : content).TrimEnd('\r').Trim();
+        return firstLine.Equals(":::front", StringComparison.OrdinalIgnoreCase) ||
+               firstLine.Equals(":::back", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string InjectImageIntoPrefencedDirective(string body, string relImg)
+    {
+        var nlIdx = body.IndexOf('\n');
+        var firstLine = nlIdx >= 0 ? body[..nlIdx] : body;
+        var rest = nlIdx >= 0 ? body[nlIdx..] : string.Empty;
+        var cleanFirst = firstLine.TrimEnd('\r');
+        if (cleanFirst.Contains("image=", StringComparison.OrdinalIgnoreCase))
+        {
+            return body;
+        }
+
+        var braceClose = cleanFirst.LastIndexOf('}');
+        string updatedFirst;
+        if (braceClose > 0)
+        {
+            var inner = cleanFirst[..braceClose].TrimEnd();
+            var sep = inner.EndsWith('{') ? string.Empty : " ";
+            updatedFirst = $"{inner}{sep}image=\"{relImg}\"}}";
+        }
+        else
+        {
+            updatedFirst = $"{cleanFirst.TrimEnd()}{{image=\"{relImg}\"}}";
+        }
+
+        var suffix = firstLine.EndsWith('\r') ? "\r" : string.Empty;
+        return $"{updatedFirst}{suffix}{rest}";
     }
 
     private static string SmartWrapContent(
@@ -278,7 +361,7 @@ public static partial class WorkspaceMarkdownAssembler
         var topic = inst.Topic.Trim().ToLowerInvariant();
 
         // Already pre-fenced mby directive or standalone Markdown image (or raw JSON) -> pass verbatim.
-        if (content.StartsWith(":::", StringComparison.Ordinal) ||
+        if ((content.StartsWith(":::", StringComparison.Ordinal) && !IsInnerSubDirective(content)) ||
             content.StartsWith("{", StringComparison.Ordinal) ||
             (topic == "image" && content.StartsWith("![", StringComparison.Ordinal)))
         {
@@ -294,7 +377,7 @@ public static partial class WorkspaceMarkdownAssembler
         {
             if (!content.Contains('\n'))
             {
-                return $"![]({content})";
+                return $"![]({FormatMarkdownImageTarget(content)})";
             }
 
             return content;
@@ -307,7 +390,7 @@ public static partial class WorkspaceMarkdownAssembler
         }
 
         string? explicitImage = null;
-        if (topic is "relabel" or "diagram-explore")
+        if (ImageCapableDirectiveTopics.Contains(topic))
         {
             var m = YamlImageLineRegex().Match(content);
             if (m.Success)
@@ -375,7 +458,41 @@ public static partial class WorkspaceMarkdownAssembler
                 break;
         }
 
+        if (!string.IsNullOrWhiteSpace(explicitImage) && topic is not ("relabel" or "diagram-explore"))
+        {
+            attrs.Add($"image=\"{explicitImage}\"");
+        }
+
         return attrs;
+    }
+
+    private static string BuildImageDirectivePlaceholder(string topic, string? subtype, string relImg, int num)
+    {
+        var dummy = false;
+        var attrs = BuildDefaultDirectiveAttributes(topic, subtype, relImg, ref dummy);
+        if (topic == "numeric")
+        {
+            attrs.Insert(0, "tolerance=\"5%\"");
+            attrs.Insert(0, "answer=42");
+        }
+        else if (topic == "case")
+        {
+            attrs.Insert(0, $"title=\"Case Vignette {num}\"");
+        }
+
+        var header = attrs.Count == 0 ? $":::{topic}" : $":::{topic}{{{string.Join(" ", attrs)}}}";
+        var body = topic switch
+        {
+            "relabel" => "prompt: Identify labels.\nboxes:\n  - label: \"Structure A\"\n    rect: [0.1, 0.1, 0.25, 0.1]",
+            "diagram-explore" => "- Landmark A: Placeholder annotation.",
+            "mcq" => $"MCQ Placeholder {num}: replace with stem.\n- [x] Correct Option\n- [ ] Distractor Option",
+            "flashcard" => $":::front\nFlashcard Front {num}\n:::back\nFlashcard Answer {num}",
+            "spot-error" => $"In [context {num}], the value is [~~wrong~~ -> right].",
+            "numeric" => $"Numeric question placeholder {num}.",
+            "case" => $"Clinical vignette stem placeholder {num}.\n::::mcq\nPrimary finding?\n- [x] Finding A\n- [ ] Finding B\n::::",
+            _ => $"Placeholder for {topic} #{num}."
+        };
+        return $"{header}\n{body}\n:::";
     }
 
     private static string BuildPlaceholderBody(string topic, string? subtype, int num, ref bool requiresPlaceholderImg)
@@ -427,7 +544,8 @@ public static partial class WorkspaceMarkdownAssembler
     {
         foreach (Match m in MarkdownImageRegex().Matches(markdown))
         {
-            TryAddRelativeAsset(m.Groups[1].Value, collected);
+            var val = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+            TryAddRelativeAsset(val, collected);
         }
 
         foreach (Match m in DirectiveAssetAttrRegex().Matches(markdown))
@@ -482,17 +600,7 @@ public static partial class WorkspaceMarkdownAssembler
             return comp.OrderedItems.ToList();
         }
 
-        var list = new List<OrderedSpecInstance>();
-        foreach (var sel in comp.Selections.Where(s => s.Enabled))
-        {
-            var count = Math.Clamp(sel.DesiredCount ?? 1, 1, 50);
-            for (var i = 1; i <= count; i++)
-            {
-                list.Add(new OrderedSpecInstance($"{comp.Id}_{sel.Topic}_{i}", sel.Topic, i));
-            }
-        }
-
-        return list;
+        return SpecOrderExpander.Expand(comp, useGlobalIndexInId: false);
     }
 
     private static string YamlQuote(string value) =>

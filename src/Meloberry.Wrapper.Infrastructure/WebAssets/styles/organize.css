@@ -300,6 +300,24 @@
 .org-comp-card.kind-quiz .has-note-dot {
   background: var(--select);
 }
+.org-spec-edit {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+.org-spec-edit svg { width: 13px; height: 13px; display: block; }
+.org-spec-tile:hover .org-spec-edit,
+.org-spec-edit:focus-visible { opacity: 0.85; }
+.org-spec-edit:hover { opacity: 1; color: var(--accent); background: var(--accent-soft); }
+.org-comp-card.kind-quiz .org-spec-edit:hover { color: var(--select); background: var(--select-soft); }
 .org-spec-remove {
   border: none;
   background: transparent;
