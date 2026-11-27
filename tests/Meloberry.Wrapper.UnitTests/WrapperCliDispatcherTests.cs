@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Application.UseCases;
@@ -88,6 +90,130 @@ public sealed class WrapperCliDispatcherTests : IDisposable
         Assert.Equal(Path.GetFullPath(webOut), detectedFromFlag);
 
         Assert.Null(ToolProxyRunner.TryResolveBuiltWebAppDirectory(["ls", "--json"], "{}", ws));
+    }
+
+    [Fact]
+    public async Task WrapperCliDispatcher_SupportsCompRename_SpecUpdate_ImageContent_AndPatchFormat()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "cli_p6"));
+        var ws = Path.Combine(_tempRoot, "ws_p6");
+        var imgPath = Path.Combine(ws, "assets", "heart.png");
+        Directory.CreateDirectory(Path.GetDirectoryName(imgPath)!);
+        await File.WriteAllBytesAsync(imgPath, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+
+        using var provider = BuildTestServiceProvider(paths);
+        var settingsStore = provider.GetRequiredService<ISettingsStore>();
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+
+        var dispatcher = provider.GetRequiredService<WrapperCliDispatcher>();
+
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "patch", "--title", "Cardio Live", "--format", "singleMarkdown", "--json"], new CaptureConsole()));
+
+        var cAddComp = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "comp", "add", "article", "--title", "Old Name", "--json"], cAddComp));
+        var compId = JsonDocument.Parse(cAddComp.StdOut).RootElement.GetProperty("data").GetProperty("targetComponentId").GetString()!;
+
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "comp", "rename", compId, "--title", "Cardiac Cycle", "--json"], new CaptureConsole()));
+
+        var cAddSpec = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "spec", "add", compId, "image", "--json"], cAddSpec));
+        var specId = JsonDocument.Parse(cAddSpec.StdOut).RootElement.GetProperty("data").GetProperty("targetSpecId").GetString()!;
+
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "spec", "update", specId, "--subtype", "annotated", "--notes", "Highlight valves", "--modes", "zoom,caption", "--json"], new CaptureConsole()));
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "spec", "set-content", specId, "--image", "assets/heart.png", "--caption", "Wiggers Diagram", "--alt", "Heart chambers", "--json"], new CaptureConsole()));
+
+        var draftStore = provider.GetRequiredService<IWorkspaceDraftStore>();
+        var draft = await draftStore.LoadAsync(ws);
+        Assert.Equal("Cardio Live", draft.Title);
+        Assert.Equal(AuthoringFormat.SingleMarkdown, draft.AuthoringFormat);
+        var comp = draft.Components!.Single(c => c.Id == compId);
+        Assert.Equal("Cardiac Cycle", comp.Title);
+        var spec = comp.OrderedItems!.Single(s => s.Id == specId);
+        Assert.Equal("annotated", spec.Subtype);
+        Assert.Equal(SpecContentMode.ImageFile, spec.Content!.Mode);
+        Assert.Equal("assets/heart.png", spec.Content.ImagePath);
+        Assert.Equal("Wiggers Diagram", spec.Content.Caption);
+        Assert.Equal("Heart chambers", spec.Content.AltText);
+        var sel = comp.Selections.Single(s => s.Topic == "image");
+        Assert.Equal("Highlight valves", sel.Notes);
+        Assert.Equal(["zoom", "caption"], sel.Modes);
+
+        var cPrime = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "prime", "--json"], cPrime));
+        Assert.Contains("rename", cPrime.StdOut);
+        Assert.Contains("update", cPrime.StdOut);
+        Assert.Contains("--image", cPrime.StdOut);
+        Assert.Contains("--format", cPrime.StdOut);
+    }
+
+    [Fact]
+    public async Task ToolProxyRunner_PostsRunningAndDoneOrErrorActivityWithExitCode()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "proxy_p6"));
+        var ws = Path.Combine(_tempRoot, "ws_proxy_act");
+        Directory.CreateDirectory(ws);
+
+        var okBat = Path.Combine(ws, "fake-mby-ok.cmd");
+        await File.WriteAllTextAsync(okBat, "@echo off\r\necho hello\r\nexit /b 0\r\n");
+        var failBat = Path.Combine(ws, "fake-mby-fail.cmd");
+        await File.WriteAllTextAsync(failBat, "@echo off\r\necho boom 1>&2\r\nexit /b 2\r\n");
+
+        var recordedPayloads = new List<JsonElement>();
+        using var listener = new HttpListener();
+        using var sock = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        sock.Start();
+        var port = ((IPEndPoint)sock.LocalEndpoint).Port;
+        sock.Stop();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var serverTask = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                HttpListenerContext ctx;
+                try { ctx = await listener.GetContextAsync().WaitAsync(cts.Token); }
+                catch { break; }
+
+                using var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8);
+                var body = await reader.ReadToEndAsync(cts.Token);
+                if (!string.IsNullOrWhiteSpace(body))
+                {
+                    using var doc = JsonDocument.Parse(body);
+                    lock (recordedPayloads) { recordedPayloads.Add(doc.RootElement.Clone()); }
+                }
+
+                var bytes = Encoding.UTF8.GetBytes("{\"ok\":true}");
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.OutputStream.WriteAsync(bytes, cts.Token);
+                ctx.Response.Close();
+            }
+        });
+
+        var ipc = new RuntimeIpcRegistry(paths);
+        await ipc.WriteCurrentAsync(port, port + 1, "test-token");
+
+        var settingsStore = new JsonSettingsStore(paths);
+        var runner = new ToolProxyRunner(new ManagedAppsStore(paths), settingsStore, new LiveGuiIpcClient(ipc));
+
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true), MbyExecutableOverride: okBat));
+        Assert.Equal(0, await runner.RunAsync("mby", ws, ["--version"], new CaptureConsole(), jsonMode: false));
+
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true), MbyExecutableOverride: failBat));
+        Assert.Equal(2, await runner.RunAsync("mby", ws, ["check"], new CaptureConsole(), jsonMode: false));
+
+        cts.Cancel();
+        listener.Stop();
+        await serverTask;
+
+        List<JsonElement> snapshot;
+        lock (recordedPayloads) { snapshot = recordedPayloads.ToList(); }
+
+        Assert.Contains(snapshot, p => p.GetProperty("action").GetString() == "activity" && p.GetProperty("state").GetString() == "running");
+        Assert.Contains(snapshot, p => p.GetProperty("action").GetString() == "activity" && p.GetProperty("state").GetString() == "done" && p.GetProperty("exitCode").GetInt32() == 0);
+        Assert.Contains(snapshot, p => p.GetProperty("action").GetString() == "activity" && p.GetProperty("state").GetString() == "error" && p.GetProperty("exitCode").GetInt32() == 2);
     }
 
     private static ServiceProvider BuildTestServiceProvider(WrapperDataPaths paths)

@@ -6,8 +6,8 @@ import { closeConfirmModal, closeInputPromptModal, wireModalControls } from "./u
 import {
   addNotification,
   applyTheme,
+  recordAgentActivity,
   renderOutdatedBanner,
-  showLiveAgentActivity,
   switchView,
   syncWorkspaceChrome,
   toast,
@@ -36,7 +36,14 @@ import {
 } from "./views/prompt/promptDraft.js";
 import { renderPromptAttachments, wireFormatView } from "./views/prompt/format.js";
 import { highlightAgentTargets, wireOrganizeView } from "./views/prompt/organize.js";
-import { closeSpecContentModal, initSpecContentModal, isSpecContentModalOpen, openSpecContentModal } from "./views/prompt/specContentModal.js";
+import {
+  closeSpecContentModal,
+  IMAGE_CAPABLE_TOPICS,
+  IMAGE_FILE_EXT_RE,
+  initSpecContentModal,
+  isSpecContentModalOpen,
+  openSpecContentModal
+} from "./views/prompt/specContentModal.js";
 import { wireReviewView } from "./views/prompt/review.js";
 import {
   applyViewerThemeOverride,
@@ -114,11 +121,28 @@ function startRealtimeEvents() {
     try { payload = JSON.parse(ev.data); } catch { return; }
     if (!payload || payload.source !== "agent" || !payload.draft) return;
 
-    applyRemoteDraft(payload.draft);
-    showLiveAgentActivity(payload.summary || "Agent updated blueprint", "info");
-    if (state.prompt.workflowMode === "liveAgent" && state.currentView !== "viewer" && state.currentView !== "organize") {
+    const activeWs = (state.settings.activeWorkspace?.workspacePath || "").replace(/[\\/]+$/, "").toLowerCase();
+    const evtWs = (payload.workspacePath || "").replace(/[\\/]+$/, "").toLowerCase();
+    if (activeWs && evtWs && activeWs !== evtWs) return;
+
+    const wasLiveAgent = state.prompt.workflowMode === "liveAgent";
+    const nextDraft = (wasLiveAgent && payload.op !== "patch-meta")
+      ? { ...payload.draft, workflowMode: "liveAgent" }
+      : payload.draft;
+
+    applyRemoteDraft(nextDraft);
+    recordAgentActivity({
+      id: `draft_${Date.now()}`,
+      state: "done",
+      message: payload.summary || "Updated blueprint"
+    });
+
+    if (payload.op === "patch-meta" && !payload.targetCompId) {
+      if (state.currentView !== "format") switchView("format");
+    } else if (state.currentView !== "organize") {
       switchView("organize");
     }
+
     requestAnimationFrame(() => highlightAgentTargets(payload.targetCompId, payload.targetSpecId));
     refreshPromptPreview({ skipSave: true });
   });
@@ -133,7 +157,14 @@ function startRealtimeEvents() {
     let payload;
     try { payload = JSON.parse(ev.data); } catch { return; }
     if (payload?.message) {
-      showLiveAgentActivity(payload.message, payload.level || "info");
+      recordAgentActivity({
+        id: payload.id,
+        state: payload.state || (payload.level === "err" ? "error" : "done"),
+        message: payload.message,
+        detail: payload.detail || "",
+        exitCode: payload.exitCode ?? null,
+        durationMs: payload.durationMs ?? null
+      });
     }
   });
   state.eventSource = es;
@@ -267,21 +298,80 @@ function wireDragAndDrop() {
 
     if (view === "organize") {
       const mdFile = items.find(i => i.kind === "file" && /\.(md|markdown)$/i.test(i.path));
+      const imgFile = items.find(i => i.kind === "file" && IMAGE_FILE_EXT_RE.test(i.path));
       const hover = state.live.hoveredSpecTarget;
-      if (mdFile && hover?.compId && hover?.specId) {
-        const comp = state.prompt.components.find(c => c.id === hover.compId);
-        const inst = comp?.orderedItems?.find(o => o.id === hover.specId);
-        if (inst) {
-          inst.content = { mode: "markdownFile", rawText: null, markdownFilePath: mdFile.path };
-          emit("prompt:preset-modified");
-          emit("organize:render");
-          await refreshPromptPreview();
-          toast(`Attached ${mdFile.path.split(/[\\/]/).pop()} to ${inst.topic}.`, "ok");
-        }
-      } else if (mdFile) {
-        toast("Drop a .md file directly onto a spec tile in Organize to attach it.", "warn");
-      }
       state.live.hoveredSpecTarget = null;
+
+      if (!hover?.compId || !hover?.specId) {
+        if (mdFile || imgFile) {
+          toast("Drop a .md or image file directly onto a spec tile in Organize to attach it.", "warn");
+        }
+        return;
+      }
+
+      const comp = state.prompt.components.find(c => c.id === hover.compId);
+      const inst = comp?.orderedItems?.find(o => o.id === hover.specId);
+      if (!inst) return;
+
+      const wsPath = state.settings.activeWorkspace?.workspacePath || "";
+      if (!wsPath) {
+        toast("Select an Active Workspace first before dropping files onto specs.", "err");
+        return;
+      }
+
+      if (imgFile) {
+        if (!IMAGE_CAPABLE_TOPICS.has((inst.topic || "").toLowerCase())) {
+          toast(`The '${inst.topic}' spec does not accept direct image attachments.`, "warn");
+          return;
+        }
+        const imp = await api("POST", "/api/workspace/import-asset", {
+          workspacePath: wsPath,
+          sourcePath: imgFile.path,
+          kind: "image"
+        });
+        if (!imp.ok) {
+          toast(imp.data?.error?.description || "Failed to import dropped image.", "err");
+          return;
+        }
+        const topicLower = (inst.topic || "").toLowerCase();
+        inst.content = {
+          mode: "imageFile",
+          rawText: topicLower === "image" ? null : (inst.content?.rawText || null),
+          markdownFilePath: null,
+          imagePath: imp.data.relativePath,
+          caption: inst.content?.caption || null,
+          altText: inst.content?.altText || null
+        };
+        emit("prompt:preset-modified");
+        emit("organize:render");
+        await refreshPromptPreview();
+        toast(`${imp.data.copied ? "Imported & attached" : "Attached"} ${imp.data.relativePath} to ${inst.topic}.`, "ok");
+        return;
+      }
+
+      if (mdFile) {
+        const imp = await api("POST", "/api/workspace/import-asset", {
+          workspacePath: wsPath,
+          sourcePath: mdFile.path,
+          kind: "markdown"
+        });
+        if (!imp.ok) {
+          toast(imp.data?.error?.description || "Failed to import dropped Markdown file.", "err");
+          return;
+        }
+        inst.content = {
+          mode: "markdownFile",
+          rawText: null,
+          markdownFilePath: imp.data.relativePath,
+          imagePath: null,
+          caption: null,
+          altText: null
+        };
+        emit("prompt:preset-modified");
+        emit("organize:render");
+        await refreshPromptPreview();
+        toast(`${imp.data.copied ? "Imported & attached" : "Attached"} ${imp.data.relativePath} to ${inst.topic}.`, "ok");
+      }
       return;
     }
 
@@ -363,7 +453,7 @@ async function bootstrap() {
   syncSettingsInputs();
   startRealtimeEvents();
 
-  const hasValidActiveWs = state.settings.activeWorkspace && state.settings.activeWorkspace.isInitialized;
+  const hasValidActiveWs = Boolean(state.settings.activeWorkspace?.workspacePath);
   switchView(hasValidActiveWs ? "format" : "setup");
   updateChromeOffset();
   if (hasValidActiveWs) {

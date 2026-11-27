@@ -185,6 +185,77 @@ public sealed class LiveDraftAndControlTests : IDisposable
         Assert.DoesNotContain(rmRes.Value.Draft.Components!, c => c.Id == quizCompId);
     }
 
+    [Fact]
+    public async Task LiveDraftHandler_SetContent_SupportsImageFile_AndRejectsNonImagesOrTraversal()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "live_img_data"));
+        var ws = Path.Combine(_tempRoot, "live_img_ws");
+        var assetsDir = Path.Combine(ws, "assets");
+        Directory.CreateDirectory(assetsDir);
+
+        var validImg = Path.Combine(assetsDir, "diagram.png");
+        var notImg = Path.Combine(ws, "notes.md");
+        var outsideImg = Path.Combine(_tempRoot, "escaped.png");
+        await File.WriteAllBytesAsync(validImg, [0x89, 0x50, 0x4E, 0x47]);
+        await File.WriteAllTextAsync(notImg, "# Not an image");
+        await File.WriteAllBytesAsync(outsideImg, [0x89, 0x50, 0x4E, 0x47]);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+        var draftStore = new WorkspaceDraftStore();
+        var handler = new LiveDraftHandler(draftStore, settingsStore);
+
+        var addComp = await handler.MutateAsync(ws, new LiveDraftMutationRequest(Op: "add-comp", ComponentKind: ComponentKind.Article, Title: "Visuals"));
+        Assert.True(addComp.IsSuccess);
+        var compId = addComp.Value.TargetComponentId!;
+
+        var addSpec = await handler.MutateAsync(ws, new LiveDraftMutationRequest(Op: "add-spec", TargetId: compId, Topic: "image", Count: 1));
+        Assert.True(addSpec.IsSuccess);
+        var specId = addSpec.Value.TargetSpecId!;
+
+        Assert.Equal("Security.InvalidPath", (await handler.MutateAsync(ws, new LiveDraftMutationRequest(Op: "set-content", TargetId: specId, ContentMode: SpecContentMode.ImageFile, ImagePath: "../escaped.png"))).Error!.Code);
+        Assert.Equal("Security.InvalidPath", (await handler.MutateAsync(ws, new LiveDraftMutationRequest(Op: "set-content", TargetId: specId, ContentMode: SpecContentMode.ImageFile, ImagePath: "notes.md"))).Error!.Code);
+
+        var okRes = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            Op: "set-content",
+            TargetId: specId,
+            ContentMode: SpecContentMode.ImageFile,
+            ImagePath: "assets/diagram.png",
+            Caption: "Figure 1: Diagram",
+            AltText: "Anatomical diagram"));
+        Assert.True(okRes.IsSuccess, okRes.Error?.Description);
+
+        var reloaded = await draftStore.LoadAsync(ws);
+        var inst = reloaded.Components!.First(c => c.Id == compId).OrderedItems!.First(s => s.Id == specId);
+        Assert.Equal(SpecContentMode.ImageFile, inst.Content!.Mode);
+        Assert.Equal("assets/diagram.png", inst.Content.ImagePath);
+        Assert.Equal("Figure 1: Diagram", inst.Content.Caption);
+        Assert.Equal("Anatomical diagram", inst.Content.AltText);
+    }
+
+    [Fact]
+    public async Task LiveDraftChangedEvent_CarriesOperationNameForAllMutations()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "ops_p6"));
+        var ws = Path.Combine(_tempRoot, "ws_ops");
+        Directory.CreateDirectory(ws);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+
+        var handler = new LiveDraftHandler(new WorkspaceDraftStore(), settingsStore);
+        var observedOps = new List<string?>();
+        handler.DraftChanged += evt => observedOps.Add(evt.Op);
+
+        await handler.MutateAsync(ws, new LiveDraftMutationRequest("patch-meta", Title: "Ops Test"));
+        var addComp = await handler.MutateAsync(ws, new LiveDraftMutationRequest("add-comp", ComponentKind: ComponentKind.Article, Title: "A"));
+        var addSpec = await handler.MutateAsync(ws, new LiveDraftMutationRequest("add-spec", TargetId: addComp.Value.TargetComponentId, Topic: "callout", Subtype: "pearl"));
+        await handler.MutateAsync(ws, new LiveDraftMutationRequest("update-spec", TargetId: addSpec.Value.TargetSpecId, Subtype: "clinical", Notes: "Updated note"));
+        await handler.MutateAsync(ws, new LiveDraftMutationRequest("set-content", TargetId: addSpec.Value.TargetSpecId, ContentMode: SpecContentMode.RawText, RawText: "Body"));
+
+        Assert.Equal(["patch-meta", "add-comp", "add-spec", "update-spec", "set-content"], observedOps);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

@@ -63,8 +63,10 @@ public sealed class WorkspaceSetupHandler(
 
             var state = new ActiveWorkspaceState(
                 WorkspacePath: fullPath,
-                IsInitialized: isSameWorkspace && current.ActiveWorkspace!.IsInitialized,
-                LastInitializedUtc: isSameWorkspace ? current.ActiveWorkspace?.LastInitializedUtc : null,
+                IsInitialized: true,
+                LastInitializedUtc: isSameWorkspace
+                    ? (current.ActiveWorkspace?.LastInitializedUtc ?? DateTimeOffset.UtcNow)
+                    : DateTimeOffset.UtcNow,
                 AgentsMdExportedUtc: isSameWorkspace ? current.ActiveWorkspace?.AgentsMdExportedUtc : null,
                 SelectedAppFileNames: selectedApps,
                 StagedItems: isSameWorkspace ? current.ActiveWorkspace?.StagedItems : [],
@@ -133,14 +135,18 @@ public sealed class WorkspaceSetupHandler(
                 ? current.ActiveWorkspace?.AgentsMdExportedUtc
                 : null;
 
+            var mergedCopied = (isSameWorkspace ? current.ActiveWorkspace?.LastCopiedRelativePaths : null) is { Count: > 0 } prevCopied
+                ? prevCopied.Concat(result.CopiedRelativePaths).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                : result.CopiedRelativePaths;
+
             var state = new ActiveWorkspaceState(
                 WorkspacePath: fullPath,
                 IsInitialized: true,
                 LastInitializedUtc: DateTimeOffset.UtcNow,
                 AgentsMdExportedUtc: prevAgentsUtc,
                 SelectedAppFileNames: selectedAppFileNames.Where(n => snapshot.InstalledNames.Contains(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                StagedItems: stagedItems.ToList(),
-                LastCopiedRelativePaths: result.CopiedRelativePaths,
+                StagedItems: [],
+                LastCopiedRelativePaths: mergedCopied,
                 WorkspaceApps: snapshot.WorkspaceApps,
                 LastAgentsMdPath: isSameWorkspace ? current.ActiveWorkspace?.LastAgentsMdPath : null,
                 LastReadyWorkspaceArtifacts: isSameWorkspace ? current.ActiveWorkspace?.LastReadyWorkspaceArtifacts : null);

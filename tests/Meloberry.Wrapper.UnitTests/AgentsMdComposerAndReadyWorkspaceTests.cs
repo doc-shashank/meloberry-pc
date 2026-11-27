@@ -139,7 +139,8 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
             AgentsMdExported: true,
             WorkingDirectory: @"C:\ws",
             MbyExecutablePath: @"C:\ws\mby-cli-2.0.0.exe",
-            Components: components);
+            Components: components,
+            WorkflowMode: WorkflowMode.ClassicPrompt);
 
         var composed = PromptComposer.Compose(sessionDraft, SpecCatalogDefaults.BuiltInFallbackCatalog);
         Assert.Contains("### 1. [A1] Article: Membrane Basics", composed.Markdown);
@@ -156,7 +157,8 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
             AuthoringFormat: AuthoringFormat.MarkdownDirectory,
             SourceText: "",
             Selections: [new ShoppingListSelection("text", true)], // invalid block filtered out!
-            Attachments: []);
+            Attachments: [],
+            WorkflowMode: WorkflowMode.ClassicPrompt);
 
         var quizOut = PromptComposer.Compose(emptyQuiz, SpecCatalogDefaults.BuiltInFallbackCatalog);
         Assert.DoesNotContain("| `text` |", quizOut.Markdown);
@@ -194,7 +196,8 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
             Selections: [new("text", true, 1, "Line 1\nLine 2 | Pipe")],
             Attachments: [],
             MbyExecutablePath: "bad|path<>name.exe",
-            WorkingDirectory: @"C:\ws"), SpecCatalogDefaults.BuiltInFallbackCatalog);
+            WorkingDirectory: @"C:\ws",
+            WorkflowMode: WorkflowMode.ClassicPrompt), SpecCatalogDefaults.BuiltInFallbackCatalog);
 
         Assert.Contains("| `text` | 1 | — | Line 1 Line 2 \\| Pipe |", prompt.Markdown);
         Assert.Contains("````text", prompt.Markdown);
@@ -302,6 +305,51 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
         Assert.Contains(".\\mby-pc.bat status --json", markdown);
         Assert.Contains(".\\mby-pc.bat draft get --json", markdown);
         Assert.Contains(".\\mby-pc.bat finalize --json", markdown);
+    }
+
+    [Fact]
+    public void LiveAgentPromptAndAgentsMd_EmitStepByStepGuiControlProtocol()
+    {
+        var draft = new PromptDraft(
+            Container: ContainerKind.Session,
+            Title: "Renal Physiology",
+            Description: "Nephron transport",
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [new ShoppingListSelection("text", true, 1)],
+            Attachments: [],
+            WorkingDirectory: @"C:\Study\Renal",
+            WorkflowMode: WorkflowMode.LiveAgent);
+
+        var composed = PromptComposer.Compose(draft, SpecCatalogDefaults.BuiltInFallbackCatalog);
+        Assert.Contains("Live GUI Control Protocol", composed.Markdown);
+        Assert.Contains(".\\mby-pc.bat ui view format --json", composed.Markdown);
+        Assert.Contains(".\\mby-pc.bat ui view organize --json", composed.Markdown);
+        Assert.Contains("draft comp add", composed.Markdown);
+        Assert.Contains("draft spec update", composed.Markdown);
+        Assert.Contains("--image", composed.Markdown);
+        Assert.Contains(".\\mby-pc.bat finalize --json", composed.Markdown);
+
+        var agentsInput = new AgentsMdComposeInput(
+            WorkspacePath: @"C:\Study\Renal",
+            Container: ContainerKind.Session,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            WorkspaceMbyFileName: "mby.exe",
+            WorkspaceMelomgFileName: "melomg.exe",
+            ExtraWorkspaceExecutables: [],
+            CopiedFiles: [],
+            CopiedFolders: [],
+            SelectedSpecs: [],
+            MelomgSpecsText: null,
+            IncludeLinkBlock: false,
+            UsesWorkspaceShim: true,
+            WorkflowMode: WorkflowMode.LiveAgent);
+
+        var agentsMd = AgentsMdComposer.Compose(agentsInput);
+        Assert.Contains("Live GUI Control Protocol", agentsMd);
+        Assert.Contains(".\\mby-pc.bat ui view", agentsMd);
+        Assert.Contains(".\\mby-pc.bat finalize --json", agentsMd);
+        Assert.Contains("Prefer `draft` + `finalize`", agentsMd);
     }
 
     public void Dispose()

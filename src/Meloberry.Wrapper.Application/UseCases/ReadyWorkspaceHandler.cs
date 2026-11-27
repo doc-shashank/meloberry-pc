@@ -301,7 +301,8 @@ public sealed class ReadyWorkspaceHandler(
             MelomgSpecsText: melomgText,
             IncludeLinkBlock: includeLink,
             ExternalAttachments: distinctExternalAttachments,
-            UsesWorkspaceShim: usesShim);
+            UsesWorkspaceShim: usesShim,
+            WorkflowMode: request.Draft.WorkflowMode);
 
         var markdown = AgentsMdComposer.Compose(composeInput);
         var writeRes = await agentsMdWriter.WriteAsync(fullWs, validatedTargetDir, markdown, request.OverwriteConfirmed, ct).ConfigureAwait(false);

@@ -164,6 +164,138 @@ public sealed class MarkdownAssemblerAndFinalizeTests : IDisposable
         }
     }
 
+    [Fact]
+    public void WorkspaceMarkdownAssembler_CollectsBareAndYamlImagePaths_AndPreservesExplicitImages()
+    {
+        var draft = new PromptDraft(
+            Container: ContainerKind.Session,
+            Title: "Anatomy Visuals",
+            Description: "Figure asset collection test",
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "a1",
+                    ComponentKind.Article,
+                    "Diagrams",
+                    [new("image", true, 1), new("diagram-explore", true, 1)],
+                    [
+                        new("s_img", "image", 1, null, new SpecContentSource(SpecContentMode.RawText, "assets/fig.png")),
+                        new("s_diag", "diagram-explore", 1, null, new SpecContentSource(SpecContentMode.RawText, "imagePath: assets/heart.png\n- Apex: Left ventricle tip."))
+                    ]),
+                new PromptComponentPlan(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Visual Quiz",
+                    [new("relabel", true, 1), new("mcq", true, 1)],
+                    [
+                        new("q_rel", "relabel", 1, "bank", new SpecContentSource(SpecContentMode.RawText, "masksPath: assets/heart_masks.json\nimagePath: assets/heart_clean.png\nprompt: Identify valves.")),
+                        new("q_mcq", "mcq", 1, null, new SpecContentSource(SpecContentMode.RawText, "imagePath: assets/ecg.png\nWhat rhythm is shown?\n- [x] Normal sinus\n- [ ] Atrial fibrillation"))
+                    ])
+            ]);
+
+        var res = WorkspaceMarkdownAssembler.Assemble(draft, new Dictionary<string, string>(), allowPlaceholders: false);
+        Assert.True(res.IsSuccess, res.Error?.Description);
+        Assert.False(res.Value.RequiresPlaceholderImage);
+
+        Assert.Contains("assets/fig.png", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/heart.png", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/heart_clean.png", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/heart_masks.json", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/ecg.png", res.Value.ReferencedAssetPaths);
+
+        var articleMd = res.Value.Files["01_diagrams.md"];
+        Assert.Contains("![](assets/fig.png)", articleMd);
+        Assert.Contains(":::diagram-explore{image=\"assets/heart.png\"}", articleMd);
+        Assert.DoesNotContain("assets/placeholder.png", articleMd);
+
+        var quizMd = res.Value.Files["02_visual_quiz.md"];
+        Assert.Contains(":::relabel{image=\"assets/heart_clean.png\"", quizMd);
+        Assert.DoesNotContain("assets/placeholder.png", quizMd);
+    }
+
+    [Fact]
+    public void WorkspaceMarkdownAssembler_HandlesImageFileMode_AcrossImageRelabelDiagramAndMcq()
+    {
+        var draft = new PromptDraft(
+            Container: ContainerKind.Session,
+            Title: "Cardiopulmonary Atlas",
+            Description: "Structured image specs",
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [],
+            Attachments: [],
+            WorkflowMode: WorkflowMode.Direct,
+            Components:
+            [
+                new PromptComponentPlan(
+                    "a1",
+                    ComponentKind.Article,
+                    "Core Figures",
+                    [new("image", true, 2), new("diagram-explore", true, 1)],
+                    [
+                        new("s_img1", "image", 1, null, new SpecContentSource(
+                            Mode: SpecContentMode.ImageFile,
+                            ImagePath: "assets/heart.png",
+                            Caption: "Heart",
+                            AltText: "Alt")),
+                        new("s_img2", "image", 2, null, new SpecContentSource(
+                            Mode: SpecContentMode.ImageFile,
+                            ImagePath: "assets/lungs.png",
+                            Caption: null,
+                            AltText: "Lungs Diagram")),
+                        new("s_diag", "diagram-explore", 1, null, new SpecContentSource(
+                            Mode: SpecContentMode.ImageFile,
+                            RawText: "- Apex: Left ventricle tip.",
+                            ImagePath: "assets/mediastinum.png"))
+                    ]),
+                new PromptComponentPlan(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Visual Drill",
+                    [new("relabel", true, 1), new("mcq", true, 1)],
+                    [
+                        new("q_rel", "relabel", 1, "recall", new SpecContentSource(
+                            Mode: SpecContentMode.ImageFile,
+                            RawText: "prompt: Identify the chambers.",
+                            ImagePath: "assets/heart_masked.png")),
+                        new("q_mcq", "mcq", 1, "multi", new SpecContentSource(
+                            Mode: SpecContentMode.ImageFile,
+                            RawText: "Select all visible structures:\n- [x] Aorta\n- [x] Pulmonary trunk\n- [ ] Femoral artery",
+                            ImagePath: "assets/ecg.png"))
+                    ])
+            ]);
+
+        var res = WorkspaceMarkdownAssembler.Assemble(draft, new Dictionary<string, string>(), allowPlaceholders: false);
+        Assert.True(res.IsSuccess, res.Error?.Description);
+        Assert.False(res.Value.RequiresPlaceholderImage);
+        Assert.Empty(res.Value.MissingContentSpecs);
+
+        Assert.Contains("assets/heart.png", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/lungs.png", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/mediastinum.png", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/heart_masked.png", res.Value.ReferencedAssetPaths);
+        Assert.Contains("assets/ecg.png", res.Value.ReferencedAssetPaths);
+
+        var articleMd = res.Value.Files["01_core_figures.md"];
+        Assert.Contains("![Alt](assets/heart.png \"Heart\")", articleMd);
+        Assert.Contains("![Lungs Diagram](assets/lungs.png)", articleMd);
+        Assert.Contains(":::diagram-explore{image=\"assets/mediastinum.png\"}\n- Apex: Left ventricle tip.\n:::", articleMd);
+        Assert.DoesNotContain("assets/placeholder.png", articleMd);
+
+        var quizMd = res.Value.Files["02_visual_drill.md"];
+        Assert.Contains(":::relabel{image=\"assets/heart_masked.png\" mode=\"recall\" style=\"blur\"}\nprompt: Identify the chambers.\n:::", quizMd);
+        Assert.Contains(":::mcq{multi=true image=\"assets/ecg.png\"}\nSelect all visible structures:", quizMd);
+        Assert.DoesNotContain("assets/placeholder.png", quizMd);
+
+        var composed = PromptComposer.Compose(draft, SpecCatalogDefaults.BuiltInFallbackCatalog);
+        Assert.Contains("5 filled, 0 empty", composed.Markdown);
+        Assert.Contains("Image (`assets/heart.png`)", composed.Markdown);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

@@ -12,7 +12,8 @@ namespace Meloberry.Wrapper.Infrastructure.Workspace;
 /// </summary>
 public sealed class WorkspaceMaintenanceService(
     IWrapperDataPaths dataPaths,
-    IManagedAppsStore appsStore) : IWorkspaceMaintenanceService
+    IManagedAppsStore appsStore,
+    IWorkspaceShimWriter? shimWriter = null) : IWorkspaceMaintenanceService
 {
     public async Task<Result<WorkspaceResetPlan>> PlanResetAsync(
         string workspacePath,
@@ -309,32 +310,22 @@ public sealed class WorkspaceMaintenanceService(
         }
 
         var fullRoot = fullWs + Path.DirectorySeparatorChar;
-        var apps = await appsStore.ScanAppsAsync(null, ct).ConfigureAwait(false);
 
         var removed = new List<string>();
         var copiedNew = new List<string>();
-        var keptPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var toolKeysToCopy = detectRes.Value.Select(i => i.ToolKey).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         try
         {
-            // Copy latest binaries FIRST so an I/O failure never leaves the workspace without tools.
-            foreach (var key in toolKeysToCopy)
+            // Ensure mby-pc.bat shim is written first so workspace remains usable via central apps\.
+            if (shimWriter is not null)
             {
-                var kind = string.Equals(key, "melomg", StringComparison.OrdinalIgnoreCase)
-                    ? ManagedAppKind.Melomg
-                    : ManagedAppKind.Mby;
-                var latest = apps.FirstOrDefault(a => a.Kind == kind && a.IsInstalled && !string.IsNullOrWhiteSpace(a.FullPath));
-                if (latest?.FullPath is null || !File.Exists(latest.FullPath))
+                var shimRes = await shimWriter.WriteShimAsync(fullWs, overwriteExisting: true, ct).ConfigureAwait(false);
+                if (shimRes.IsFailure)
                 {
-                    continue;
+                    return Result<WorkspaceToolUpdateResult>.Failure(shimRes.Error!);
                 }
 
-                var destPath = Path.GetFullPath(Path.Combine(fullWs, latest.FileName));
-                AtomicFileOps.CopyFile(latest.FullPath, destPath, ".mbytmp");
-
-                keptPaths.Add(destPath);
-                copiedNew.Add(latest.FileName);
+                copiedNew.Add(WorkspaceShimWriter.ShimFileName);
             }
 
             foreach (var item in detectRes.Value)
@@ -343,12 +334,6 @@ public sealed class WorkspaceMaintenanceService(
                 if (!fullTarget.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
                 {
                     return Result<WorkspaceToolUpdateResult>.Failure(WrapperErrors.InvalidPath(fullTarget));
-                }
-
-                if (keptPaths.Contains(fullTarget))
-                {
-                    removed.Add(item.WorkspaceRelativePath);
-                    continue;
                 }
 
                 if (File.Exists(fullTarget))

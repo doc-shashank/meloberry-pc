@@ -179,9 +179,13 @@ export function renderAgentsPill(status, animateOnReveal = false) {
 }
 
 export function pruneSelectedAppNames() {
-  const installedSet = new Set(state.apps.filter(a => a.isInstalled).map(a => a.fileName));
+  const installedCustomSet = new Set(
+    state.apps
+      .filter(a => a.isInstalled && a.kind === "customExecutable")
+      .map(a => a.fileName)
+  );
   for (const name of Array.from(state.selectedAppNames)) {
-    if (!installedSet.has(name)) {
+    if (!installedCustomSet.has(name)) {
       state.selectedAppNames.delete(name);
     }
   }
@@ -196,7 +200,7 @@ export function syncWorkspaceChrome() {
   if (aws && aws.workspacePath) {
     label.textContent = formatTruncatedWorkspace(aws.workspacePath);
     if (btn) btn.title = `${aws.workspacePath} (click to browse directory tree)`;
-    dot.classList.toggle("ready", !!aws.isInitialized);
+    dot.classList.toggle("ready", Boolean(aws && aws.workspacePath));
 
     const agentsExists = !!(state.agentsMdStatus && state.agentsMdStatus.exists);
     state.prompt.agentsMdExported = agentsExists;
@@ -230,20 +234,90 @@ export function renderOutdatedBanner() {
   updateChromeOffset();
 }
 
-export function showLiveAgentActivity(message, level = "info") {
-  if (!message) return;
+export function renderAgentActivityPillAndFeed() {
   const pill = document.getElementById("liveAgentActivityPill");
   const textEl = document.getElementById("liveAgentActivityText");
+  const listEl = document.getElementById("agentActivityList");
+  const items = state.live.activities || [];
+  const latest = items[0] || null;
+
   if (pill && textEl) {
-    textEl.textContent = message;
-    pill.classList.remove("hidden", "idle");
-    clearTimeout(state.live.activityTimer);
-    state.live.activityTimer = setTimeout(() => {
-      pill.classList.add("idle");
-    }, 10000);
+    if (!latest) {
+      pill.classList.add("hidden");
+      pill.classList.remove("is-running", "is-error", "idle");
+    } else {
+      const running = items.find(a => a.state === "running");
+      const active = running || latest;
+      textEl.textContent = active.message;
+      pill.classList.remove("hidden", "idle", "is-running", "is-error");
+      if (active.state === "running") {
+        pill.classList.add("is-running");
+        clearTimeout(state.live.activityTimer);
+      } else {
+        if (active.state === "error") pill.classList.add("is-error");
+        clearTimeout(state.live.activityTimer);
+        state.live.activityTimer = setTimeout(() => {
+          pill.classList.add("idle");
+        }, 10000);
+      }
+    }
   }
 
-  addNotification("Live Agent", message, level);
+  if (!listEl) return;
+  listEl.innerHTML = "";
+  if (!items.length) {
+    listEl.innerHTML = '<div class="muted" style="padding:10px">No agent activity yet.</div>';
+    return;
+  }
+
+  items.forEach(a => {
+    const row = document.createElement("div");
+    row.className = `agent-activity-row state-${a.state || "done"}`;
+    const badgeGlyph = a.state === "running" ? "\u25cf" : (a.state === "error" ? "\u2717" : "\u2713");
+    const metaParts = [];
+    if (typeof a.durationMs === "number") metaParts.push(`${a.durationMs}ms`);
+    if (typeof a.exitCode === "number") metaParts.push(`exit ${a.exitCode}`);
+    if (a.time) metaParts.push(a.time);
+    row.innerHTML = `
+      <span class="agent-status-glyph state-${escapeHtml(a.state || "done")}" aria-hidden="true">${badgeGlyph}</span>
+      <div class="agent-activity-body">
+        <div class="agent-activity-top">
+          <span class="agent-activity-msg">${escapeHtml(a.message)}</span>
+          <span class="muted agent-activity-meta">${escapeHtml(metaParts.join(" \u00b7 "))}</span>
+        </div>
+        ${a.detail ? `<div class="muted agent-activity-detail">${escapeHtml(a.detail)}</div>` : ""}
+      </div>`;
+    listEl.appendChild(row);
+  });
+}
+
+export function recordAgentActivity({ id, state: status = "done", message, detail = "", exitCode = null, durationMs = null } = {}) {
+  if (!message) return;
+  const key = id || `act_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+  const normalizedState = status === "running" || status === "error" ? status : "done";
+  const existing = state.live.activities.find(a => a.id === key);
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  if (existing) {
+    Object.assign(existing, { state: normalizedState, message, detail: detail || existing.detail || "", exitCode, durationMs, time });
+  } else {
+    state.live.activities.unshift({ id: key, state: normalizedState, message, detail: detail || "", exitCode, durationMs, time });
+    if (state.live.activities.length > 50) state.live.activities.pop();
+  }
+
+  state.live.lastAgentActivity = state.live.activities[0];
+  renderAgentActivityPillAndFeed();
+
+  if (normalizedState === "error") {
+    addNotification("Agent Command Failed", detail ? `${message} — ${detail}` : message, "err");
+  }
+}
+
+export function showLiveAgentActivity(message, level = "info") {
+  recordAgentActivity({
+    state: level === "err" ? "error" : "done",
+    message
+  });
 }
 
 export function wireChromeControls() {
@@ -265,9 +339,16 @@ export function wireChromeControls() {
   });
 
   registerDropdown("btnNotifications", "notifPopover", { wrapSelector: ".notif-wrap" });
-  document.getElementById("liveAgentActivityPill")?.addEventListener("click", e => {
+  registerDropdown("liveAgentActivityPill", "agentActivityPopover", { wrapSelector: "#agentActivityWrap" });
+  document.getElementById("btnAgentActivityClear")?.addEventListener("click", e => {
     e.stopPropagation();
-    toggleDropdown("notifPopover");
+    state.live.activities = [];
+    renderAgentActivityPillAndFeed();
+  });
+  document.getElementById("btnAgentActivityDismiss")?.addEventListener("click", e => {
+    e.stopPropagation();
+    closeAllDropdowns();
+    document.getElementById("liveAgentActivityPill")?.classList.add("hidden");
   });
   document.getElementById("btnNotifReadAll").onclick = () => {
     state.notifications.forEach(n => { n.unread = false; });

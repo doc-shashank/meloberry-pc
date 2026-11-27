@@ -6,6 +6,8 @@ using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Models;
 using Meloberry.Wrapper.Domain.Services;
 using Meloberry.Wrapper.Infrastructure;
+using Meloberry.Wrapper.Infrastructure.Persistence;
+using Meloberry.Wrapper.Infrastructure.Server;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -47,7 +49,8 @@ public sealed class TokenAndScaffoldTests : IDisposable
             SourceText: "Focus on valve murmurs.",
             Selections: [new("mcq", true, 5)],
             Attachments: [],
-            UseMelomgForPdfs: true);
+            UseMelomgForPdfs: true,
+            WorkflowMode: WorkflowMode.ClassicPrompt);
 
         var withoutMelomg = withMelomg with
         {
@@ -420,6 +423,42 @@ public sealed class TokenAndScaffoldTests : IDisposable
         Assert.Contains("`.\\mby-pc.bat mby`", classicWs.Markdown);
         Assert.Contains("`.\\mby-pc.bat melomg`", classicWs.Markdown);
         Assert.DoesNotContain(@"AppData\Local\Meloberry\apps\mby-cli", classicWs.Markdown);
+    }
+
+    [Fact]
+    public async Task DefaultWorkflowMode_IsDirectAcrossDomainDraftStoreAndJsStore()
+    {
+        var domainDraft = new PromptDraft(
+            Container: ContainerKind.Session,
+            Title: "Default Mode Check",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [],
+            Attachments: []);
+
+        Assert.Equal(WorkflowMode.Direct, domainDraft.WorkflowMode);
+
+        var ws = Path.Combine(_tempRoot, "default_ws");
+        Directory.CreateDirectory(ws);
+        var draftStore = new WorkspaceDraftStore();
+        var loaded = await draftStore.LoadAsync(ws);
+        Assert.Equal(WorkflowMode.Direct, loaded.WorkflowMode);
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IAppShutdownCoordinator>(new NoopShutdown());
+        services.AddSingleton<INativeDialogService>(new NoopDialogs());
+        services.AddSingleton<IExternalUrlLauncher>(new NoopLauncher());
+        services.AddWrapperApplication(typeof(LocalHttpWrapperServer).Assembly);
+        services.AddWrapperInfrastructure(Path.Combine(_tempRoot, "srv_store"));
+
+        await using var provider = services.BuildServiceProvider();
+        await using var server = provider.GetRequiredService<LocalHttpWrapperServer>();
+        server.Start();
+
+        using var http = new HttpClient { BaseAddress = new Uri(server.BaseUrl) };
+        var storeJs = await http.GetStringAsync("/shell/js/store.js");
+        Assert.Contains("workflowMode: \"direct\"", storeJs);
     }
 
     public void Dispose()

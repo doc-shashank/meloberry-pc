@@ -1,8 +1,16 @@
+using System.Net;
 using System.Text;
+using System.Text.Json;
+using Meloberry.Wrapper.Application;
+using Meloberry.Wrapper.Application.Abstractions;
+using Meloberry.Wrapper.Application.UseCases;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Infrastructure;
 using Meloberry.Wrapper.Infrastructure.Common;
 using Meloberry.Wrapper.Infrastructure.Persistence;
+using Meloberry.Wrapper.Infrastructure.Server;
 using Meloberry.Wrapper.Infrastructure.Workspace;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Meloberry.Wrapper.UnitTests;
@@ -341,6 +349,116 @@ public sealed class WorkspaceInitializerTests : IDisposable
         Assert.False(File.Exists(Path.Combine(ws, "meloberry-melomg-2.2.1.exe")));
         Assert.True(File.Exists(Path.Combine(ws, "custom-helper.exe")));
         Assert.Single(initRes.Value.CopiedApps, a => a == "custom-helper.exe");
+    }
+
+    [Fact]
+    public async Task SelectWorkspaceAsync_AutoInitializesWorkspace_WritesShim_AndRemovesPreviousShim()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "auto_init_data"));
+        var settingsStore = new JsonSettingsStore(paths);
+        var appsStore = new ManagedAppsStore(paths);
+        var shimWriter = new WorkspaceShimWriter();
+        var initializer = new WorkspaceInitializer(paths, new WebAppAnalysisStore(), shimWriter);
+        var handler = new WorkspaceSetupHandler(initializer, appsStore, settingsStore, new WorkspaceDirectoryBrowser(), shimWriter);
+
+        var ws1 = Path.Combine(_tempRoot, "ws_auto_1");
+        var ws2 = Path.Combine(_tempRoot, "ws_auto_2");
+        Directory.CreateDirectory(ws1);
+        Directory.CreateDirectory(ws2);
+
+        var first = await handler.SelectWorkspaceAsync(ws1);
+        Assert.True(first.IsSuccess, first.Error?.Description);
+        Assert.True(first.Value.IsInitialized);
+        Assert.NotNull(first.Value.LastInitializedUtc);
+        Assert.True(File.Exists(Path.Combine(ws1, WorkspaceShimWriter.ShimFileName)));
+
+        var firstInitUtc = first.Value.LastInitializedUtc;
+        await Task.Delay(25);
+        var same = await handler.SelectWorkspaceAsync(ws1);
+        Assert.True(same.IsSuccess);
+        Assert.Equal(firstInitUtc, same.Value.LastInitializedUtc);
+
+        var second = await handler.SelectWorkspaceAsync(ws2);
+        Assert.True(second.IsSuccess);
+        Assert.True(second.Value.IsInitialized);
+        Assert.False(File.Exists(Path.Combine(ws1, WorkspaceShimWriter.ShimFileName)));
+        Assert.True(File.Exists(Path.Combine(ws2, WorkspaceShimWriter.ShimFileName)));
+    }
+
+    [Fact]
+    public async Task ImportWorkspaceAssetHandler_ReturnsRelativeOrAtomicallyCopiesWithoutCollision_AndEndpointWorks()
+    {
+        var dataDir = Path.Combine(_tempRoot, "import_data");
+        var ws = Path.Combine(_tempRoot, "import_ws");
+        var externalDir1 = Path.Combine(_tempRoot, "ext1");
+        var externalDir2 = Path.Combine(_tempRoot, "ext2");
+        Directory.CreateDirectory(Path.Combine(ws, "assets"));
+        Directory.CreateDirectory(externalDir1);
+        Directory.CreateDirectory(externalDir2);
+
+        var internalImg = Path.Combine(ws, "assets", "existing.png");
+        var extImg1 = Path.Combine(externalDir1, "heart.png");
+        var extImg2 = Path.Combine(externalDir2, "heart.png");
+        var extBmp = Path.Combine(externalDir1, "scan.bmp");
+        var extMd = Path.Combine(externalDir1, "chapter_notes.md");
+        var badExe = Path.Combine(externalDir1, "tool.exe");
+
+        await File.WriteAllBytesAsync(internalImg, [0x89, 0x50, 0x4E, 0x47, 0x01]);
+        await File.WriteAllBytesAsync(extImg1, [0x89, 0x50, 0x4E, 0x47, 0x02]);
+        await File.WriteAllBytesAsync(extImg2, [0x89, 0x50, 0x4E, 0x47, 0x03]);
+        await File.WriteAllBytesAsync(extBmp, [0x42, 0x4D, 0x00, 0x00]);
+        await File.WriteAllTextAsync(extMd, "# Imported Note\nContent.");
+        await File.WriteAllBytesAsync(badExe, [0x4D, 0x5A]);
+
+        var paths = new WrapperDataPaths(dataDir);
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+        var handler = new ImportWorkspaceAssetHandler(settingsStore, new AtomicFileWriter());
+
+        var resInternal = await handler.ImportAsync(ws, internalImg, "image");
+        Assert.True(resInternal.IsSuccess);
+        Assert.False(resInternal.Value.Copied);
+        Assert.Equal("assets/existing.png", resInternal.Value.RelativePath);
+
+        var resExt1 = await handler.ImportAsync(ws, extImg1, "image");
+        Assert.True(resExt1.IsSuccess);
+        Assert.True(resExt1.Value.Copied);
+        Assert.Equal("assets/heart.png", resExt1.Value.RelativePath);
+
+        var resExt2 = await handler.ImportAsync(ws, extImg2, "image");
+        Assert.True(resExt2.IsSuccess);
+        Assert.NotEqual("assets/heart.png", resExt2.Value.RelativePath);
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x02 }, await File.ReadAllBytesAsync(Path.Combine(ws, "assets", "heart.png")));
+
+        var resMd = await handler.ImportAsync(ws, extMd, "markdown");
+        Assert.True(resMd.IsSuccess);
+        Assert.Equal("notes/chapter_notes.md", resMd.Value.RelativePath);
+
+        Assert.Equal("Security.InvalidPath", (await handler.ImportAsync(ws, badExe, "image")).Error!.Code);
+        Assert.Equal("Security.InvalidPath", (await handler.ImportAsync(ws, extImg1, "markdown")).Error!.Code);
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IAppShutdownCoordinator>(new NoopShutdown());
+        services.AddSingleton<INativeDialogService>(new NoopDialogs());
+        services.AddSingleton<IExternalUrlLauncher>(new NoopLauncher());
+        services.AddWrapperApplication(typeof(LocalHttpWrapperServer).Assembly);
+        services.AddWrapperInfrastructure(dataDir);
+
+        using var provider = services.BuildServiceProvider();
+        using var server = provider.GetRequiredService<LocalHttpWrapperServer>();
+        server.Start();
+
+        using var http = new HttpClient { BaseAddress = new Uri(server.BaseUrl) };
+        var body = JsonSerializer.Serialize(new { workspacePath = ws, sourcePath = extBmp, kind = "image" });
+        using var req = new HttpRequestMessage(HttpMethod.Post, "/api/workspace/import-asset")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+        req.Headers.Add("X-Mby-Token", server.AuthToken);
+        var resp = await http.SendAsync(req);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.Equal("assets/scan.bmp", doc.RootElement.GetProperty("relativePath").GetString());
     }
 
     public void Dispose()

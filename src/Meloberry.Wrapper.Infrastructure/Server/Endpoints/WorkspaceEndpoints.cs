@@ -17,7 +17,8 @@ public sealed class WorkspaceEndpoints(
     ReadyWorkspaceHandler readyWorkspace,
     ManageLibraryHandler libraryHandler,
     WorkspaceActionsHandler workspaceActions,
-    ExtractFigureWithMelomgHandler extractFigure)
+    ExtractFigureWithMelomgHandler extractFigure,
+    ImportWorkspaceAssetHandler importAsset)
 {
     private static readonly Dictionary<string, string> AssetMimeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -26,6 +27,7 @@ public sealed class WorkspaceEndpoints(
         [".jpeg"] = "image/jpeg",
         [".webp"] = "image/webp",
         [".gif"] = "image/gif",
+        [".bmp"] = "image/bmp",
         [".svg"] = "image/svg+xml"
     };
     public async Task<bool> TryHandleAsync(
@@ -328,6 +330,25 @@ public sealed class WorkspaceEndpoints(
                     body.Quality,
                     body.MaskAll,
                     body.EmitMeta), ct).ConfigureAwait(false);
+                await HttpEnvelope.WriteResultAsync(resp, res, ct).ConfigureAwait(false);
+                return true;
+            }
+
+            case ("/api/workspace/import-asset", "POST"):
+            {
+                var body = await HttpEnvelope.ReadJsonAsync<ImportAssetApiRequest>(req, ct).ConfigureAwait(false);
+                if (body is null || string.IsNullOrWhiteSpace(body.SourcePath))
+                {
+                    await HttpEnvelope.WriteJsonErrorAsync(resp, 400, "Request.Invalid", "SourcePath is required.", ct).ConfigureAwait(false);
+                    return true;
+                }
+
+                using var _ = fileWatcher.SuppressScope("workspace");
+                var res = await importAsset.ImportAsync(
+                    body.WorkspacePath,
+                    body.SourcePath,
+                    body.Kind ?? "image",
+                    ct).ConfigureAwait(false);
                 await HttpEnvelope.WriteResultAsync(resp, res, ct).ConfigureAwait(false);
                 return true;
             }

@@ -119,6 +119,31 @@ public sealed class ManagedAppsStoreTests : IDisposable
         Assert.Equal(Path.GetFullPath(appsMby), await store.ResolveToolExecutableAsync("mby", emptyWs, null));
     }
 
+    [Fact]
+    public async Task ManagedAppsStore_ResolveToolExecutableAsync_PrefersCentralApps_WhenShimExists()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "resolve_shim_data"));
+        Directory.CreateDirectory(paths.AppsDirectory);
+        var wsDir = Path.Combine(_tempRoot, "resolve_shim_ws");
+        Directory.CreateDirectory(wsDir);
+
+        var appsMby = Path.Combine(paths.AppsDirectory, "mby-cli-2.3.0.exe");
+        var wsMby = Path.Combine(wsDir, "mby-cli-1.9.0.exe");
+        var overrideMby = Path.Combine(_tempRoot, "override-mby.exe");
+
+        await File.WriteAllBytesAsync(appsMby, [(byte)'M', (byte)'Z', 0x01]);
+        await File.WriteAllBytesAsync(wsMby, [(byte)'M', (byte)'Z', 0x02]);
+        await File.WriteAllBytesAsync(overrideMby, [(byte)'M', (byte)'Z', 0x03]);
+
+        var shimWriter = new WorkspaceShimWriter();
+        var shimRes = await shimWriter.WriteShimAsync(wsDir);
+        Assert.True(shimRes.IsSuccess);
+
+        var store = new ManagedAppsStore(paths);
+        Assert.Equal(Path.GetFullPath(overrideMby), await store.ResolveToolExecutableAsync("mby", wsDir, overrideMby));
+        Assert.Equal(Path.GetFullPath(appsMby), await store.ResolveToolExecutableAsync("mby", wsDir, null));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

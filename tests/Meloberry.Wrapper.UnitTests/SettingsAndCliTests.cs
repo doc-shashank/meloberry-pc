@@ -1,12 +1,17 @@
+using System.Net;
+using System.Text.Json;
+using Meloberry.Wrapper.Application;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Application.UseCases;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Models;
+using Meloberry.Wrapper.Infrastructure;
 using Meloberry.Wrapper.Infrastructure.Cli;
 using Meloberry.Wrapper.Infrastructure.Common;
 using Meloberry.Wrapper.Infrastructure.Persistence;
 using Meloberry.Wrapper.Infrastructure.Server;
 using Meloberry.Wrapper.Infrastructure.Workspace;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Meloberry.Wrapper.UnitTests;
@@ -486,6 +491,147 @@ public sealed class SettingsAndCliTests : IDisposable
                     ["mcq"] = "<svg viewBox=\"0 0 24 24\"></svg>"
                 })));
 
+        public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public void ProcessMbyCliClient_ParseSpecCatalogPayload_NormalizesIconKeys_ExtractsSchemaIconFallback_AndTracksIconsSupported()
+    {
+        var jsonWithVariedIcons = """
+            {
+              "success": true,
+              "data": {
+                "schemas": [
+                  { "topic": "mcq", "displayName": "Multiple Choice", "scope": "content", "category": "question", "summary": "MCQ item", "compactSignature": "{ type:\"mcq\" }", "command": "Inside quiz.questions[]", "icon": "<svg viewBox=\"0 0 24 24\"><path d=\"M0 0\"/></svg>" },
+                  { "topic": "callout", "displayName": "Callout Box", "scope": "content", "category": "block", "summary": "Callout", "compactSignature": "{ kind:\"callout\" }", "command": "Inside article.blocks[]", "icon": "<svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"5\"/></svg>" },
+                  { "topic": "text", "displayName": "Text Block", "scope": "content", "category": "block", "summary": "Text", "compactSignature": "{ kind:\"text\" }", "command": "Inside article.blocks[]", "icon": "not-an-svg-name" }
+                ],
+                "icons": {
+                  "specs/mcq.svg": "<svg viewBox=\"0 0 24 24\"><rect/></svg>",
+                  "/specs/mcq-multi.svg": "<svg viewBox=\"0 0 24 24\"><line x1=\"1\" y1=\"1\" x2=\"2\" y2=\"2\"/></svg>",
+                  "flashcard": "<svg viewBox=\"0 0 24 24\"><polygon points=\"0,0 1,1\"/></svg>"
+                }
+              }
+            }
+            """;
+
+        var parsed = ProcessMbyCliClient.ParseSpecCatalogPayload(jsonWithVariedIcons, 0);
+        Assert.True(parsed.IsSuccess, parsed.Error?.Description);
+        Assert.True(parsed.Value.IconsSupported);
+        Assert.Contains("<rect/>", parsed.Value.SpecIcons["mcq"]);
+        Assert.True(parsed.Value.SpecIcons.ContainsKey("mcq-multi"));
+        Assert.True(parsed.Value.SpecIcons.ContainsKey("flashcard"));
+        Assert.Contains("<circle", parsed.Value.SpecIcons["callout"]);
+        Assert.False(parsed.Value.SpecIcons.ContainsKey("text"));
+
+        var jsonWithoutIcons = """
+            {
+              "success": true,
+              "data": {
+                "schemas": [{ "topic": "text", "scope": "content", "category": "block", "summary": "Text block", "compactSignature": "{ kind:\"text\" }", "command": "Inside article.blocks[]" }],
+                "icons": {}
+              }
+            }
+            """;
+        var parsedNoIcons = ProcessMbyCliClient.ParseSpecCatalogPayload(jsonWithoutIcons, 0);
+        Assert.True(parsedNoIcons.IsSuccess, parsedNoIcons.Error?.Description);
+        Assert.Empty(parsedNoIcons.Value.SpecIcons);
+        Assert.False(parsedNoIcons.Value.IconsSupported);
+    }
+
+    [Fact]
+    public void StaticAssetHost_ExposesAll19FallbackSpecIcons_AndKeepsSpecsPrefixEmpty()
+    {
+        var expectedTopics = new[]
+        {
+            "text", "image", "callout", "table", "diagram-explore", "reveal", "link",
+            "mcq", "flashcard", "fill-blank", "assertion-reason", "spot-error",
+            "diff", "mechanism", "relabel", "case", "classify", "match", "numeric"
+        };
+
+        var icons = StaticAssetHost.GetEmbeddedIconMapSnapshot();
+        Assert.DoesNotContain(icons.Keys, k => k.StartsWith("specs/", StringComparison.OrdinalIgnoreCase));
+
+        foreach (var topic in expectedTopics)
+        {
+            var key = $"fallback/{topic}";
+            Assert.True(icons.TryGetValue(key, out var svg), $"Missing embedded fallback icon '{key}'.");
+            Assert.StartsWith("<svg", svg, StringComparison.OrdinalIgnoreCase);
+            Assert.EndsWith("</svg>", svg, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public async Task SpecsEndpoint_ReturnsHasCliIconsFlag_ForBothIconfulAndLegacyCli()
+    {
+        var dataDir = Path.Combine(_tempRoot, "specs_api_data");
+        var paths = new WrapperDataPaths(dataDir);
+        Directory.CreateDirectory(paths.AppsDirectory);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "mby-cli-2.1.0.exe"), [(byte)'M', (byte)'Z', 0x01]);
+
+        var stubCli = new ToggleIconsMbyCliClient { ReturnIcons = true };
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IAppShutdownCoordinator>(new NoopShutdown());
+        services.AddSingleton<INativeDialogService>(new NoopDialogs());
+        services.AddSingleton<IExternalUrlLauncher>(new NoopLauncher());
+        services.AddWrapperApplication(typeof(LocalHttpWrapperServer).Assembly);
+        services.AddWrapperInfrastructure(dataDir);
+        services.AddSingleton<IMbyCliClient>(stubCli);
+
+        using var provider = services.BuildServiceProvider();
+        using var server = provider.GetRequiredService<LocalHttpWrapperServer>();
+        server.Start();
+
+        using var http = new HttpClient { BaseAddress = new Uri(server.BaseUrl) };
+
+        using (var req = new HttpRequestMessage(HttpMethod.Get, "/api/specs?refresh=true"))
+        {
+            req.Headers.Add("X-Mby-Token", server.AuthToken);
+            var resp = await http.SendAsync(req);
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            Assert.True(doc.RootElement.GetProperty("isLive").GetBoolean());
+            Assert.True(doc.RootElement.GetProperty("hasCliIcons").GetBoolean());
+        }
+
+        stubCli.ReturnIcons = false;
+        using (var req = new HttpRequestMessage(HttpMethod.Get, "/api/specs?refresh=true"))
+        {
+            req.Headers.Add("X-Mby-Token", server.AuthToken);
+            var resp = await http.SendAsync(req);
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            Assert.True(doc.RootElement.GetProperty("isLive").GetBoolean());
+            Assert.False(doc.RootElement.GetProperty("hasCliIcons").GetBoolean());
+        }
+
+        var iconsJs = await http.GetStringAsync("/shell/js/icons.js");
+        Assert.Contains("fallback/", iconsJs);
+        Assert.DoesNotContain("getIcon(`specs/", iconsJs);
+
+        var promptDraftJs = await http.GetStringAsync("/shell/js/views/prompt/promptDraft.js");
+        Assert.Contains("hasCliIcons", promptDraftJs);
+        Assert.Contains("Live mby specs (fallback icons)", promptDraftJs);
+    }
+
+    private sealed class ToggleIconsMbyCliClient : IMbyCliClient
+    {
+        public bool ReturnIcons { get; set; }
+        public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default)
+        {
+            IReadOnlyList<SpecTopicItem> specs = [new("mcq", "content", "question", "MCQ", "{ type:\"mcq\" }", "quiz", false, SpecCatalogDefaults.GetModeGroupsForTopic("mcq"), "Multiple Choice")];
+            var icons = ReturnIcons
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mcq"] = "<svg viewBox=\"0 0 24 24\"><rect/></svg>" }
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            return Task.FromResult(Result<SpecCatalogResult>.Success(new SpecCatalogResult(specs, icons, IconsSupported: icons.Count > 0)));
+        }
         public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();

@@ -53,6 +53,7 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
             var data = doc.RootElement.GetProperty("data");
             var schemas = data.GetProperty("schemas");
             var items = new List<SpecTopicItem>();
+            var schemaIcons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var el in schemas.EnumerateArray())
             {
                 var topic = GetString(el, "topic");
@@ -66,6 +67,16 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
                     IsVirtual: false,
                     ModeGroups: SpecCatalogDefaults.GetModeGroupsForTopic(topic),
                     DisplayName: GetNullableString(el, "displayName")));
+
+                if (el.TryGetProperty("icon", out var schemaIconEl) && schemaIconEl.ValueKind == JsonValueKind.String)
+                {
+                    var iconSvg = schemaIconEl.GetString();
+                    var normTopic = NormalizeIconKey(topic);
+                    if (!string.IsNullOrWhiteSpace(normTopic) && IsInlineSvg(iconSvg))
+                    {
+                        schemaIcons.TryAdd(normTopic, iconSvg!.Trim());
+                    }
+                }
             }
 
             var icons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -76,15 +87,42 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
                     if (prop.Value.ValueKind == JsonValueKind.String)
                     {
                         var svg = prop.Value.GetString();
-                        if (!string.IsNullOrWhiteSpace(svg))
+                        var normKey = NormalizeIconKey(prop.Name);
+                        if (!string.IsNullOrWhiteSpace(normKey) && IsInlineSvg(svg))
                         {
-                            icons[prop.Name] = svg;
+                            icons[normKey] = svg!.Trim();
                         }
                     }
                 }
             }
 
-            return Result<SpecCatalogResult>.Success(new SpecCatalogResult(items, icons));
+            foreach (var kv in schemaIcons)
+            {
+                icons.TryAdd(kv.Key, kv.Value);
+            }
+
+            var iconsSupported = icons.Count > 0;
+            return Result<SpecCatalogResult>.Success(new SpecCatalogResult(items, icons, iconsSupported));
+
+            static string NormalizeIconKey(string raw)
+            {
+                var k = raw.Trim().Trim('/');
+                if (k.StartsWith("specs/", StringComparison.OrdinalIgnoreCase))
+                {
+                    k = k["specs/".Length..];
+                }
+
+                if (k.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+                {
+                    k = k[..^4];
+                }
+
+                return k.Trim();
+            }
+
+            static bool IsInlineSvg(string? value) =>
+                !string.IsNullOrWhiteSpace(value) &&
+                value.TrimStart().StartsWith("<svg", StringComparison.OrdinalIgnoreCase);
         }
         catch (Exception ex)
         {

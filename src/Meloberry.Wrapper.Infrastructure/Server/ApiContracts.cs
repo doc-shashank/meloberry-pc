@@ -77,7 +77,11 @@ internal sealed record LiveMutateApiRequest(
     SpecContentMode? ContentMode = null,
     string? RawText = null,
     string? MarkdownFilePath = null,
-    string? Notes = null);
+    string? Notes = null,
+    string? ImagePath = null,
+    string? Caption = null,
+    string? AltText = null,
+    IReadOnlyList<string>? Modes = null);
 
 internal sealed record LiveFinalizeApiRequest(
     string? WorkspacePath = null,
@@ -90,12 +94,22 @@ internal sealed record LiveUiApiRequest(
     string? View = null,
     string? Path = null,
     string? Message = null,
-    string? Level = null);
+    string? Level = null,
+    string? Id = null,
+    string? State = null,
+    string? Detail = null,
+    int? ExitCode = null,
+    long? DurationMs = null);
 
 internal sealed record ExtractFigureApiRequest(
     string? WorkspacePath,
     string PdfPath,
     string Query,
-    int? Quality = null,
+    string? Quality = null,
     bool MaskAll = false,
     bool EmitMeta = false);
+
+internal sealed record ImportAssetApiRequest(
+    string? WorkspacePath,
+    string SourcePath,
+    string? Kind = "image");

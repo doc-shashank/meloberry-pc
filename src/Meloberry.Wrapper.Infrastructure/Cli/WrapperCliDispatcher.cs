@@ -29,10 +29,10 @@ public sealed class WrapperCliDispatcher(
         Live Blueprint & Build Control:
           .\mby-pc.bat status [--json]
           .\mby-pc.bat draft get [--json]
-          .\mby-pc.bat draft patch [--title T] [--desc D] [--container session|article|quiz] [--mode direct|live-agent|classic] [--allow-placeholders true|false]
-          .\mby-pc.bat draft comp add <article|quiz> [--title T] | rm <compId> | move <compId> <index>
-          .\mby-pc.bat draft spec add <compId> <topic> [--subtype S] [--qty N] | rm <specId> | move <specId> <index>
-          .\mby-pc.bat draft spec set-content <specId> [--raw TEXT | --file REL_MD_PATH | --clear | -]
+          .\mby-pc.bat draft patch [--title T] [--desc D] [--container session|article|quiz] [--format markdownDirectory|singleMarkdown|json] [--mode direct|live-agent|classic] [--allow-placeholders true|false]
+          .\mby-pc.bat draft comp add <article|quiz> [--title T] | rename <compId> --title T | rm <compId> | move <compId> <index>
+          .\mby-pc.bat draft spec add <compId> <topic> [--subtype S] [--qty N] | update <specId> [--subtype S] [--notes N] [--modes a,b] | rm <specId> | move <specId> <index>
+          .\mby-pc.bat draft spec set-content <specId> [--raw TEXT | --file REL_MD_PATH | --image REL_IMG_PATH [--caption C] [--alt A] | --clear | -]
           .\mby-pc.bat finalize [--allow-placeholders] [--out DIR] [--json]
           .\mby-pc.bat ui view <setup|format|organize|review|viewer> | viewer-open <webDir>
         """;
@@ -219,7 +219,11 @@ public sealed class WrapperCliDispatcher(
                 ContentMode: mut.ContentMode,
                 RawText: mut.RawText,
                 MarkdownFilePath: mut.MarkdownFilePath,
-                Notes: mut.Notes);
+                Notes: mut.Notes,
+                ImagePath: mut.ImagePath,
+                Caption: mut.Caption,
+                AltText: mut.AltText,
+                Modes: mut.Modes);
 
             var (ok, code, body) = await liveGui.SendAsync(HttpMethod.Post, "/api/live/mutate", payload, ct).ConfigureAwait(false);
             if (ok)
@@ -343,6 +347,15 @@ public sealed class WrapperCliDispatcher(
             _ => null
         };
 
+        var rawFormat = GetFlagValue(args, "--format");
+        AuthoringFormat? authoringFormat = rawFormat?.Trim().ToLowerInvariant() switch
+        {
+            "markdowndirectory" or "markdown-directory" or "md-dir" => AuthoringFormat.MarkdownDirectory,
+            "singlemarkdown" or "single-markdown" or "md" => AuthoringFormat.SingleMarkdown,
+            "json" => AuthoringFormat.Json,
+            _ => null
+        };
+
         var rawMode = GetFlagValue(args, "--mode");
         WorkflowMode? mode = rawMode?.ToLowerInvariant() switch
         {
@@ -361,6 +374,7 @@ public sealed class WrapperCliDispatcher(
             Container: container,
             Title: title,
             Description: desc,
+            AuthoringFormat: authoringFormat,
             WorkflowMode: mode,
             AllowPlaceholdersOnFinalize: allowPh);
     }
@@ -373,6 +387,15 @@ public sealed class WrapperCliDispatcher(
         {
             var kind = string.Equals(args[1], "quiz", StringComparison.OrdinalIgnoreCase) ? ComponentKind.Quiz : ComponentKind.Article;
             return new LiveDraftMutationRequest("add-comp", ComponentKind: kind, Title: GetFlagValue(args, "--title"));
+        }
+
+        if (op == "rename" && args.Length >= 2)
+        {
+            var newTitle = GetFlagValue(args, "--title");
+            if (!string.IsNullOrWhiteSpace(newTitle))
+            {
+                return new LiveDraftMutationRequest("patch-meta", TargetId: args[1], Title: newTitle);
+            }
         }
 
         if (op == "rm" && args.Length >= 2)
@@ -404,6 +427,22 @@ public sealed class WrapperCliDispatcher(
                 Notes: GetFlagValue(args, "--notes"));
         }
 
+        if (op == "update" && args.Length >= 2)
+        {
+            var subtype = GetFlagValue(args, "--subtype");
+            var notes = GetFlagValue(args, "--notes");
+            var rawModes = GetFlagValue(args, "--modes");
+            IReadOnlyList<string>? modes = rawModes is not null
+                ? rawModes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                : null;
+            return new LiveDraftMutationRequest(
+                "update-spec",
+                TargetId: args[1],
+                Subtype: subtype,
+                Notes: notes,
+                Modes: modes);
+        }
+
         if (op == "rm" && args.Length >= 2)
         {
             return new LiveDraftMutationRequest("rm-spec", TargetId: args[1]);
@@ -420,6 +459,19 @@ public sealed class WrapperCliDispatcher(
             if (args.Any(a => string.Equals(a, "--clear", StringComparison.OrdinalIgnoreCase)))
             {
                 return new LiveDraftMutationRequest("set-content", TargetId: specId, ContentMode: SpecContentMode.None);
+            }
+
+            var imgFile = GetFlagValue(args, "--image");
+            if (!string.IsNullOrWhiteSpace(imgFile))
+            {
+                return new LiveDraftMutationRequest(
+                    "set-content",
+                    TargetId: specId,
+                    ContentMode: SpecContentMode.ImageFile,
+                    RawText: GetFlagValue(args, "--raw"),
+                    ImagePath: imgFile,
+                    Caption: GetFlagValue(args, "--caption"),
+                    AltText: GetFlagValue(args, "--alt"));
             }
 
             var mdFile = GetFlagValue(args, "--file");

@@ -95,14 +95,25 @@ internal static class PromptWorkflowModeComposers
         }
 
         sb.AppendLine();
-        sb.AppendLine("## Live Workspace Control (`mby-pc.bat`)");
+        sb.AppendLine("## Live GUI Control Protocol (`mby-pc.bat`)");
         sb.AppendLine();
-        sb.AppendLine("- `.\\mby-pc.bat prime --json` — compact Meloberry PC grammar & schema discovery");
-        sb.AppendLine("- `.\\mby-pc.bat status --json` — inspect workspace, tools, viewer state, and active draft");
-        sb.AppendLine("- `.\\mby-pc.bat draft get --json` — inspect live organized components and spec IDs");
-        sb.AppendLine("- `.\\mby-pc.bat draft spec set-content <specId> --raw \"...\" --json` (or `--file ./notes.md`) — populate or refine spec content live in UI");
-        sb.AppendLine("- `.\\mby-pc.bat finalize --json` — assemble, validate (`mby batch -`), build WebApp, and open Step 5 Viewer");
-        sb.AppendLine("- `.\\mby-pc.bat mby <args...>` / `.\\mby-pc.bat melomg <args...>` — run central `mby` and `melomg` CLIs cleanly");
+        sb.AppendLine("Drive Meloberry PC visually so the user sees every step live in the desktop app:");
+        sb.AppendLine("1. **Inspect & Discover**:");
+        sb.AppendLine("   - `.\\mby-pc.bat prime --json` | `.\\mby-pc.bat status --json` | `.\\mby-pc.bat draft get --json`");
+        sb.AppendLine("2. **Configure Metadata (Step 2 - Format)**:");
+        sb.AppendLine("   - `.\\mby-pc.bat ui view format --json`");
+        sb.AppendLine("   - `.\\mby-pc.bat draft patch --title \"...\" --desc \"...\" --container session|article|quiz --json`");
+        sb.AppendLine("3. **Organize Cards & Specs (Step 3 - Organize)**:");
+        sb.AppendLine("   - `.\\mby-pc.bat ui view organize --json`");
+        sb.AppendLine("   - `.\\mby-pc.bat draft comp add <article|quiz> --title \"...\" --json` | `draft comp rename <compId> --title \"...\"` | `move <compId> <idx>` | `rm <compId>`");
+        sb.AppendLine("   - `.\\mby-pc.bat draft spec add <compId> <topic> [--subtype S] [--qty N] --json` | `draft spec update <specId> [--subtype S] [--notes \"...\"]` | `move <specId> <idx>` | `rm <specId>`");
+        sb.AppendLine("4. **Populate Spec Content Live**:");
+        sb.AppendLine("   - Text/Directives: `.\\mby-pc.bat draft spec set-content <specId> --raw \"...\" --json` (or `--file ./notes.md`)");
+        sb.AppendLine("   - Figures/Images: extract via `.\\mby-pc.bat melomg extract <pdf> \"Figure 1.1\" -o ./assets --retain-db --offline --json`, then attach via `.\\mby-pc.bat draft spec set-content <specId> --image assets/fig.png --caption \"...\" --json`");
+        sb.AppendLine("5. **Compile & Open Viewer (Step 4 -> Step 5)**:");
+        sb.AppendLine("   - `.\\mby-pc.bat finalize --json` (builds via `mby batch -` and opens Step 5 Viewer automatically)");
+        sb.AppendLine();
+        sb.AppendLine("> **Rule:** Prefer `draft` + `finalize` over calling `mby apply`/`mby build` directly so the GUI updates in real time.");
         sb.AppendLine();
         sb.AppendLine("## Current Organized Components & Specs");
         sb.AppendLine();
@@ -204,6 +215,7 @@ internal static class PromptWorkflowModeComposers
         {
             SpecContentMode.RawText => !string.IsNullOrWhiteSpace(content.RawText),
             SpecContentMode.MarkdownFile => !string.IsNullOrWhiteSpace(content.MarkdownFilePath),
+            SpecContentMode.ImageFile => !string.IsNullOrWhiteSpace(content.ImagePath),
             _ => false
         };
 
@@ -212,6 +224,7 @@ internal static class PromptWorkflowModeComposers
         {
             SpecContentMode.RawText when !string.IsNullOrWhiteSpace(content.RawText) => "RawText",
             SpecContentMode.MarkdownFile when !string.IsNullOrWhiteSpace(content.MarkdownFilePath) => $"MarkdownFile (`{content.MarkdownFilePath}`)",
+            SpecContentMode.ImageFile when !string.IsNullOrWhiteSpace(content.ImagePath) => $"Image (`{content.ImagePath}`)",
             _ => "Empty"
         };
 }

@@ -11,7 +11,8 @@ export function getIcon(key) {
 
 export function getCliSpecIcon(key) {
   if (!key || !state.cliSpecIcons) return "";
-  const norm = String(key).trim().replace(/^\/+|\/+$/g, "");
+  const norm = String(key).trim().replace(/^\/+|\/+$/g, "")
+    .replace(/^specs\//i, "").replace(/\.svg$/i, "");
   if (state.cliSpecIcons[norm]) return state.cliSpecIcons[norm];
   const lower = norm.toLowerCase();
   const matchKey = Object.keys(state.cliSpecIcons).find(k => k.toLowerCase() === lower);
@@ -22,10 +23,10 @@ export function getSpecIcon(topic, subtype, category) {
   const t = String(topic || "text").trim().toLowerCase();
   if (subtype) {
     const sub = String(subtype).trim();
-    const hit = getCliSpecIcon(`${t}-${sub}`) || getIcon(`specs/${t}-${sub}`);
+    const hit = getCliSpecIcon(`${t}-${sub}`) || getIcon(`fallback/${t}-${sub}`);
     if (hit) return hit;
   }
-  const baseHit = getCliSpecIcon(t) || getIcon(`specs/${t}`);
+  const baseHit = getCliSpecIcon(t) || getIcon(`fallback/${t}`);
   if (baseHit) return baseHit;
 
   const inferredCat = category

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
@@ -104,7 +103,7 @@ public sealed class ProcessMelomgCliClient : IMelomgCliClient
         string targetOrPdf,
         string selector,
         string outputDir,
-        int? quality,
+        string? quality,
         bool maskAll,
         bool emitMeta,
         bool retainDb,
@@ -113,10 +112,10 @@ public sealed class ProcessMelomgCliClient : IMelomgCliClient
         CancellationToken ct = default)
     {
         var args = new List<string> { "extract", targetOrPdf, selector, "-o", outputDir };
-        if (quality.HasValue)
+        if (!string.IsNullOrWhiteSpace(quality))
         {
             args.Add("--quality");
-            args.Add(quality.Value.ToString(CultureInfo.InvariantCulture));
+            args.Add(quality.Trim());
         }
 
         if (maskAll) args.Add("--mask-all");

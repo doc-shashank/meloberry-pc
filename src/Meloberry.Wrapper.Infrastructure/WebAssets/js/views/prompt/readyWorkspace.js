@@ -25,7 +25,7 @@ export async function readyWorkspace(
 ) {
   const draft = buildPromptDraftPayload();
   if (!draft.workingDirectory) {
-    toast("Select & Initialize an Active Workspace first.", "err");
+    toast("Select an Active Workspace first.", "err");
     switchView("setup");
     return;
   }
@@ -35,8 +35,6 @@ export async function readyWorkspace(
     toast("Meloberry CLI (mby) is not installed yet — install it in Setup to run workspace commands via mby-pc.bat.", "warn", { persistent: true, key: "missing-ws-mby" });
     alreadyWarnedMissingMby = true;
   }
-
-  const wasUninitialized = !(state.settings.activeWorkspace && state.settings.activeWorkspace.isInitialized);
 
   if (!overwriteConfirmed) {
     const q = targetDirectory
@@ -75,9 +73,6 @@ export async function readyWorkspace(
   renderAgentsPill(state.agentsMdStatus, true);
 
   await refreshPromptPreview();
-  if (wasUninitialized && !alreadyWarnedMissingMby) {
-    toast("Workspace might not have been initialized", "warn");
-  }
   if (Array.isArray(res.data.warnings) && res.data.warnings.length > 0) {
     res.data.warnings.forEach(w => toast(w, "warn"));
   }
@@ -94,7 +89,7 @@ export function wireReadyWorkspaceControls({ buildPromptDraftPayload, refreshPro
     const wsPath = aws?.workspacePath;
     if (!wsPath) {
       closeAllDropdowns();
-      toast("Select & Initialize an Active Workspace first.", "err");
+      toast("Select an Active Workspace first.", "err");
       switchView("setup");
       return;
     }

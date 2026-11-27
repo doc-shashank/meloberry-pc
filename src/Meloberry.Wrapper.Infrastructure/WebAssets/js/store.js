@@ -46,6 +46,7 @@ export const state = {
   },
   live: {
     agentTouchedIds: new Set(),
+    activities: [],
     lastAgentActivity: null,
     activityTimer: null,
     suppressDraftPush: false,

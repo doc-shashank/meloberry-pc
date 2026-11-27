@@ -43,14 +43,18 @@ public enum SpecContentMode
 {
     None,
     RawText,
-    MarkdownFile
+    MarkdownFile,
+    ImageFile
 }
 
 /// <summary>Direct content payload attached to an ordered spec instance.</summary>
 public sealed record SpecContentSource(
     SpecContentMode Mode = SpecContentMode.None,
     string? RawText = null,
-    string? MarkdownFilePath = null);
+    string? MarkdownFilePath = null,
+    string? ImagePath = null,
+    string? Caption = null,
+    string? AltText = null);
 
 /// <summary>Single shopping-list item selected by the user for an article or quiz.</summary>
 public sealed record ShoppingListSelection(
@@ -100,7 +104,7 @@ public sealed record PromptDraft(
     string? MelomgExecutablePath = null,
     IReadOnlyList<string>? CopiedFolders = null,
     IReadOnlyList<PromptComponentPlan>? Components = null,
-    WorkflowMode WorkflowMode = WorkflowMode.ClassicPrompt,
+    WorkflowMode WorkflowMode = WorkflowMode.Direct,
     bool AllowPlaceholdersOnFinalize = false);
 
 /// <summary>Rendered Markdown prompt plus token/length statistics.</summary>

@@ -28,8 +28,15 @@ public sealed class PromptEndpoints(
             case ("/api/specs", "GET"):
             {
                 var refresh = string.Equals(req.QueryString["refresh"], "true", StringComparison.OrdinalIgnoreCase);
-                var (specs, specIcons, isLive, activeMbyPath) = await specCatalog.LoadWithIconsAsync(refresh, ct).ConfigureAwait(false);
-                await HttpEnvelope.WriteJsonAsync(resp, 200, new { specs, specIcons, isLive, activeMbyPath }, ct).ConfigureAwait(false);
+                var (specs, specIcons, isLive, activeMbyPath, hasCliIcons) = await specCatalog.LoadWithIconsAsync(refresh, ct).ConfigureAwait(false);
+                await HttpEnvelope.WriteJsonAsync(resp, 200, new
+                {
+                    specs,
+                    specIcons,
+                    isLive,
+                    hasCliIcons,
+                    activeMbyPath
+                }, ct).ConfigureAwait(false);
                 return true;
             }
 

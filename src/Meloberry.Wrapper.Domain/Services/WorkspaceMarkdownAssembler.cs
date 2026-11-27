@@ -18,6 +18,14 @@ public static partial class WorkspaceMarkdownAssembler
     [GeneratedRegex(@"(?:image|imagePath|masks|masksPath)\s*=\s*""([^""]+)""", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex DirectiveAssetAttrRegex();
 
+    [GeneratedRegex(@"^\s*(?:image|imagePath|masks|masksPath)\s*:\s*""?([^""\r\n]+)""?\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant)]
+    private static partial Regex YamlAssetLineRegex();
+
+    [GeneratedRegex(@"^\s*(?:image|imagePath)\s*:\s*""?([^""\r\n]+)""?\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant)]
+    private static partial Regex YamlImageLineRegex();
+
     public static Result<AssembledWorkspaceFiles> Assemble(
         PromptDraft draft,
         IReadOnlyDictionary<string, string> loadedMarkdownFiles,
@@ -158,6 +166,29 @@ public static partial class WorkspaceMarkdownAssembler
 
         foreach (var inst in instances)
         {
+            if (inst.Content?.Mode == SpecContentMode.ImageFile)
+            {
+                if (string.IsNullOrWhiteSpace(inst.Content.ImagePath))
+                {
+                    if (!allowPlaceholders)
+                    {
+                        missingSpecs.Add(new MissingSpecContentItem(comp.Id, compTitle, inst.Id, inst.Topic));
+                        continue;
+                    }
+
+                    placeholdersUsed.Add(inst.Id);
+                    chunks.Add(BuildPlaceholderBody(inst.Topic, inst.Subtype, inst.InstanceNumber, ref requiresPlaceholderImg));
+                    continue;
+                }
+
+                var relImg = inst.Content.ImagePath.Trim().Replace('\\', '/');
+                var formattedImg = FormatImageContent(inst, relImg, inst.Content.Caption, inst.Content.AltText, inst.Content.RawText, ref requiresPlaceholderImg);
+                CollectReferencedAssets(formattedImg, referencedAssets);
+                TryAddRelativeAsset(relImg, referencedAssets);
+                chunks.Add(formattedImg);
+                continue;
+            }
+
             var resolvedContent = ResolveSpecText(inst, loadedMarkdownFiles);
             if (string.IsNullOrWhiteSpace(resolvedContent))
             {
@@ -172,8 +203,9 @@ public static partial class WorkspaceMarkdownAssembler
                 continue;
             }
 
-            CollectReferencedAssets(resolvedContent, referencedAssets);
-            chunks.Add(SmartWrapContent(inst, resolvedContent, ref linkCounter, ref requiresPlaceholderImg));
+            var wrapped = SmartWrapContent(inst, resolvedContent, ref linkCounter, ref requiresPlaceholderImg);
+            CollectReferencedAssets(wrapped, referencedAssets);
+            chunks.Add(wrapped);
         }
 
         sb.Append(string.Join("\n\n", chunks));
@@ -202,6 +234,39 @@ public static partial class WorkspaceMarkdownAssembler
         }
 
         return raw.TrimStart('\uFEFF').Trim();
+    }
+
+    private static string FormatImageContent(
+        OrderedSpecInstance inst,
+        string relImg,
+        string? caption,
+        string? altText,
+        string? rawBody,
+        ref bool requiresPlaceholderImg)
+    {
+        var topic = inst.Topic.Trim().ToLowerInvariant();
+        if (topic == "image")
+        {
+            var safeAlt = (altText ?? string.Empty).Replace("[", string.Empty, StringComparison.Ordinal)
+                .Replace("]", string.Empty, StringComparison.Ordinal)
+                .Replace('\r', ' ').Replace('\n', ' ').Trim();
+            var safeCap = (caption ?? string.Empty).Replace("\\", "\\\\", StringComparison.Ordinal)
+                .Replace("\"", "\\\"", StringComparison.Ordinal)
+                .Replace('\r', ' ').Replace('\n', ' ').Trim();
+            return string.IsNullOrWhiteSpace(safeCap)
+                ? $"![{safeAlt}]({relImg})"
+                : $"![{safeAlt}]({relImg} \"{safeCap}\")";
+        }
+
+        var body = (rawBody ?? string.Empty).TrimStart('\uFEFF').Trim();
+        var attrs = BuildDefaultDirectiveAttributes(topic, inst.Subtype, topic is "relabel" or "diagram-explore" ? relImg : null, ref requiresPlaceholderImg);
+        if (topic is not ("relabel" or "diagram-explore"))
+        {
+            attrs.Add($"image=\"{relImg}\"");
+        }
+
+        var header = attrs.Count == 0 ? $":::{topic}" : $":::{topic}{{{string.Join(" ", attrs)}}}";
+        return string.IsNullOrWhiteSpace(body) ? $"{header}\n:::" : $"{header}\n{body}\n:::";
     }
 
     private static string SmartWrapContent(
@@ -241,14 +306,29 @@ public static partial class WorkspaceMarkdownAssembler
             return $":::link{{id=\"card-{linkCounter}\" title=\"Reference {linkCounter}\"}}\n{content}\n:::";
         }
 
-        var attrs = BuildDefaultDirectiveAttributes(topic, inst.Subtype, ref requiresPlaceholderImg);
+        string? explicitImage = null;
+        if (topic is "relabel" or "diagram-explore")
+        {
+            var m = YamlImageLineRegex().Match(content);
+            if (m.Success)
+            {
+                explicitImage = m.Groups[1].Value.Trim().Replace('\\', '/');
+                content = YamlImageLineRegex().Replace(content, string.Empty, 1).Trim();
+            }
+        }
+
+        var attrs = BuildDefaultDirectiveAttributes(topic, inst.Subtype, explicitImage, ref requiresPlaceholderImg);
         var header = attrs.Count == 0
             ? $":::{topic}"
             : $":::{topic}{{{string.Join(" ", attrs)}}}";
         return $"{header}\n{content}\n:::";
     }
 
-    private static List<string> BuildDefaultDirectiveAttributes(string topic, string? subtype, ref bool requiresPlaceholderImg)
+    private static List<string> BuildDefaultDirectiveAttributes(
+        string topic,
+        string? subtype,
+        string? explicitImage,
+        ref bool requiresPlaceholderImg)
     {
         var attrs = new List<string>();
         switch (topic)
@@ -284,14 +364,14 @@ public static partial class WorkspaceMarkdownAssembler
                 if (string.Equals(subtype, "bank", StringComparison.OrdinalIgnoreCase)) attrs.Add("bank=true");
                 break;
             case "relabel":
-                requiresPlaceholderImg = true;
-                attrs.Add("image=\"assets/placeholder.png\"");
+                if (string.IsNullOrWhiteSpace(explicitImage)) requiresPlaceholderImg = true;
+                attrs.Add($"image=\"{(string.IsNullOrWhiteSpace(explicitImage) ? "assets/placeholder.png" : explicitImage)}\"");
                 attrs.Add($"mode=\"{(subtype is "reveal" or "bank" or "recall" ? subtype : "bank")}\"");
                 attrs.Add($"style=\"{(subtype is "solid" or "blur" or "pixelate" or "whiteout" ? subtype : "blur")}\"");
                 break;
             case "diagram-explore":
-                requiresPlaceholderImg = true;
-                attrs.Add("image=\"assets/placeholder.png\"");
+                if (string.IsNullOrWhiteSpace(explicitImage)) requiresPlaceholderImg = true;
+                attrs.Add($"image=\"{(string.IsNullOrWhiteSpace(explicitImage) ? "assets/placeholder.png" : explicitImage)}\"");
                 break;
         }
 
@@ -351,6 +431,11 @@ public static partial class WorkspaceMarkdownAssembler
         }
 
         foreach (Match m in DirectiveAssetAttrRegex().Matches(markdown))
+        {
+            TryAddRelativeAsset(m.Groups[1].Value, collected);
+        }
+
+        foreach (Match m in YamlAssetLineRegex().Matches(markdown))
         {
             TryAddRelativeAsset(m.Groups[1].Value, collected);
         }

@@ -104,7 +104,7 @@ public sealed class WorkspaceMaintenanceTests : IDisposable
     }
 
     [Fact]
-    public async Task DetectAndUpdateOutdatedTools_FindsOlderRootAndSubfolderExes_AndReplacesWithAppsLatest()
+    public async Task DetectAndUpdateOutdatedTools_FindsOlderRootAndSubfolderExes_AndMigratesToShim()
     {
         var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data2"));
         Directory.CreateDirectory(paths.AppsDirectory);
@@ -121,7 +121,10 @@ public sealed class WorkspaceMaintenanceTests : IDisposable
         await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
 
         var appsStore = new ManagedAppsStore(paths);
-        var handler = new WorkspaceMaintenanceHandler(new WorkspaceMaintenanceService(paths, appsStore), appsStore, settingsStore);
+        var handler = new WorkspaceMaintenanceHandler(
+            new WorkspaceMaintenanceService(paths, appsStore, new WorkspaceShimWriter()),
+            appsStore,
+            settingsStore);
 
         var outdated = await handler.DetectOutdatedToolsAsync(ws);
         Assert.Equal(2, outdated.Count);
@@ -132,8 +135,9 @@ public sealed class WorkspaceMaintenanceTests : IDisposable
         Assert.True(updateRes.IsSuccess);
         Assert.False(File.Exists(Path.Combine(ws, "mby-cli-1.9.0.exe")));
         Assert.False(File.Exists(Path.Combine(sub, "meloberry-melomg-2.0.0.exe")));
-        Assert.True(File.Exists(Path.Combine(ws, "mby-cli-2.0.0.exe")));
-        Assert.True(File.Exists(Path.Combine(ws, "meloberry-melomg-2.2.0.exe")));
+        Assert.False(File.Exists(Path.Combine(ws, "mby-cli-2.0.0.exe")));
+        Assert.False(File.Exists(Path.Combine(ws, "meloberry-melomg-2.2.0.exe")));
+        Assert.True(File.Exists(Path.Combine(ws, WorkspaceShimWriter.ShimFileName)));
 
         var after = await handler.DetectOutdatedToolsAsync(ws);
         Assert.Empty(after);
@@ -151,6 +155,40 @@ public sealed class WorkspaceMaintenanceTests : IDisposable
         var outdated3 = await maint3.DetectOutdatedToolsAsync(ws3);
         Assert.True(outdated3.IsSuccess);
         Assert.Empty(outdated3.Value);
+    }
+
+    [Fact]
+    public async Task WorkspaceMaintenanceService_UpdateOutdatedToolsAsync_DeletesStaleExes_AndWritesShim()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "maint_shim_data"));
+        Directory.CreateDirectory(paths.AppsDirectory);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "mby-cli-2.3.0.exe"), [(byte)'M', (byte)'Z', 0x23]);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "meloberry-melomg-2.2.1.exe"), [(byte)'M', (byte)'Z', 0x22]);
+
+        var ws = Path.Combine(_tempRoot, "maint_shim_ws");
+        var sub = Path.Combine(ws, "nested");
+        Directory.CreateDirectory(sub);
+        await File.WriteAllBytesAsync(Path.Combine(ws, "mby-cli-1.9.0.exe"), [(byte)'M', (byte)'Z', 0x19]);
+        await File.WriteAllBytesAsync(Path.Combine(sub, "meloberry-melomg-2.0.0.exe"), [(byte)'M', (byte)'Z', 0x20]);
+
+        var appsStore = new ManagedAppsStore(paths);
+        var shimWriter = new WorkspaceShimWriter();
+        var service = new WorkspaceMaintenanceService(paths, appsStore, shimWriter);
+
+        var updateRes = await service.UpdateOutdatedToolsAsync(ws);
+        Assert.True(updateRes.IsSuccess, updateRes.Error?.Description);
+
+        Assert.False(File.Exists(Path.Combine(ws, "mby-cli-1.9.0.exe")));
+        Assert.False(File.Exists(Path.Combine(sub, "meloberry-melomg-2.0.0.exe")));
+        Assert.False(File.Exists(Path.Combine(ws, "mby-cli-2.3.0.exe")));
+        Assert.False(File.Exists(Path.Combine(ws, "meloberry-melomg-2.2.1.exe")));
+        Assert.True(File.Exists(Path.Combine(ws, WorkspaceShimWriter.ShimFileName)));
+        Assert.Contains(WorkspaceShimWriter.ShimFileName, updateRes.Value.CopiedNewFileNames);
+        Assert.Equal(2, updateRes.Value.RemovedOldRelativePaths.Count);
+
+        var after = await service.DetectOutdatedToolsAsync(ws);
+        Assert.True(after.IsSuccess);
+        Assert.Empty(after.Value);
     }
 
     public void Dispose()

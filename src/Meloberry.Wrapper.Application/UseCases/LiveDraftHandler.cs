@@ -80,6 +80,7 @@ public sealed class LiveDraftHandler(
             "rm-comp" => ApplyRemoveComponent(current, request),
             "move-comp" => ApplyMoveComponent(current, request),
             "add-spec" => ApplyAddSpec(current, request),
+            "update-spec" => ApplyUpdateSpec(current, request),
             "rm-spec" => ApplyRemoveSpec(current, request),
             "move-spec" => ApplyMoveSpec(current, request),
             "set-content" => ApplySetContent(fullWs, current, request),
@@ -106,7 +107,8 @@ public sealed class LiveDraftHandler(
             source,
             finalRes.Summary,
             finalRes.TargetComponentId,
-            finalRes.TargetSpecId));
+            finalRes.TargetSpecId,
+            op));
 
         return Result<LiveDraftMutationResult>.Success(finalRes);
     }
@@ -246,7 +248,7 @@ public sealed class LiveDraftHandler(
         {
             lastSpecId = $"{comp.Id}_{topic}_{Guid.NewGuid().ToString("N")[..6]}";
             var content = req.ContentMode is not null && req.ContentMode != SpecContentMode.None
-                ? new SpecContentSource(req.ContentMode.Value, req.RawText, req.MarkdownFilePath)
+                ? new SpecContentSource(req.ContentMode.Value, req.RawText, req.MarkdownFilePath, req.ImagePath, req.Caption, req.AltText)
                 : null;
             ordered.Add(new OrderedSpecInstance(lastSpecId, topic, 1, string.IsNullOrWhiteSpace(req.Subtype) ? null : req.Subtype.Trim(), content));
         }
@@ -258,6 +260,40 @@ public sealed class LiveDraftHandler(
             $"Added {qty} {topic} spec(s) to {comp.Title}",
             comp.Id,
             lastSpecId));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyUpdateSpec(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.TargetId))
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("Target spec ID is required for update-spec."));
+        }
+
+        var comps = (current.Components ?? []).ToList();
+        for (var c = 0; c < comps.Count; c++)
+        {
+            var comp = EnsureOrderedItems(comps[c]);
+            var ordered = (comp.OrderedItems ?? []).ToList();
+            var sIdx = ordered.FindIndex(s => string.Equals(s.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+            if (sIdx < 0)
+            {
+                continue;
+            }
+
+            var existing = ordered[sIdx];
+            var nextSubtype = req.Subtype is not null
+                ? (string.IsNullOrWhiteSpace(req.Subtype) ? null : req.Subtype.Trim())
+                : existing.Subtype;
+            ordered[sIdx] = existing with { Subtype = nextSubtype };
+            comps[c] = SyncSelectionsFromOrderedItems(comp with { OrderedItems = ordered }, existing.Topic, req.Notes, req.Modes);
+            return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+                current with { Components = comps },
+                $"Updated {existing.Topic} spec in {comp.Title}",
+                comp.Id,
+                existing.Id));
+        }
+
+        return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Spec '{req.TargetId}' not found."));
     }
 
     private static Result<LiveDraftMutationResult> ApplyRemoveSpec(PromptDraft current, LiveDraftMutationRequest req)
@@ -331,14 +367,17 @@ public sealed class LiveDraftHandler(
             return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("Target spec ID is required for set-content."));
         }
 
-        var mode = req.ContentMode ?? (!string.IsNullOrWhiteSpace(req.MarkdownFilePath)
-            ? SpecContentMode.MarkdownFile
-            : (!string.IsNullOrWhiteSpace(req.RawText) ? SpecContentMode.RawText : SpecContentMode.None));
+        var mode = req.ContentMode ?? (!string.IsNullOrWhiteSpace(req.ImagePath)
+            ? SpecContentMode.ImageFile
+            : (!string.IsNullOrWhiteSpace(req.MarkdownFilePath)
+                ? SpecContentMode.MarkdownFile
+                : (!string.IsNullOrWhiteSpace(req.RawText) ? SpecContentMode.RawText : SpecContentMode.None)));
 
         string? normalizedRelMd = null;
+        string? normalizedRelImg = null;
         if (mode == SpecContentMode.MarkdownFile)
         {
-            var relRes = ValidateAndNormalizeWorkspaceMarkdownPath(fullWs, req.MarkdownFilePath);
+            var relRes = ValidateAndNormalizeWorkspaceFilePath(fullWs, req.MarkdownFilePath, isImage: false);
             if (relRes.IsFailure)
             {
                 return Result<LiveDraftMutationResult>.Failure(relRes.Error!);
@@ -346,11 +385,28 @@ public sealed class LiveDraftHandler(
 
             normalizedRelMd = relRes.Value;
         }
+        else if (mode == SpecContentMode.ImageFile)
+        {
+            var relRes = ValidateAndNormalizeWorkspaceFilePath(fullWs, req.ImagePath, isImage: true);
+            if (relRes.IsFailure)
+            {
+                return Result<LiveDraftMutationResult>.Failure(relRes.Error!);
+            }
+
+            normalizedRelImg = relRes.Value;
+        }
 
         var contentSource = mode switch
         {
             SpecContentMode.RawText => new SpecContentSource(SpecContentMode.RawText, req.RawText ?? string.Empty, null),
             SpecContentMode.MarkdownFile => new SpecContentSource(SpecContentMode.MarkdownFile, null, normalizedRelMd),
+            SpecContentMode.ImageFile => new SpecContentSource(
+                SpecContentMode.ImageFile,
+                string.IsNullOrWhiteSpace(req.RawText) ? null : req.RawText,
+                null,
+                normalizedRelImg,
+                string.IsNullOrWhiteSpace(req.Caption) ? null : req.Caption.Trim(),
+                string.IsNullOrWhiteSpace(req.AltText) ? null : req.AltText.Trim()),
             _ => new SpecContentSource(SpecContentMode.None, null, null)
         };
 
@@ -377,11 +433,12 @@ public sealed class LiveDraftHandler(
         return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Spec '{req.TargetId}' not found."));
     }
 
-    private static Result<string> ValidateAndNormalizeWorkspaceMarkdownPath(string fullWs, string? rawPath)
+    private static Result<string> ValidateAndNormalizeWorkspaceFilePath(string fullWs, string? rawPath, bool isImage)
     {
+        var label = isImage ? "Image" : "Markdown";
         if (string.IsNullOrWhiteSpace(rawPath))
         {
-            return Result<string>.Failure(WrapperErrors.InvalidPath("Markdown file path cannot be empty."));
+            return Result<string>.Failure(WrapperErrors.InvalidPath($"{label} file path cannot be empty."));
         }
 
         try
@@ -393,26 +450,29 @@ public sealed class LiveDraftHandler(
             var fullRoot = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
             if (!candidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
             {
-                return Result<string>.Failure(WrapperErrors.InvalidPath("Markdown file must be inside the Active Workspace."));
+                return Result<string>.Failure(WrapperErrors.InvalidPath($"{label} file must be inside the Active Workspace."));
             }
 
             var ext = Path.GetExtension(candidate);
-            if (!string.Equals(ext, ".md", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(ext, ".markdown", StringComparison.OrdinalIgnoreCase))
+            var allowed = isImage ? ImportWorkspaceAssetHandler.ImageExtensions : ImportWorkspaceAssetHandler.MarkdownExtensions;
+            if (!allowed.Contains(ext))
             {
-                return Result<string>.Failure(WrapperErrors.InvalidPath("Attached spec file must be a .md or .markdown file."));
+                return Result<string>.Failure(WrapperErrors.InvalidPath(
+                    isImage
+                        ? "Attached spec image must be a .png, .jpg, .jpeg, .gif, .webp, .bmp, or .svg file."
+                        : "Attached spec file must be a .md or .markdown file."));
             }
 
             if (!File.Exists(candidate))
             {
-                return Result<string>.Failure(WrapperErrors.InvalidPath($"Markdown file not found: {rawPath}"));
+                return Result<string>.Failure(WrapperErrors.InvalidPath($"{label} file not found: {rawPath}"));
             }
 
             return Result<string>.Success(Path.GetRelativePath(fullWs, candidate).Replace('\\', '/'));
         }
         catch (Exception ex)
         {
-            return Result<string>.Failure(WrapperErrors.InvalidPath($"Invalid Markdown path: {ex.Message}"));
+            return Result<string>.Failure(WrapperErrors.InvalidPath($"Invalid {label} path: {ex.Message}"));
         }
     }
 
@@ -456,7 +516,8 @@ public sealed class LiveDraftHandler(
     private static PromptComponentPlan SyncSelectionsFromOrderedItems(
         PromptComponentPlan comp,
         string? touchTopic,
-        string? updatedNotes)
+        string? updatedNotes,
+        IReadOnlyList<string>? updatedModes = null)
     {
         var ordered = (comp.OrderedItems ?? []).ToList();
         var perTopicCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -486,12 +547,18 @@ public sealed class LiveDraftHandler(
                 .GroupBy(o => o.Subtype!, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
 
+            var isTouched = !string.IsNullOrWhiteSpace(touchTopic) &&
+                            string.Equals(topic, touchTopic, StringComparison.OrdinalIgnoreCase);
+            var modes = isTouched && updatedModes is not null
+                ? updatedModes.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => m.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                : prev?.Modes;
+
             mergedSelections.Add(new ShoppingListSelection(
                 Topic: topic,
                 Enabled: true,
                 DesiredCount: count,
                 Notes: notes,
-                Modes: prev?.Modes,
+                Modes: modes,
                 ModeCounts: subtypeCounts.Count > 0 ? subtypeCounts : prev?.ModeCounts));
         }
 

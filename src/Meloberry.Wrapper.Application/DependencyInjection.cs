@@ -28,6 +28,7 @@ public static class DependencyInjection
         services.AddSingleton<SettingsAndPresetsHandler>();
         services.AddSingleton<ProcessCliSignalHandler>();
         services.AddSingleton<LiveDraftHandler>();
+        services.AddSingleton<ImportWorkspaceAssetHandler>();
         services.AddSingleton<ExtractFigureWithMelomgHandler>();
         services.AddSingleton<FinalizeWorkspaceHandler>();
 

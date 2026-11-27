@@ -49,7 +49,8 @@ public sealed record AgentsMdComposeInput(
     string? MelomgSpecsText,
     bool IncludeLinkBlock,
     IReadOnlyList<string>? ExternalAttachments = null,
-    bool UsesWorkspaceShim = false);
+    bool UsesWorkspaceShim = false,
+    WorkflowMode WorkflowMode = WorkflowMode.ClassicPrompt);
 
 /// <summary>Result returned after exporting AGENTS.md into the Active Workspace.</summary>
 public sealed record AgentsMdExportResult(

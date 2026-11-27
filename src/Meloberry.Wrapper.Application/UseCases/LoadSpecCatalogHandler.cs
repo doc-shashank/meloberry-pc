@@ -13,7 +13,8 @@ public sealed class LoadSpecCatalogHandler(
         string ExePath,
         DateTime LastWriteTimeUtc,
         IReadOnlyList<SpecTopicItem> Catalog,
-        IReadOnlyDictionary<string, string> SpecIcons);
+        IReadOnlyDictionary<string, string> SpecIcons,
+        bool HasCliIcons);
 
     private readonly SemaphoreSlim _cacheLock = new(1, 1);
     private volatile SpecCacheEntry? _cache;
@@ -22,11 +23,11 @@ public sealed class LoadSpecCatalogHandler(
         bool forceRefresh = false,
         CancellationToken ct = default)
     {
-        var (specs, _, isLiveCli, activeMbyPath) = await LoadWithIconsAsync(forceRefresh, ct).ConfigureAwait(false);
+        var (specs, _, isLiveCli, activeMbyPath, _) = await LoadWithIconsAsync(forceRefresh, ct).ConfigureAwait(false);
         return (specs, isLiveCli, activeMbyPath);
     }
 
-    public async Task<(IReadOnlyList<SpecTopicItem> Specs, IReadOnlyDictionary<string, string> SpecIcons, bool IsLiveCli, string? ActiveMbyPath)> LoadWithIconsAsync(
+    public async Task<(IReadOnlyList<SpecTopicItem> Specs, IReadOnlyDictionary<string, string> SpecIcons, bool IsLiveCli, string? ActiveMbyPath, bool HasCliIcons)> LoadWithIconsAsync(
         bool forceRefresh = false,
         CancellationToken ct = default)
     {
@@ -39,7 +40,7 @@ public sealed class LoadSpecCatalogHandler(
 
         if (string.IsNullOrWhiteSpace(mbyPath))
         {
-            return (SpecCatalogDefaults.BuiltInFallbackCatalog, new Dictionary<string, string>(), false, null);
+            return (SpecCatalogDefaults.BuiltInFallbackCatalog, new Dictionary<string, string>(), false, null, false);
         }
 
         var mtime = File.GetLastWriteTimeUtc(mbyPath);
@@ -49,7 +50,7 @@ public sealed class LoadSpecCatalogHandler(
             existing.LastWriteTimeUtc == mtime &&
             string.Equals(existing.ExePath, mbyPath, StringComparison.OrdinalIgnoreCase))
         {
-            return (existing.Catalog, existing.SpecIcons, true, mbyPath);
+            return (existing.Catalog, existing.SpecIcons, true, mbyPath, existing.HasCliIcons);
         }
 
         await _cacheLock.WaitAsync(ct).ConfigureAwait(false);
@@ -62,13 +63,13 @@ public sealed class LoadSpecCatalogHandler(
                 existing.LastWriteTimeUtc == mtime &&
                 string.Equals(existing.ExePath, mbyPath, StringComparison.OrdinalIgnoreCase))
             {
-                return (existing.Catalog, existing.SpecIcons, true, mbyPath);
+                return (existing.Catalog, existing.SpecIcons, true, mbyPath, existing.HasCliIcons);
             }
 
             var result = await mbyClient.GetSpecCatalogWithIconsAsync(mbyPath, settings.ActiveWorkspace?.WorkspacePath, ct).ConfigureAwait(false);
             if (result.IsFailure)
             {
-                return (SpecCatalogDefaults.BuiltInFallbackCatalog, new Dictionary<string, string>(), false, mbyPath);
+                return (SpecCatalogDefaults.BuiltInFallbackCatalog, new Dictionary<string, string>(), false, mbyPath, false);
             }
 
             var merged = result.Value.Specs.ToList();
@@ -79,8 +80,9 @@ public sealed class LoadSpecCatalogHandler(
 
             IReadOnlyList<SpecTopicItem> snapshot = merged.AsReadOnly();
             var icons = result.Value.SpecIcons;
-            _cache = new SpecCacheEntry(mbyPath, mtime, snapshot, icons);
-            return (snapshot, icons, true, mbyPath);
+            var hasCliIcons = result.Value.IconsSupported || icons.Count > 0;
+            _cache = new SpecCacheEntry(mbyPath, mtime, snapshot, icons, hasCliIcons);
+            return (snapshot, icons, true, mbyPath, hasCliIcons);
         }
         finally
         {

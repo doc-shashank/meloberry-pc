@@ -257,6 +257,15 @@ public sealed class ManagedAppsStore(IWrapperDataPaths paths) : IManagedAppsStor
             : ManagedAppKind.Mby;
 
         var entry = entries.FirstOrDefault(e => e.Kind == targetKind);
+
+        // If workspace uses mby-pc.bat shim, central apps\ takes precedence over any legacy workspace .exe.
+        var hasShim = !string.IsNullOrWhiteSpace(workspacePath) &&
+                      File.Exists(Path.Combine(workspacePath, WorkspaceShimWriter.ShimFileName));
+        if (hasShim && entry is { IsInstalled: true, FullPath: not null } && File.Exists(entry.FullPath))
+        {
+            return Path.GetFullPath(entry.FullPath);
+        }
+
         if (!string.IsNullOrWhiteSpace(workspacePath) && Directory.Exists(workspacePath))
         {
             if (!string.IsNullOrWhiteSpace(entry?.WorkspaceFileName))

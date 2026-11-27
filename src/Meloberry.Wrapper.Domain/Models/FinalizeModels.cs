@@ -36,7 +36,7 @@ public sealed record ExtractFigureRequest(
     string? WorkspacePath,
     string PdfPath,
     string Query,
-    int? Quality = null,
+    string? Quality = null,
     bool MaskAll = false,
     bool EmitMeta = false);
 

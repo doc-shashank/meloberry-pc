@@ -109,14 +109,21 @@ export async function loadSpecs(forceRefresh) {
     state.isLiveSpecs = !!res.data.isLive;
     state.activeMbyPath = res.data.activeMbyPath || "";
 
+    const hasCliIcons = !!res.data.hasCliIcons;
     const statusEl = document.getElementById("specSyncStatus");
     const reloadBtn = document.getElementById("btnRefreshSpecs");
     if (reloadBtn) reloadBtn.title = "Re-query live mby spec schemas";
     if (statusEl) {
-      if (state.isLiveSpecs) {
+      if (state.isLiveSpecs && hasCliIcons) {
         statusEl.textContent = "Live mby specs";
         statusEl.className = "sync-status-text live";
         statusEl.title = state.activeMbyPath ? `Source: ${state.activeMbyPath}` : "Synced live from installed mby CLI";
+      } else if (state.isLiveSpecs) {
+        statusEl.textContent = "Live mby specs (fallback icons)";
+        statusEl.className = "sync-status-text live";
+        statusEl.title = state.activeMbyPath
+          ? `Connected to ${state.activeMbyPath}, but this mby version did not return --icons. Using built-in fallback icons.`
+          : "Connected to mby CLI, but this mby version did not return --icons. Using built-in fallback icons.";
       } else {
         statusEl.textContent = "Fallback specs (mby not found)";
         statusEl.className = "sync-status-text";
@@ -143,7 +150,22 @@ export function buildPromptDraftPayload() {
     .filter(i => i.kind === "file")
     .map(i => ({ filePath: wsPath ? `${wsPath}\\${i.targetRelativePath}` : i.sourcePath, kind: i.sourcePath.toLowerCase().endsWith(".pdf") ? "pdf" : "file" }));
 
-  const allAttachments = copiedFiles.concat(state.prompt.extraAttachments || []);
+  const seenPaths = new Set(copiedFiles.map(f => f.filePath.toLowerCase()));
+  if (wsPath && Array.isArray(aws?.lastCopiedRelativePaths)) {
+    aws.lastCopiedRelativePaths.forEach(rel => {
+      const clean = String(rel || "").replace(/^[/\\]+/, "");
+      if (!clean || /\.(exe|bat|cmd)$/i.test(clean)) return;
+      const full = `${wsPath}\\${clean.replace(/\//g, "\\")}`;
+      if (!seenPaths.has(full.toLowerCase())) {
+        seenPaths.add(full.toLowerCase());
+        copiedFiles.push({ filePath: full, kind: clean.toLowerCase().endsWith(".pdf") ? "pdf" : "file" });
+      }
+    });
+  }
+
+  const allAttachments = copiedFiles.concat(
+    (state.prompt.extraAttachments || []).filter(a => !seenPaths.has((a.filePath || "").toLowerCase()))
+  );
   const activeComps = state.prompt.components.map(c => ({
     id: c.id,
     kind: c.kind,
@@ -167,7 +189,14 @@ export function buildPromptDraftPayload() {
           instanceNumber: o.instanceNumber || 1,
           subtype: o.subtype || null,
           content: o.content && o.content.mode && o.content.mode !== "none"
-            ? { mode: o.content.mode, rawText: o.content.rawText || null, markdownFilePath: o.content.markdownFilePath || null }
+            ? {
+                mode: o.content.mode,
+                rawText: o.content.rawText || null,
+                markdownFilePath: o.content.markdownFilePath || null,
+                imagePath: o.content.imagePath || null,
+                caption: o.content.caption || null,
+                altText: o.content.altText || null
+              }
             : null
         }))
       : null
@@ -317,7 +346,9 @@ export async function refreshPromptPreview(opts = {}) {
     const box = document.getElementById("promptPreviewBox");
     const metrics = document.getElementById("promptMetrics");
     if (box) box.textContent = res.data.markdown;
-    if (metrics) metrics.textContent = `${res.data.characterCount} chars \u00b7 ~${res.data.approximateTokens} tokens`;
+    if (metrics && (state.prompt.workflowMode || "direct") !== "direct") {
+      metrics.textContent = `${res.data.characterCount} chars \u00b7 ~${res.data.approximateTokens} tokens`;
+    }
   }
 }
 

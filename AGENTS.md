@@ -28,8 +28,6 @@ Wrapper/
 ├── .gitignore
 ├── AGENTS.md
 ├── Directory.Build.props
-├── MBY_CLI_SIGNAL_SPEC.md
-├── MBYPRESET_SPEC.md
 ├── Meloberry.Wrapper.sln
 ├── IMPORTANT/
 │   ├── C_SHARP_CLEAN_ARCHITECTURE.md
@@ -72,6 +70,7 @@ Wrapper/
 │   │       ├── CaptureAnalysisHandler.cs
 │   │       ├── ExtractFigureWithMelomgHandler.cs
 │   │       ├── FinalizeWorkspaceHandler.cs
+│   │       ├── ImportWorkspaceAssetHandler.cs
 │   │       ├── LiveDraftHandler.cs
 │   │       ├── LoadSpecCatalogHandler.cs
 │   │       ├── ManagedAppsHandler.cs
@@ -124,7 +123,8 @@ Wrapper/
 │   │   ├── WebAssets/
 │   │   │   ├── shell.html
 │   │   │   ├── icons/
-│   │   │   │   └── ui/    (27 embedded SVG UI navigation/action/fallback icons)
+│   │   │   │   ├── fallback/ (19 embedded fallback SVG spec icons for legacy mby-cli)
+│   │   │   │   └── ui/       (27 embedded SVG UI navigation/action/fallback icons)
 │   │   │   ├── js/
 │   │   │   │   ├── api.js
 │   │   │   │   ├── icons.js
@@ -215,11 +215,48 @@ Wrapper/
 - `.gitignore`: Excludes `.NET` build/publish artifacts (`bin/`, `obj/`, `/app/`, `installer/Output/`), binaries, WebView2 runtime state, and local IDE files.
 - `AGENTS.md`: Workspace guide defining repository structure, per-file summaries, Clean Architecture summaries, and mandatory agent directives.
 - `Directory.Build.props`: Single source of truth for version (`1.2.0`), product metadata, self-update repo coordinates, nullable/implicit usings, and `TreatWarningsAsErrors`.
-- `MBY_CLI_SIGNAL_SPEC.md`: Detailed `.mby-signal.txt` file-based IPC protocol specification for `mby` CLI auto-loading compiled study WebApps.
-- `MBYPRESET_SPEC.md`: Detailed schema and portability specification for `.mbypreset` workflow and single-component preset files.
 - `Meloberry.Wrapper.sln`: Visual Studio solution uniting all four `src/` projects and both `tests/` projects.
 - `installer/build-installer.ps1`: Publishes the single-file Win64 desktop executable and compiles the Inno Setup installer using the version from `Directory.Build.props`.
 - `installer/mby-pc.iss`: Inno Setup script packaging `mby-pc-<version>.exe` into `mby-pc-setup-<version>.exe`.
+
+### Folded Reference Specifications
+
+> The former standalone `MBY_CLI_SIGNAL_SPEC.md`, `MBYPRESET_SPEC.md`, and `WRAPPER_EVOLUTION_REPORT.md` documents are condensed below so this guide stays the single source of truth.
+
+#### `.mby-signal.txt` CLI signal protocol
+- Purpose: atomic file-based IPC emitted by `mby` at the end of `mby build`, so the Viewer auto-loads a compiled WebApp without partial/mid-build reads. The signal carries metadata and the dot-prefixed file stays out of the workspace directory tree popup.
+- Location: `<ActiveWorkspace>\.mby-signal.txt` directly in the Active Workspace root. The wrapper keeps the file and deduplicates by `id` (bounded 128-entry cache), so duplicate watcher bursts are harmless.
+- Writer contract: `mby` writes UTF-8 to `.mby-signal.txt.tmp`, flushes, then atomically move/replaces the signal file; `WorkspaceFileWatcherService` ignores `.tmp`/`.mbytmp` events and applies a 120ms debounce (bypassing the workspace suppression scope).
+- Grammar: UTF-8 `key=value` lines; blank lines and `#` comments ignored; keys case-insensitive and split on the first `=`; values unquoted.
+- Envelope: `version` (1), `event` (required; `webapp_built` is the only active event), `id` (UUID/nonce for dedup; fallback `event|path|timestamp`), `timestamp` (ISO-8601 UTC), `producer`.
+- `webapp_built`: `path` (required; WebApp directory with `index.html` + `app.js`, relative to the workspace or absolute), optional `workspace_id` and `title`.
+- Flow: watcher → `ProcessCliSignalHandler` (up to 4 reads with 50ms backoff, parse, dedupe, resolve `path`) → `ManageLibraryHandler.OpenWebAppAsync` validates and mounts `/viewer/<slotId>/` + prepends `RecentWebApps` → SSE `webapp-built` (`{ slotId, url, entry, workspaceId, title, signalId }`) → Shell loads `#webAppFrame` and switches to Step 5 (Viewer).
+- Reserved future events (`template_applied`, `pkg_exported`, `build_failed`) are ignored safely by v1.
+
+#### `.mbypreset` portable preset format
+- Purpose: portable UTF-8 JSON preset capturing a whole workflow (`"scope": "workflow"`) or a single Article/Quiz card (`"scope": "component"`).
+- Encoding: `.mbypreset`, UTF-8 (no BOM preferred), camelCase properties and enum strings, nulls omitted on write, case-insensitive reads with missing optionals treated as `null`, and atomic temp-file + replace writes.
+- Envelope `MbyPresetFile`: `formatVersion` (int, currently `1`), `scope`, non-empty `name`, optional `description`, plus `workflowPreset` (required for `workflow`) or `componentPreset` (required for `component`).
+- `PromptPreset`: `id`, `name`, `description`, `container` (`session` | `standaloneArticle` | `standaloneQuiz`), `authoringFormat` (`markdownDirectory` | `singleMarkdown` | `json`), `selections[]`, `isBuiltIn = false`, recommended `components[]`.
+- `PromptComponentPlan`: `id`, `kind` (`article` | `quiz`), `title`, `selections[]`, optional `orderedItems[]`; explicit `orderedItems` take precedence over expanding `selections`.
+- `ShoppingListSelection`: `topic`, `enabled`, `desiredCount?`, `notes?`, `modes?`, `modeCounts?`. `OrderedSpecInstance`: `id`, `topic`, 1-based `instanceNumber`, optional `subtype`.
+- Enums: `PresetFileScope`, `ContainerKind`, `ComponentKind`, `AuthoringFormat`.
+- Storage: `%LOCALAPPDATA%\Meloberry\presets\*.mbypreset` (honoring `%MBY_WRAPPER_DATA%`), component presets under `presets\components\`; saving/loading from an arbitrary path mirrors/registers a library copy and applies it immediately.
+- Validation: missing/unreadable file or empty `name` → `Preset.InvalidFile`; workflow import requires `scope == "workflow"` + `workflowPreset`; card load requires `scope == "component"` + `componentPreset.kind` matching the target card. Future `mby` preset commands must honor `orderedItems` before reconciling `selections`.
+
+#### Wrapper evolution & locked design decisions
+- Status: research/design interview complete with decisions D1–D8 locked (2026-11-27, v1.2.0). Goal: turn Wrapper into a true bidirectional host — theme color parity across Berry/Light/Dark/Paper, central tools + `mby-pc.bat` shim instead of per-workspace `.exe` copies, an optional 3-way prompt system, per-spec direct content, and a transactional Finalize-to-Viewer pipeline.
+- D1 Shim: a marker-tagged `mby-pc.bat` lives strictly in the Active Workspace and is removed from the previous workspace on switch; only custom imported tools are copied as `.exe`s.
+- D2 CLI mode: `--cli` is handled before the single-instance mutex; tool proxies, `draft`, and `finalize` work headlessly via `<Workspace>\.meloberry\pc-draft.json` and live via loopback HTTP + SSE; GUI-only commands return `Gui.NotRunning` (exit `3`) unless `--launch`.
+- D3 Modes: `Direct` hides prompt clutter and turns Review into Build Readiness; `Live Agent` emits a lean `.\mby-pc.bat` handoff plus live `draft-updated` / `agent-activity` SSE, `.agent-touched` highlights, and auto Viewer transition; `Classic Prompt` keeps the full Prompt Studio.
+- D4 Content: per-spec `None` / `RawText` / `MarkdownFile` smart-wrapped into `:::<topic>{...}` directives, with a Raw/`.md` toggle, expanded editor using `mby spec` hints, and `.md` drag-and-drop.
+- D5 Finalize: assemble into `<Workspace>\.meloberry\build-src\<slug>\`, run transactional `mby batch -` (`apply` → `check` → `build` with `verify` + `staticOnly`), then open `<slug>_web` in Step 5; empty specs are blocked unless "Allow Placeholders" is set.
+- D6 Icons: spec display names and SVGs are owned by `mby-cli` (`mby spec --icons --json`, opt-in flag with retry without `--icons` for older binaries); Wrapper keeps only `ui/` icons plus generic fallbacks; `melomg` is untouched.
+- D7 Degradation: without `mby` show install CTA + fallback specs with Finalize disabled; without `melomg` keep authoring/Finalize/Viewer working with an inline install CTA; missing tool proxies exit `3` (`Cli.NotFound`).
+- D8 Figures: `MelomgFigureQueryNormalizer` strips `Figure`/`Fig.` prefixes, reuses indexed `Doc_*` via `melomg ls`, otherwise runs `melomg extract <pdf> <selector> -o <ws>\assets --quality high --retain-db --offline --json`; attach the workspace-relative path to image-capable specs with optional `--mask-all --meta` and a live thumbnail preview.
+- Constraints: Clean Architecture + TDD phase tests consolidated in Phase 7, `dotnet build`/`dotnet test` gate (Rule #6), AGENTS.md structure index sync (Rule #4), and ~400–500 line file guardrail (Rule #7). Loopback IPC uses `%LOCALAPPDATA%\Meloberry\runtime-ipc.json` (`{ pid, shellPort, viewerPort, token, startedUtc }`) with Host/token guards; `ConsoleBridge` attaches only when standard handles are NOT redirected.
+- Simplifications: 5-endpoint `/api/live/*`, thin 5-verb CLI dispatcher, uniform data-driven smart-wrapping. Tool proxy flow: `mby-pc.bat` resolves `mby-pc.exe` via `mby-pc-path.txt` → `--cli --workspace` → `ToolProxyRunner` resolves binaries only through `IManagedAppsStore.ResolveToolExecutableAsync` → spawn with caller CWD, exact args, inherited `MBY_AGENT`, transparent I/O, and exact exit code → `agent-activity` + auto Viewer on successful `mby build`.
+- Independence: Wrapper, CLI, and `melomg` have zero compile-time coupling; new `mby`/`melomg` flags work through the opaque proxy without Wrapper changes; central upgrades apply to all workspaces instantly.
 
 ### Documentation (`IMPORTANT/`)
 - `IMPORTANT/*`: Authoritative C#/.NET Clean Architecture (`C_SHARP_CLEAN_ARCHITECTURE.md`) and Clean CLI (`C_SHARP_CLEAN_ARCHITECTURE_FOR_CLI.md`) engineering constraint guides that all C# changes must obey.
@@ -253,6 +290,7 @@ Wrapper/
 - `UseCases/CaptureAnalysisHandler.cs`: Persists `POST /api/analysis` study reports from the active or referer-matched mounted WebApp.
 - `UseCases/ExtractFigureWithMelomgHandler.cs`: Reuses indexed `Doc_*` or runs one-shot `melomg extract --retain-db --offline` to crop PDF figures directly for specs.
 - `UseCases/FinalizeWorkspaceHandler.cs`: Validates organized specs, writes modular Markdown + referenced assets, executes `mby batch -`, and mounts the compiled WebApp.
+- `UseCases/ImportWorkspaceAssetHandler.cs`: Validates and atomically imports external image (`.png/.jpg/.jpeg/.gif/.webp/.bmp/.svg`) or Markdown (`.md/.markdown`) files into `<Workspace>\assets\` or `<Workspace>\notes\` without destructive overwrites.
 - `UseCases/LiveDraftHandler.cs`: Coordinates thread-safe `<Workspace>\.meloberry\pc-draft.json` reads, full saves, structured CLI/UI mutations, and `DraftChanged` events.
 - `UseCases/LoadSpecCatalogHandler.cs`: Loads, caches (by exe mtime), and falls back `mby spec --icons --json` topics/icons plus the virtual `link` helper.
 - `UseCases/ManagedAppsHandler.cs`: Scans `apps\`, resolves `mby`/`melomg` executables, imports local `.exe`s, uninstalls tools, and tracks GitHub tool downloads/updates.
@@ -326,10 +364,11 @@ Wrapper/
 - `WebAssets/js/views/prompt/promptDraft.js`: Shared prompt state, live `/api/live/draft` load/save with SSE echo suppression, preset/spec loaders, draft payload builder, and debounced Markdown preview composer.
 - `WebAssets/js/views/prompt/readyWorkspace.js`: Ready Workspace (`AGENTS.md`) export workflow, subfolder picker, and overwrite confirmation modal.
 - `WebAssets/js/views/prompt/review.js`: Step 4 (Review) `Finalize & Build WebApp` trigger, placeholder toggle, workflow mode sync, Ready Workspace, Actions, and Prompt Options.
-- `WebAssets/js/views/prompt/specContentModal.js`: Expanded per-spec content authoring modal (`None`, `Raw Text`, `.md File`) with inline `melomg` PDF figure extraction and thumbnail preview.
+- `WebAssets/js/views/prompt/specContentModal.js`: Expanded per-spec content authoring modal (`None`, `Image`, `Raw Text`, `.md File`) with workspace-confined asset auto-import and inline `melomg` PDF figure extraction/preview.
 - `WebAssets/js/views/prompt/specModes.js`: Pure spec mode-group structure, subtype distribution math, and ordered item synchronization helpers.
 - `WebAssets/js/views/prompt/specPopovers.js`: Anchored `+ Add Spec` picker and Spec Tile Inspector popover (subtype, modifiers, notes, content editor trigger, duplicate, delete).
-- `WebAssets/icons/ui/*`: Embedded SVG icon assets (27 UI navigation/action/fallback icons; spec/subtype SVG icons live in `mby-cli`).
+- `WebAssets/icons/fallback/*`: Embedded 24x24 fallback SVG spec icons (19 core topics) used only when live `mby spec --icons --json` returns no icon for a topic.
+- `WebAssets/icons/ui/*`: Embedded SVG icon assets (27 UI navigation/action/fallback icons; live spec/subtype SVG icons live in `mby-cli`).
 - `Workspace/AgentsMdFileWriter.cs`: Confined atomic reader/writer for `AGENTS.md` inside the Active Workspace root or a validated subfolder.
 - `Workspace/FileIdentity.cs`: Byte-length + SHA-256 identity comparison helper (`FileIdentity.AreIdenticalAsync`).
 - `Workspace/ManagedAppsStore.cs`: Canonical `%LOCALAPPDATA%\Meloberry\apps\` store with PE metadata inspection, import, uninstall, and precedence-ordered tool resolution.

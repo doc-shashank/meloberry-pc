@@ -15,7 +15,7 @@ internal static class ConsoleBridge
     {
         try
         {
-            if (!Console.IsOutputRedirected || !Console.IsErrorRedirected || !Console.IsInputRedirected)
+            if (!Console.IsOutputRedirected && !Console.IsErrorRedirected && !Console.IsInputRedirected)
             {
                 AttachConsole(AttachParentProcess);
             }

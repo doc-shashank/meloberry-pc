@@ -274,8 +274,12 @@ export function openSpecInspectorPopover(anchorBtn, comp, inst, onMutated) {
 
     const contentSec = document.createElement("div");
     contentSec.className = "inspector-section";
-    const cMode = liveInst.content?.mode || "none";
-    const cLabel = cMode === "rawText" ? "Raw Text" : (cMode === "markdownFile" ? ".md File" : "Empty");
+    const c = liveInst.content;
+    const hasImg = c?.mode === "imageFile" && Boolean(c.imagePath?.trim());
+    const hasMd = c?.mode === "markdownFile" && Boolean(c.markdownFilePath?.trim());
+    const hasRaw = c?.mode === "rawText" && Boolean(c.rawText?.trim());
+    const hasAnyContent = hasImg || hasMd || hasRaw;
+    const cLabel = hasImg ? "Image" : (hasMd ? ".md File" : (hasRaw ? "Raw Text" : "Empty"));
     const cBar = document.createElement("div");
     cBar.className = "inspector-content-bar";
     cBar.innerHTML = `<span class="inspector-label" style="margin:0">Spec Content: <strong>${escapeHtml(cLabel)}</strong></span>`;
@@ -285,7 +289,7 @@ export function openSpecInspectorPopover(anchorBtn, comp, inst, onMutated) {
     const editContentBtn = document.createElement("button");
     editContentBtn.type = "button";
     editContentBtn.className = "btn btn-xs btn-primary";
-    editContentBtn.textContent = cMode === "none" ? "Add Content" : "Edit Content";
+    editContentBtn.textContent = hasAnyContent ? "Edit Content" : "Add Content";
     editContentBtn.onclick = e => {
       e.stopPropagation();
       emit("spec:open-content-modal", { compId: comp.id, instId: liveInst.id, focusMelomg: false });

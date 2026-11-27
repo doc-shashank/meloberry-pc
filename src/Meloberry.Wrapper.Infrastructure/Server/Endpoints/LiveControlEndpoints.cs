@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Application.UseCases;
@@ -89,7 +90,11 @@ public sealed class LiveControlEndpoints(
                     ContentMode: body.ContentMode,
                     RawText: body.RawText,
                     MarkdownFilePath: body.MarkdownFilePath,
-                    Notes: body.Notes);
+                    Notes: body.Notes,
+                    ImagePath: body.ImagePath,
+                    Caption: body.Caption,
+                    AltText: body.AltText,
+                    Modes: body.Modes);
 
                 var res = await liveDraft.MutateAsync(body.WorkspacePath, mut, ct).ConfigureAwait(false);
                 await HttpEnvelope.WriteResultAsync(resp, res, ct).ConfigureAwait(false);
@@ -100,20 +105,54 @@ public sealed class LiveControlEndpoints(
             {
                 var body = await HttpEnvelope.ReadJsonAsync<LiveFinalizeApiRequest>(req, ct).ConfigureAwait(false)
                     ?? new LiveFinalizeApiRequest();
+                var activityId = $"fin_{Guid.NewGuid():N}"[..14];
+                var sw = Stopwatch.StartNew();
+                sseHub.Broadcast("agent-activity", new
+                {
+                    id = activityId,
+                    state = "running",
+                    message = "Finalizing & building WebApp",
+                    detail = body.OutputDir,
+                    level = "info",
+                    timestampUtc = DateTimeOffset.UtcNow
+                });
+
                 var res = await finalizeHandler.FinalizeAsync(new Domain.Models.FinalizeRequest(
                     body.WorkspacePath,
                     body.AllowPlaceholders ?? false,
                     body.OutputDir,
                     body.VerifyStaticOnly), ct).ConfigureAwait(false);
+                sw.Stop();
 
                 if (res.IsFailure)
                 {
+                    sseHub.Broadcast("agent-activity", new
+                    {
+                        id = activityId,
+                        state = "error",
+                        message = "Finalize failed",
+                        detail = res.Error!.Description,
+                        level = "err",
+                        durationMs = sw.ElapsedMilliseconds,
+                        timestampUtc = DateTimeOffset.UtcNow
+                    });
                     await HttpEnvelope.WriteErrorAsync(resp, res.Error!, ct).ConfigureAwait(false);
                     return true;
                 }
 
                 var fin = res.Value;
                 var viewerUrl = $"{viewerBaseUrl.TrimEnd('/')}{fin.ViewerUrl}";
+                sseHub.Broadcast("agent-activity", new
+                {
+                    id = activityId,
+                    state = "done",
+                    message = $"Built {fin.WorkspaceId}",
+                    detail = fin.WebAppDirectory,
+                    level = "info",
+                    exitCode = 0,
+                    durationMs = sw.ElapsedMilliseconds,
+                    timestampUtc = DateTimeOffset.UtcNow
+                });
                 sseHub.Broadcast("webapp-built", new
                 {
                     slotId = fin.SlotId,
@@ -188,10 +227,18 @@ public sealed class LiveControlEndpoints(
 
                 if (action == "activity" && !string.IsNullOrWhiteSpace(body?.Message))
                 {
+                    var resolvedState = !string.IsNullOrWhiteSpace(body.State)
+                        ? body.State.Trim().ToLowerInvariant()
+                        : (string.Equals(body.Level, "err", StringComparison.OrdinalIgnoreCase) ? "error" : "done");
                     sseHub.Broadcast("agent-activity", new
                     {
+                        id = body.Id,
+                        state = resolvedState,
                         message = body.Message,
-                        level = body.Level ?? "info",
+                        detail = body.Detail,
+                        level = body.Level ?? (resolvedState == "error" ? "err" : "info"),
+                        exitCode = body.ExitCode,
+                        durationMs = body.DurationMs,
                         timestampUtc = DateTimeOffset.UtcNow
                     });
                     await HttpEnvelope.WriteJsonAsync(resp, 200, new { ok = true }, ct).ConfigureAwait(false);

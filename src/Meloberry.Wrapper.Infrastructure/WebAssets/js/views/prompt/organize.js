@@ -138,6 +138,20 @@ function removeComponentWithAnimation(comp, cardEl) {
   emit("prompt:refresh");
 }
 
+export function getSpecContentBadge(content) {
+  if (!content || !content.mode || content.mode === "none") return null;
+  if (content.mode === "imageFile" && content.imagePath?.trim()) {
+    return { label: "Img", title: `Image: ${content.imagePath.trim()} — click to edit` };
+  }
+  if (content.mode === "markdownFile" && content.markdownFilePath?.trim()) {
+    return { label: ".md", title: `Markdown file: ${content.markdownFilePath.trim()} — click to edit` };
+  }
+  if (content.mode === "rawText" && content.rawText?.trim()) {
+    return { label: "Raw", title: "Raw text content attached — click to edit" };
+  }
+  return null;
+}
+
 function buildSpecTile(comp, inst, onMutated) {
   const tile = document.createElement("div");
   const isJustAdded = state.lastAddedSpecOrgId && inst.id === state.lastAddedSpecOrgId;
@@ -176,15 +190,13 @@ function buildSpecTile(comp, inst, onMutated) {
 
   const actions = document.createElement("div");
   actions.className = "org-spec-tile-actions";
-  const contentMode = inst.content?.mode || "none";
-  if (contentMode === "rawText" || contentMode === "markdownFile") {
+  const badge = getSpecContentBadge(inst.content);
+  if (badge) {
     const cBadge = document.createElement("button");
     cBadge.type = "button";
     cBadge.className = "spec-content-badge";
-    cBadge.textContent = contentMode === "markdownFile" ? ".md" : "Raw";
-    cBadge.title = contentMode === "markdownFile"
-      ? `Markdown file: ${inst.content?.markdownFilePath || ""}`
-      : "Raw text content attached — click to edit";
+    cBadge.textContent = badge.label;
+    cBadge.title = badge.title;
     cBadge.onpointerdown = e => e.stopPropagation();
     cBadge.onclick = e => {
       e.stopPropagation();

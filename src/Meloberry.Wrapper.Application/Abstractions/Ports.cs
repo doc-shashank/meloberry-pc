@@ -66,7 +66,8 @@ public interface IAgentsMdFileWriter
 /// <summary>Live spec catalog plus embedded SVG icons resolved from `mby-cli`.</summary>
 public sealed record SpecCatalogResult(
     IReadOnlyList<SpecTopicItem> Specs,
-    IReadOnlyDictionary<string, string> SpecIcons);
+    IReadOnlyDictionary<string, string> SpecIcons,
+    bool IconsSupported = false);
 
 /// <summary>Executes `mby` CLI commands out-of-process with MBY_AGENT=1.</summary>
 public interface IMbyCliClient
@@ -91,7 +92,7 @@ public interface IMelomgCliClient
         string targetOrPdf,
         string selector,
         string outputDir,
-        int? quality,
+        string? quality,
         bool maskAll,
         bool emitMeta,
         bool retainDb,
@@ -251,7 +252,8 @@ public sealed record LiveDraftChangedEvent(
     string Source,
     string Summary,
     string? TargetComponentId = null,
-    string? TargetSpecId = null);
+    string? TargetSpecId = null,
+    string? Op = null);
 
 /// <summary>Surgical draft mutation command executed via GUI or `mby-pc.bat draft`.</summary>
 public sealed record LiveDraftMutationRequest(
@@ -272,7 +274,11 @@ public sealed record LiveDraftMutationRequest(
     SpecContentMode? ContentMode = null,
     string? RawText = null,
     string? MarkdownFilePath = null,
-    string? Notes = null);
+    string? Notes = null,
+    string? ImagePath = null,
+    string? Caption = null,
+    string? AltText = null,
+    IReadOnlyList<string>? Modes = null);
 
 /// <summary>Result returned by `LiveDraftHandler.MutateAsync`.</summary>
 public sealed record LiveDraftMutationResult(

@@ -60,11 +60,20 @@ public sealed class LiveGuiIpcClient(IRuntimeIpcRegistry ipcRegistry)
         string? path = null,
         string? message = null,
         string? level = null,
+        string? id = null,
+        string? state = null,
+        string? detail = null,
+        int? exitCode = null,
+        long? durationMs = null,
         CancellationToken ct = default)
     {
         try
         {
-            await SendAsync(HttpMethod.Post, "/api/live/ui", new { action, view, path, message, level }, ct).ConfigureAwait(false);
+            await SendAsync(
+                HttpMethod.Post,
+                "/api/live/ui",
+                new { action, view, path, message, level, id, state, detail, exitCode, durationMs },
+                ct).ConfigureAwait(false);
         }
         catch
         {

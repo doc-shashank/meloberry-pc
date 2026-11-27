@@ -38,12 +38,20 @@ public sealed class ToolProxyRunner(
         }
 
         var subVerb = args.FirstOrDefault(a => !a.StartsWith('-'));
+        var activityId = $"tool_{Guid.NewGuid():N}"[..14];
+        var cmdLabel = string.IsNullOrWhiteSpace(subVerb) ? toolKey : $"{toolKey} {subVerb}";
+        var detailSummary = args.Count > 0 ? string.Join(' ', args.Take(6)) : null;
+        var sw = Stopwatch.StartNew();
         if (liveGui.IsGuiAlive())
         {
-            var activityMsg = string.IsNullOrWhiteSpace(subVerb)
-                ? $"Agent running {toolKey}"
-                : $"Agent running {toolKey} {subVerb}";
-            await liveGui.TryPostUiAsync("activity", message: activityMsg, level: "info", ct: ct).ConfigureAwait(false);
+            await liveGui.TryPostUiAsync(
+                "activity",
+                message: $"Running {cmdLabel}",
+                level: "info",
+                id: activityId,
+                state: "running",
+                detail: detailSummary,
+                ct: ct).ConfigureAwait(false);
         }
 
         var psi = new ProcessStartInfo
@@ -67,6 +75,20 @@ public sealed class ToolProxyRunner(
         using var proc = new Process { StartInfo = psi };
         if (!proc.Start())
         {
+            sw.Stop();
+            if (liveGui.IsGuiAlive())
+            {
+                await liveGui.TryPostUiAsync(
+                    "activity",
+                    message: $"Failed to start {cmdLabel}",
+                    level: "err",
+                    id: activityId,
+                    state: "error",
+                    detail: exePath,
+                    exitCode: 1,
+                    durationMs: sw.ElapsedMilliseconds,
+                    ct: ct).ConfigureAwait(false);
+            }
             await console.Error.WriteLineAsync($"Failed to launch '{exePath}'.").ConfigureAwait(false);
             return 1;
         }
@@ -89,6 +111,22 @@ public sealed class ToolProxyRunner(
 
         await Task.WhenAll(stdinTask, stdoutTask, stderrTask).ConfigureAwait(false);
         await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+        sw.Stop();
+
+        if (liveGui.IsGuiAlive())
+        {
+            var succeeded = proc.ExitCode == 0;
+            await liveGui.TryPostUiAsync(
+                "activity",
+                message: succeeded ? $"Completed {cmdLabel}" : $"Failed {cmdLabel}",
+                level: succeeded ? "info" : "err",
+                id: activityId,
+                state: succeeded ? "done" : "error",
+                detail: detailSummary,
+                exitCode: proc.ExitCode,
+                durationMs: sw.ElapsedMilliseconds,
+                ct: ct).ConfigureAwait(false);
+        }
 
         if (proc.ExitCode == 0 &&
             string.Equals(toolKey, "mby", StringComparison.OrdinalIgnoreCase) &&

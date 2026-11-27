@@ -7,7 +7,6 @@ import { openConfirmModal, closeConfirmModal, showPathTooltip, hidePathTooltip }
 import {
   addNotification,
   toast,
-  switchView,
   pruneSelectedAppNames,
   syncWorkspaceChrome,
   renderOutdatedBanner,
@@ -16,31 +15,36 @@ import {
 
 export function selectUpgradedApp(appEntry) {
   if (!appEntry || !appEntry.fileName) return;
-  if (appEntry.kind === "mby" || appEntry.kind === "melomg") {
-    const isMby = appEntry.kind === "mby";
-    for (const name of Array.from(state.selectedAppNames)) {
-      const lower = name.toLowerCase();
-      const matchesKind = isMby
-        ? (lower === "mby.exe" || lower.startsWith("mby-cli"))
-        : (lower === "melomg.exe" || lower.startsWith("meloberry-melomg"));
-      if (matchesKind) {
-        state.selectedAppNames.delete(name);
-      }
-    }
+  if (appEntry.kind === "customExecutable") {
+    state.selectedAppNames.add(appEntry.fileName);
   }
-  state.selectedAppNames.add(appEntry.fileName);
+}
+
+function syncStagedCopyBarVisibility() {
+  const bar = document.getElementById("stagedCopyBar");
+  const box = document.getElementById("planConflictsBox");
+  const hasPending = state.stagedItems.length > 0 || state.selectedAppNames.size > 0;
+  if (bar) bar.classList.toggle("hidden", !hasPending);
+  if (!hasPending && box) box.classList.add("hidden");
 }
 
 export function loadWorkspaceDraftState() {
   const aws = state.settings.activeWorkspace;
+  const customInstalled = new Set(
+    state.apps
+      .filter(a => a.isInstalled && a.kind === "customExecutable")
+      .map(a => a.fileName)
+  );
+
   if (aws && aws.workspacePath) {
     document.getElementById("setupWsPath").value = aws.workspacePath;
-    state.selectedAppNames = new Set(aws.selectedAppFileNames || []);
+    state.selectedAppNames = new Set(
+      (aws.selectedAppFileNames || []).filter(n => customInstalled.has(n))
+    );
     state.stagedItems = [...(aws.stagedItems || [])];
   } else {
     state.selectedAppNames.clear();
-    state.apps.filter(a => a.isInstalled && (a.kind === "mby" || a.kind === "melomg"))
-      .forEach(a => state.selectedAppNames.add(a.fileName));
+    state.stagedItems = [];
   }
 
   syncWorkspaceChrome();
@@ -89,7 +93,7 @@ export async function selectWorkspace(path) {
     }
     state.outdatedTools = res.data.outdatedTools || [];
     if (state.outdatedTools.length > 0) {
-      addNotification("Outdated Workspace Tools", `${state.outdatedTools.length} executable(s) can be updated from apps\\.`, "warn");
+      addNotification("Legacy Workspace Tools", `${state.outdatedTools.length} outdated workspace executable(s) can be migrated to mby-pc.bat.`, "warn");
     }
 
     const st = await api("GET", `/api/workspace/agents-md/status?workspacePath=${encodeURIComponent(wsState.workspacePath)}`);
@@ -145,6 +149,7 @@ export function renderAppsCart() {
         if (cb.checked) state.selectedAppNames.add(app.fileName);
         else state.selectedAppNames.delete(app.fileName);
         card.classList.toggle("selected", cb.checked);
+        syncStagedCopyBarVisibility();
         await previewPlan();
       };
       lbl.appendChild(cb);
@@ -236,6 +241,7 @@ export function renderAppsCart() {
     card.append(actions, statusLine, progWrap);
     container.appendChild(card);
   });
+  syncStagedCopyBarVisibility();
 }
 
 export function confirmUninstallApp(app) {
@@ -300,6 +306,7 @@ export async function downloadToolFromGitHub(toolKey, btn, progWrap, progBar, st
 export function renderStagedItems() {
   const list = document.getElementById("stagedItemsList");
   list.innerHTML = "";
+  syncStagedCopyBarVisibility();
   if (!state.stagedItems.length) {
     list.innerHTML = '<div class="muted">No files or folder added...</div>';
     return;
@@ -344,9 +351,10 @@ export async function previewPlan() {
   const wsPath = document.getElementById("setupWsPath").value.trim();
   const box = document.getElementById("planConflictsBox");
   const summary = document.getElementById("planSummaryText");
-  if (!wsPath) {
-    summary.textContent = "";
-    box.classList.add("hidden");
+  syncStagedCopyBarVisibility();
+  if (!wsPath || (state.stagedItems.length === 0 && state.selectedAppNames.size === 0)) {
+    if (summary) summary.textContent = "";
+    if (box) box.classList.add("hidden");
     return null;
   }
 
@@ -372,7 +380,7 @@ export async function previewPlan() {
   return p;
 }
 
-export async function initializeWorkspace() {
+export async function copyStagedItems() {
   const wsPath = document.getElementById("setupWsPath").value.trim();
   if (!wsPath) {
     toast("Select an Active Workspace folder first.", "err");
@@ -387,7 +395,7 @@ export async function initializeWorkspace() {
   });
 
   if (!res.ok) {
-    toast(res.data?.error?.description || "Initialization failed.", "err");
+    toast(res.data?.error?.description || "Failed to copy items to workspace.", "err");
     return;
   }
 
@@ -395,6 +403,9 @@ export async function initializeWorkspace() {
   if (Array.isArray(res.data.recentWorkspaces)) {
     state.settings.recentWorkspaces = res.data.recentWorkspaces;
   }
+  state.stagedItems = [];
+  state.selectedAppNames.clear();
+
   const st = await api("GET", `/api/workspace/agents-md/status?workspacePath=${encodeURIComponent(wsPath)}`);
   state.agentsMdStatus = st.ok ? st.data : null;
 
@@ -403,16 +414,17 @@ export async function initializeWorkspace() {
 
   await refreshApps(false);
   emit("specs:reload", true);
-  loadWorkspaceDraftState();
+  syncWorkspaceChrome();
+  renderAppsCart();
+  renderStagedItems();
+  await previewPlan();
   renderOutdatedBanner();
   renderRecentWorkspaces();
   emit("prompt:attachments-changed");
   emit("prompt:refresh");
-  switchView("format");
 
   const ir = res.data.initResult;
-  const shimTxt = ir.shimWritten ? "mby-pc.bat + " : "";
-  toast(`Initialized (${shimTxt}${ir.copiedApps.length} custom app(s), ${ir.copiedFiles.length} files, ${ir.copiedFolders.length} folders).`, "ok");
+  toast(`Copied ${ir.copiedApps.length} custom app(s), ${ir.copiedFiles.length} file(s), ${ir.copiedFolders.length} folder(s) to workspace.`, "ok");
 }
 
 export function wireSetupView() {
@@ -438,7 +450,9 @@ export function wireSetupView() {
     renderAppsCart();
     emit("specs:reload", true);
     emit("prompt:refresh");
-    toast(`Updated workspace CLI(s): ${res.data.updateResult.copiedNewFileNames.join(", ")}`, "ok");
+    const removedCount = res.data.updateResult?.removedOldRelativePaths?.length || 0;
+    const migrated = (res.data.updateResult?.copiedNewFileNames || []).join(", ") || "mby-pc.bat";
+    toast(`Migrated ${removedCount} legacy workspace CLI(s) to ${migrated}`, "ok");
   };
 
   document.getElementById("btnPickWsFolder").onclick = async () => {
@@ -500,6 +514,8 @@ export function wireSetupView() {
     };
   });
 
-  const btnInitWs = document.getElementById("btnInitializeWorkspace");
-  btnInitWs.onclick = withButtonBusy(btnInitWs, "Initializing...", initializeWorkspace);
+  const btnCopyStaged = document.getElementById("btnCopyStagedItems");
+  if (btnCopyStaged) {
+    btnCopyStaged.onclick = withButtonBusy(btnCopyStaged, "Copying...", copyStagedItems);
+  }
 }

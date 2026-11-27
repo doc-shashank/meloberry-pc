@@ -3,6 +3,8 @@ import { state, emit, escapeHtml, withButtonBusy } from "../../store.js";
 import { closeAllDropdowns } from "../../ui/dropdowns.js";
 import { switchView, toast } from "../../ui/chrome.js";
 
+export const IMAGE_FILE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
 export const IMAGE_CAPABLE_TOPICS = new Set([
   "image",
   "diagram-explore",
@@ -17,6 +19,7 @@ export const IMAGE_CAPABLE_TOPICS = new Set([
 let modalTarget = null;
 let draftContentMode = "none";
 let activePreviewObjectUrl = null;
+let activeDirectPreviewUrl = null;
 let wired = false;
 
 function findSpecMeta(topic) {
@@ -30,11 +33,44 @@ function revokePreviewUrl() {
   }
 }
 
+function revokeDirectPreviewUrl() {
+  if (activeDirectPreviewUrl) {
+    URL.revokeObjectURL(activeDirectPreviewUrl);
+    activeDirectPreviewUrl = null;
+  }
+}
+
+async function renderDirectImagePreview(relPath) {
+  const wrap = document.getElementById("specImageDirectPreviewWrap");
+  const img = document.getElementById("specImageDirectPreview");
+  const pathEl = document.getElementById("specImageDirectPreviewPath");
+  revokeDirectPreviewUrl();
+
+  const clean = (relPath || "").trim();
+  const wsPath = state.settings.activeWorkspace?.workspacePath || "";
+  if (!clean || !wsPath) {
+    if (wrap) wrap.classList.add("hidden");
+    if (pathEl) pathEl.textContent = "";
+    return;
+  }
+
+  const blobUrl = await fetchAssetBlobUrl(clean, wsPath);
+  if (img && blobUrl) {
+    activeDirectPreviewUrl = blobUrl;
+    img.src = blobUrl;
+    if (pathEl) pathEl.textContent = clean;
+    if (wrap) wrap.classList.remove("hidden");
+  } else {
+    if (wrap) wrap.classList.add("hidden");
+  }
+}
+
 export function closeSpecContentModal() {
   const modal = document.getElementById("specContentModal");
   if (modal) modal.classList.add("hidden");
   modalTarget = null;
   revokePreviewUrl();
+  revokeDirectPreviewUrl();
 }
 
 export function isSpecContentModalOpen() {
@@ -42,20 +78,37 @@ export function isSpecContentModalOpen() {
   return !!modal && !modal.classList.contains("hidden");
 }
 
-function syncModalTabs() {
+function syncModalTabs(topic = "") {
+  const t = (topic || "").toLowerCase();
+  const isImageCapable = IMAGE_CAPABLE_TOPICS.has(t);
+  const imageTab = document.getElementById("tabSpecContentImage");
+  if (imageTab && topic) {
+    imageTab.classList.toggle("hidden", !isImageCapable);
+  }
+
   document.querySelectorAll("#specContentModeTabs .seg-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.specContentMode === draftContentMode);
   });
 
+  const imgPane = document.getElementById("specContentImagePane");
   const rawPane = document.getElementById("specContentRawPane");
   const filePane = document.getElementById("specContentFilePane");
+  const metaFields = document.getElementById("specContentImageMetaFields");
+  const bodyWrap = document.getElementById("specImageBodyWrap");
   const statusEl = document.getElementById("specContentModeStatus");
+  if (imgPane) imgPane.classList.toggle("hidden", draftContentMode !== "imageFile");
   if (rawPane) rawPane.classList.toggle("hidden", draftContentMode !== "rawText");
   if (filePane) filePane.classList.toggle("hidden", draftContentMode !== "markdownFile");
+  if (topic) {
+    if (metaFields) metaFields.classList.toggle("hidden", t !== "image");
+    if (bodyWrap) bodyWrap.classList.toggle("hidden", t === "image");
+  }
   if (statusEl) {
-    statusEl.textContent = draftContentMode === "rawText"
-      ? "Direct text / :::directive authoring"
-      : (draftContentMode === "markdownFile" ? "External or workspace .md file" : "No content attached yet");
+    statusEl.textContent = draftContentMode === "imageFile"
+      ? "Workspace image asset (no Markdown required)"
+      : (draftContentMode === "rawText"
+        ? "Direct text / :::directive authoring"
+        : (draftContentMode === "markdownFile" ? "Workspace .md file" : "No content attached yet"));
   }
 }
 
@@ -76,6 +129,14 @@ function collectCandidatePdfPaths() {
     if (it.kind === "file" && /\.pdf$/i.test(it.targetRelativePath || it.sourcePath || "")) {
       const full = wsPath && it.targetRelativePath ? `${wsPath}\\${it.targetRelativePath}` : it.sourcePath;
       addCandidate(full, it.targetRelativePath || it.displayName || full);
+    }
+  });
+
+  (state.settings.activeWorkspace?.lastCopiedRelativePaths || []).forEach(rel => {
+    const clean = String(rel || "").replace(/^[/\\]+/, "");
+    if (clean && /\.pdf$/i.test(clean)) {
+      const full = wsPath ? `${wsPath}\\${clean.replace(/\//g, "\\")}` : clean;
+      addCandidate(full, clean);
     }
   });
 
@@ -171,13 +232,48 @@ function commitModalToSpec() {
 
   const rawText = document.getElementById("specContentRawInput")?.value || "";
   const mdPath = (document.getElementById("specContentFilePath")?.value || "").trim();
+  const imgPath = (document.getElementById("specContentImagePath")?.value || "").trim();
+  const imgCaption = (document.getElementById("specContentImageCaption")?.value || "").trim();
+  const imgAlt = (document.getElementById("specContentImageAlt")?.value || "").trim();
+  const imgBody = document.getElementById("specContentImageBody")?.value || "";
 
-  if (draftContentMode === "rawText") {
-    inst.content = { mode: "rawText", rawText, markdownFilePath: null };
-  } else if (draftContentMode === "markdownFile") {
-    inst.content = { mode: "markdownFile", rawText: null, markdownFilePath: mdPath };
+  if (draftContentMode === "imageFile" && imgPath) {
+    const isImageTopic = (inst.topic || "").toLowerCase() === "image";
+    inst.content = {
+      mode: "imageFile",
+      rawText: !isImageTopic && imgBody.trim() ? imgBody : null,
+      markdownFilePath: null,
+      imagePath: imgPath,
+      caption: imgCaption || null,
+      altText: imgAlt || null
+    };
+  } else if (draftContentMode === "rawText" && rawText.trim()) {
+    inst.content = {
+      mode: "rawText",
+      rawText,
+      markdownFilePath: null,
+      imagePath: null,
+      caption: null,
+      altText: null
+    };
+  } else if (draftContentMode === "markdownFile" && mdPath) {
+    inst.content = {
+      mode: "markdownFile",
+      rawText: null,
+      markdownFilePath: mdPath,
+      imagePath: null,
+      caption: null,
+      altText: null
+    };
   } else {
-    inst.content = { mode: "none", rawText: null, markdownFilePath: null };
+    inst.content = {
+      mode: "none",
+      rawText: null,
+      markdownFilePath: null,
+      imagePath: null,
+      caption: null,
+      altText: null
+    };
   }
 
   emit("prompt:preset-modified");
@@ -209,19 +305,36 @@ export function openSpecContentModal(compId, instId, { focusMelomg = false } = {
     syntaxEl.classList.toggle("hidden", !sig);
   }
 
-  const content = inst.content || { mode: "none", rawText: "", markdownFilePath: "" };
+  const content = inst.content || { mode: "none", rawText: "", markdownFilePath: "", imagePath: "", caption: "", altText: "" };
+  const topicLower = (inst.topic || "").toLowerCase();
   draftContentMode = content.mode || "none";
   if (draftContentMode === "none" && !focusMelomg) {
-    draftContentMode = "rawText";
+    draftContentMode = topicLower === "image" ? "imageFile" : "rawText";
+  } else if (draftContentMode === "none" && focusMelomg && topicLower === "image") {
+    draftContentMode = "imageFile";
   }
 
   const rawEl = document.getElementById("specContentRawInput");
   const fileEl = document.getElementById("specContentFilePath");
-  if (rawEl) rawEl.value = content.rawText || "";
-  if (fileEl) fileEl.value = content.markdownFilePath || "";
+  const imgPathEl = document.getElementById("specContentImagePath");
+  const imgCapEl = document.getElementById("specContentImageCaption");
+  const imgAltEl = document.getElementById("specContentImageAlt");
+  const imgBodyEl = document.getElementById("specContentImageBody");
 
-  syncModalTabs();
+  if (rawEl) rawEl.value = content.mode === "rawText" ? (content.rawText || "") : "";
+  if (fileEl) fileEl.value = content.markdownFilePath || "";
+  if (imgPathEl) imgPathEl.value = content.imagePath || "";
+  if (imgCapEl) imgCapEl.value = content.caption || "";
+  if (imgAltEl) imgAltEl.value = content.altText || "";
+  if (imgBodyEl) imgBodyEl.value = content.mode === "imageFile" ? (content.rawText || "") : "";
+
+  syncModalTabs(inst.topic);
   populateMelomgSection(inst.topic, inst.subtype, { focusMelomg });
+  if (content.imagePath) {
+    renderDirectImagePreview(content.imagePath);
+  } else {
+    renderDirectImagePreview("");
+  }
 
   const modal = document.getElementById("specContentModal");
   if (modal) modal.classList.remove("hidden");
@@ -240,8 +353,17 @@ export function initSpecContentModal() {
     draftContentMode = "none";
     const rawEl = document.getElementById("specContentRawInput");
     const fileEl = document.getElementById("specContentFilePath");
+    const imgPathEl = document.getElementById("specContentImagePath");
+    const imgCapEl = document.getElementById("specContentImageCaption");
+    const imgAltEl = document.getElementById("specContentImageAlt");
+    const imgBodyEl = document.getElementById("specContentImageBody");
     if (rawEl) rawEl.value = "";
     if (fileEl) fileEl.value = "";
+    if (imgPathEl) imgPathEl.value = "";
+    if (imgCapEl) imgCapEl.value = "";
+    if (imgAltEl) imgAltEl.value = "";
+    if (imgBodyEl) imgBodyEl.value = "";
+    renderDirectImagePreview("");
     commitModalToSpec();
   });
   document.getElementById("btnSaveSpecContent")?.addEventListener("click", commitModalToSpec);
@@ -253,8 +375,50 @@ export function initSpecContentModal() {
     });
   });
 
+  document.getElementById("btnPickSpecImageFile")?.addEventListener("click", async () => {
+    const wsPath = state.settings.activeWorkspace?.workspacePath || null;
+    if (!wsPath) {
+      toast("Select an Active Workspace first.", "err");
+      return;
+    }
+
+    const res = await api("POST", "/api/dialogs/pick-files", {
+      title: "Select Image Asset",
+      filterLabel: "Image Files (*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.svg)",
+      filterPattern: "*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp;*.svg",
+      allowMultiple: false,
+      initialDir: wsPath
+    });
+    if (!res.ok || res.data.cancelled || !res.data.paths?.length) return;
+
+    const imp = await api("POST", "/api/workspace/import-asset", {
+      workspacePath: wsPath,
+      sourcePath: res.data.paths[0],
+      kind: "image"
+    });
+    if (!imp.ok) {
+      toast(imp.data?.error?.description || "Failed to import image into workspace.", "err");
+      return;
+    }
+
+    const relPath = imp.data.relativePath;
+    const imgPathEl = document.getElementById("specContentImagePath");
+    if (imgPathEl) imgPathEl.value = relPath;
+    draftContentMode = "imageFile";
+    syncModalTabs();
+    await renderDirectImagePreview(relPath);
+    if (imp.data.copied) {
+      toast(`Imported image to ${relPath}`, "ok");
+    }
+  });
+
   document.getElementById("btnPickSpecMdFile")?.addEventListener("click", async () => {
     const wsPath = state.settings.activeWorkspace?.workspacePath || null;
+    if (!wsPath) {
+      toast("Select an Active Workspace first.", "err");
+      return;
+    }
+
     const res = await api("POST", "/api/dialogs/pick-files", {
       title: "Select Markdown Content File",
       filterLabel: "Markdown Files (*.md;*.markdown)",
@@ -262,12 +426,25 @@ export function initSpecContentModal() {
       allowMultiple: false,
       initialDir: wsPath
     });
-    if (res.ok && !res.data.cancelled && res.data.paths?.length) {
-      const picked = res.data.paths[0];
-      const fileEl = document.getElementById("specContentFilePath");
-      if (fileEl) fileEl.value = picked;
-      draftContentMode = "markdownFile";
-      syncModalTabs();
+    if (!res.ok || res.data.cancelled || !res.data.paths?.length) return;
+
+    const imp = await api("POST", "/api/workspace/import-asset", {
+      workspacePath: wsPath,
+      sourcePath: res.data.paths[0],
+      kind: "markdown"
+    });
+    if (!imp.ok) {
+      toast(imp.data?.error?.description || "Failed to import Markdown file into workspace.", "err");
+      return;
+    }
+
+    const relPath = imp.data.relativePath;
+    const fileEl = document.getElementById("specContentFilePath");
+    if (fileEl) fileEl.value = relPath;
+    draftContentMode = "markdownFile";
+    syncModalTabs();
+    if (imp.data.copied) {
+      toast(`Imported Markdown file to ${relPath}`, "ok");
     }
   });
 
@@ -348,7 +525,18 @@ export function initSpecContentModal() {
       const comp = state.prompt.components.find(c => c.id === modalTarget?.compId);
       const inst = comp?.orderedItems?.find(o => o.id === modalTarget?.instId);
       if (inst) {
-        injectImageIntoRawText(inst.topic, d.relativeImagePath, d.caption || query);
+        const topicLower = (inst.topic || "").toLowerCase();
+        if (topicLower === "image" || draftContentMode === "imageFile") {
+          const imgPathEl = document.getElementById("specContentImagePath");
+          const imgCapEl = document.getElementById("specContentImageCaption");
+          if (imgPathEl) imgPathEl.value = d.relativeImagePath;
+          if (imgCapEl && !imgCapEl.value.trim()) imgCapEl.value = d.caption || query;
+          draftContentMode = "imageFile";
+          syncModalTabs(inst.topic);
+          await renderDirectImagePreview(d.relativeImagePath);
+        } else {
+          injectImageIntoRawText(inst.topic, d.relativeImagePath, d.caption || query);
+        }
       }
 
       revokePreviewUrl();

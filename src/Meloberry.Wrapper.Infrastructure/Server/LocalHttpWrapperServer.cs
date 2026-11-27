@@ -299,7 +299,8 @@ public sealed class LocalHttpWrapperServer : IAsyncDisposable, IDisposable
             source = evt.Source,
             summary = evt.Summary,
             targetCompId = evt.TargetComponentId,
-            targetSpecId = evt.TargetSpecId
+            targetSpecId = evt.TargetSpecId,
+            op = evt.Op
         });
     }
 

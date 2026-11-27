@@ -245,10 +245,22 @@ public static class AgentsMdComposer
             _ => "./spec.json"
         };
 
+        if (input.WorkflowMode == WorkflowMode.LiveAgent)
+        {
+            sb.AppendLine();
+            sb.AppendLine("### Live GUI Control Protocol (`mby-pc.bat`)");
+            sb.AppendLine("1. **Configure Metadata (Step 2 - Format)**: `.\\mby-pc.bat ui view format --json` -> `.\\mby-pc.bat draft patch --title \"...\" --desc \"...\" --container session|article|quiz --json`");
+            sb.AppendLine("2. **Organize Cards & Specs (Step 3 - Organize)**: `.\\mby-pc.bat ui view organize --json` -> `.\\mby-pc.bat draft comp add|rename|move|rm` & `.\\mby-pc.bat draft spec add|update|move|rm`");
+            sb.AppendLine("3. **Populate Spec Content Live**: `.\\mby-pc.bat draft spec set-content <specId> --raw \"...\" --json` (or `--file ./notes.md` or `--image assets/fig.png --caption \"...\"`)");
+            sb.AppendLine("4. **Compile & Open Viewer (Step 4 -> Step 5)**: `.\\mby-pc.bat finalize --json` (builds via `mby batch -` and opens Step 5 Viewer automatically)");
+            sb.AppendLine("> **Rule:** Prefer `draft` + `finalize` over calling `mby apply`/`mby build` directly so the GUI updates in real time.");
+            sb.AppendLine();
+        }
+
         sb.AppendLine($"- **One-Shot Compile & Verify**: `{mbyCmd} build {sourceTarget} -o ./dist_web --verify --json`");
         sb.AppendLine($"- **Persistent Workspace & Package Flow**: `{mbyCmd} apply {sourceTarget} --json` -> `{mbyCmd} check <wsId> --json` -> `{mbyCmd} build <wsId> -o ./dist_web --json` -> `{mbyCmd} pkg export <wsId> android ./out.mbypkg --json`");
         sb.AppendLine($"- **Headless QA**: `{mbyCmd} analyze ./dist_web --headless --json`");
-        if (input.UsesWorkspaceShim)
+        if (input.UsesWorkspaceShim && input.WorkflowMode != WorkflowMode.LiveAgent)
         {
             sb.AppendLine("- **Live Workspace Control (`mby-pc.bat`)**: `.\\mby-pc.bat status --json`, `.\\mby-pc.bat draft get --json`, `.\\mby-pc.bat draft spec set-content <specId> --raw \"...\" --json`, `.\\mby-pc.bat finalize --json`.");
         }

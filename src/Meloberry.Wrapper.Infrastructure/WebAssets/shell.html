@@ -110,10 +110,24 @@
                 </button>
               </div>
             </div>
-            <button id="liveAgentActivityPill" class="live-agent-pill hidden" type="button" title="Live agent activity — click to open notifications">
-              <span class="live-agent-dot" aria-hidden="true"></span>
-              <span id="liveAgentActivityText">Agent Ready</span>
-            </button>
+            <div class="menu-wrap" id="agentActivityWrap">
+              <button id="liveAgentActivityPill" class="live-agent-pill hidden" type="button" title="Live agent activity — click to view timeline">
+                <span class="live-agent-dot" aria-hidden="true"></span>
+                <span id="liveAgentActivityText">Agent Ready</span>
+              </button>
+              <div id="agentActivityPopover" class="agent-activity-popover hidden">
+                <div class="notif-head">
+                  <strong>Live Agent Activity</strong>
+                  <div class="row gap-6">
+                    <button id="btnAgentActivityClear" class="btn btn-xs btn-ghost" type="button">Clear</button>
+                    <button id="btnAgentActivityDismiss" class="btn btn-xs btn-ghost" type="button" title="Hide pill">&times;</button>
+                  </div>
+                </div>
+                <div id="agentActivityList" class="agent-activity-list">
+                  <div class="muted" style="padding:10px">No agent activity yet.</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -134,7 +148,7 @@
           <div class="setup-grid">
             <header class="step-hero">
               <h1 class="step-hero-title">Setup Workspace</h1>
-              <p class="step-hero-sub">Pick an active folder, select Meloberry CLI tools, and stage source files or folders to initialize.</p>
+              <p class="step-hero-sub">Pick an active folder, manage Meloberry CLI tools, and optionally copy source files or folders into your workspace.</p>
             </header>
 
             <section class="card" id="setupWsCard">
@@ -162,7 +176,7 @@
 
             <section class="card" id="setupStagedCard">
               <div class="card-head">
-                <h2>3. Add Files and Folder</h2>
+                <h2>3. Copy Files &amp; Folders to Workspace <span class="muted">(Optional)</span></h2>
                 <div class="row gap-6">
                   <button id="btnStageFiles" class="btn btn-h30 btn-ghost icon-inline">
                     <span>+</span>
@@ -179,14 +193,11 @@
               <div id="stagedItemsList" class="staged-list">
                 <div class="muted">No files or folder added...</div>
               </div>
-            </section>
-
-            <section class="card init-footer-card">
-              <div class="init-footer-row">
+              <div id="stagedCopyBar" class="init-footer-row mt-8 hidden">
                 <span id="planSummaryText" class="muted"></span>
                 <div class="row gap-8 wrap">
                   <div class="menu-wrap" id="conflictMenuWrap">
-                    <button id="btnConflictDropdown" class="btn btn-h32 btn-ghost">
+                    <button id="btnConflictDropdown" class="btn btn-h30 btn-ghost">
                       <span id="conflictBtnLabel">Conflicts: Skip existing</span>
                       <span>&#9662;</span>
                     </button>
@@ -201,7 +212,7 @@
                       </button>
                     </div>
                   </div>
-                  <button id="btnInitializeWorkspace" class="btn btn-primary btn-h32 btn-pad-lg">Initialize</button>
+                  <button id="btnCopyStagedItems" class="btn btn-primary btn-h30">Copy to Workspace</button>
                 </div>
               </div>
               <div id="planConflictsBox" class="warning-box hidden"></div>
@@ -228,11 +239,11 @@
               </div>
 
               <div class="form-grid">
-                <label class="field">
+                <label id="formatTitleField" class="field field-span2">
                   <span>Title</span>
                   <input id="promptTitle" type="text" class="input" placeholder="e.g., Chapter 2: Action Potentials" />
                 </label>
-                <label class="field">
+                <label id="formatAuthoringField" class="field hidden">
                   <span>Format</span>
                   <select id="promptFormat" class="select select-h30 full-width">
                     <option value="markdownDirectory">Markdown Directory</option>
@@ -246,25 +257,47 @@
                 </label>
               </div>
 
-              <div class="wf-mode-row">
-                <div>
-                  <div class="muted" style="font-weight:700; margin-bottom:2px;">Authoring Workflow Mode</div>
-                  <div id="workflowModeHint" class="wf-mode-hint">Direct authoring: fill spec contents directly in Organize and build with zero prompt overhead.</div>
+              <div class="wf-mode-section">
+                <div class="wf-mode-header">
+                  <span class="muted" style="font-weight:700;">Authoring Workflow Mode</span>
+                  <span id="workflowModeHint" class="wf-mode-hint">Direct authoring: fill spec contents directly in Organize and build with zero prompt overhead.</span>
                 </div>
-                <div class="segmented segmented-inline" id="workflowModeTabs">
-                  <button class="seg-btn active" type="button" data-wf-mode="direct">Direct</button>
-                  <button class="seg-btn" type="button" data-wf-mode="liveAgent">Live Agent</button>
-                  <button class="seg-btn" type="button" data-wf-mode="classicPrompt">Classic Prompt</button>
+                <div class="wf-mode-cards" id="workflowModeCards" role="radiogroup" aria-label="Authoring Workflow Mode">
+                  <button class="wf-mode-card active" type="button" data-wf-mode="direct" aria-pressed="true">
+                    <div class="wf-mode-card-head">
+                      <span class="wf-mode-card-title">Direct</span>
+                      <span class="pill pill-accent">Author Yourself</span>
+                    </div>
+                    <div class="wf-mode-card-desc">Fill specs &amp; extract PDF figures in Organize, then compile directly with zero prompt overhead.</div>
+                  </button>
+                  <button class="wf-mode-card" type="button" data-wf-mode="liveAgent" aria-pressed="false">
+                    <div class="wf-mode-card-head">
+                      <span class="wf-mode-card-title">Live Agent</span>
+                      <span class="pill">AI Drives App</span>
+                    </div>
+                    <div class="wf-mode-card-desc">Hand off to an AI coding agent in your workspace so it edits Organize &amp; builds live via <code>mby-pc.bat</code>.</div>
+                  </button>
+                  <button class="wf-mode-card" type="button" data-wf-mode="classicPrompt" aria-pressed="false">
+                    <div class="wf-mode-card-head">
+                      <span class="wf-mode-card-title">Classic Prompt</span>
+                      <span class="pill">One-Shot</span>
+                    </div>
+                    <div class="wf-mode-card-desc">Compose a full standalone prompt &amp; <code>AGENTS.md</code> playbook for copy-paste into any AI chat.</div>
+                  </button>
                 </div>
               </div>
             </section>
 
-            <section id="formatNotesCard" class="card notes-card hidden">
+            <section id="formatNotesCard" class="card notes-card">
               <div class="card-head">
-                <h3>Study Notes &amp; Attachments</h3>
-                <button id="btnAttachPromptFiles" class="btn btn-h30 btn-ghost">+ Attach</button>
+                <div class="row gap-8 wrap">
+                  <h3 id="formatNotesHeading">Reference PDFs &amp; Files</h3>
+                  <span id="liveAgentShimBadge" class="pill pill-ok hidden">mby-pc.bat live bridge</span>
+                </div>
+                <button id="btnAttachPromptFiles" class="btn btn-h30 btn-ghost">+ Attach PDF / File</button>
               </div>
-              <textarea id="promptSourceText" class="textarea fixed-textarea" rows="8" placeholder="Paste study text or instructions..."></textarea>
+              <div id="formatNotesHint" class="muted mb-8">Attach reference PDFs here so <code>melomg</code> can extract figures directly in Organize.</div>
+              <textarea id="promptSourceText" class="textarea fixed-textarea hidden" rows="8" placeholder="Paste study text or instructions..."></textarea>
               <div id="promptAttachmentsList" class="chip-row hidden"></div>
             </section>
           </div>
@@ -324,10 +357,15 @@
 
             <section class="card review-actions-bar">
               <div class="row gap-8 wrap">
-                <div class="finalize-cta-group">
+                <div id="finalizeCtaGroup" class="finalize-cta-group">
                   <button id="btnFinalizeWebApp" class="btn btn-h32 btn-primary btn-finalize" type="button">Finalize &amp; Build WebApp</button>
-                  <label class="check-label"><input id="chkAllowPlaceholders" type="checkbox" /> Allow Placeholders</label>
+                  <label id="chkAllowPlaceholdersWrap" class="check-label"><input id="chkAllowPlaceholders" type="checkbox" /> Allow Placeholders</label>
                 </div>
+
+                <button id="btnCopyLiveHandoff" class="btn btn-h32 btn-primary hidden" type="button">
+                  <span class="icon-slot" data-icon="ui/copy"></span>
+                  <span>Copy Live Handoff Prompt</span>
+                </button>
 
                 <div class="menu-wrap" id="readyWsMenuWrap">
                   <button id="btnReadyWorkspace" class="btn btn-h32 btn-accent-soft">Ready Workspace</button>
@@ -375,7 +413,7 @@
                   </div>
                 </div>
               </div>
-              <div class="muted" id="promptMetrics">0 chars &middot; ~0 tokens</div>
+              <div class="muted" id="promptMetrics">0/0 specs filled</div>
             </section>
 
             <section class="card preview-card review-preview-card">
@@ -388,9 +426,17 @@
                     <button class="seg-btn" type="button" data-wf-mode="classicPrompt">Classic Prompt</button>
                   </div>
                 </div>
-                <label class="check-label"><input id="chkUseMelomg" type="checkbox" checked /> <code>melomg</code> PDF guidance</label>
+                <label id="chkUseMelomgWrap" class="check-label"><input id="chkUseMelomg" type="checkbox" checked /> <code>melomg</code> PDF guidance</label>
               </div>
-              <pre id="promptPreviewBox" class="prompt-preview review-preview-box"></pre>
+              <div id="liveAgentHandoffBanner" class="live-handoff-banner hidden">
+                <span><strong>1.</strong> Copy prompt</span>
+                <span class="muted">&rarr;</span>
+                <span><strong>2.</strong> Paste in your AI coding agent inside the workspace</span>
+                <span class="muted">&rarr;</span>
+                <span><strong>3.</strong> Watch Organize update live</span>
+              </div>
+              <div id="directReadinessPanel" class="direct-readiness-panel"></div>
+              <pre id="promptPreviewBox" class="prompt-preview review-preview-box hidden"></pre>
             </section>
           </div>
         </main>
@@ -597,6 +643,7 @@
         <div class="row-between wrap gap-8">
           <div class="segmented segmented-inline" id="specContentModeTabs">
             <button class="seg-btn active" type="button" data-spec-content-mode="none">None</button>
+            <button id="tabSpecContentImage" class="seg-btn hidden" type="button" data-spec-content-mode="imageFile">Image</button>
             <button class="seg-btn" type="button" data-spec-content-mode="rawText">Raw Text</button>
             <button class="seg-btn" type="button" data-spec-content-mode="markdownFile">Markdown File (.md)</button>
           </div>
@@ -605,13 +652,34 @@
 
         <pre id="specContentSyntaxHint" class="spec-content-syntax-hint hidden"></pre>
 
+        <div id="specContentImagePane" class="hidden">
+          <div class="row gap-8">
+            <input id="specContentImagePath" type="text" class="input" style="flex:1 1 auto;" placeholder="assets/diagram.png (browse or extract below)" readonly />
+            <button id="btnPickSpecImageFile" class="btn btn-h30 btn-primary" type="button">Browse Image...</button>
+          </div>
+          <div id="specContentImageMetaFields" class="form-grid mt-8">
+            <label class="field"><span>Caption (optional)</span><input id="specContentImageCaption" type="text" class="input" placeholder="Figure 1: ..." /></label>
+            <label class="field"><span>Alt Text (optional)</span><input id="specContentImageAlt" type="text" class="input" placeholder="Short description" /></label>
+          </div>
+          <div id="specImageDirectPreviewWrap" class="melomg-preview-wrap hidden mt-8">
+            <img id="specImageDirectPreview" class="melomg-preview-thumb" alt="Selected image preview" />
+            <div class="muted" id="specImageDirectPreviewPath" style="font-family:'Cascadia Code',Consolas,monospace;font-size:11.5px;word-break:break-all;"></div>
+          </div>
+          <div id="specImageBodyWrap" class="hidden mt-8">
+            <label class="field">
+              <span>Directive Body / Prompt (optional)</span>
+              <textarea id="specContentImageBody" class="textarea spec-content-raw-input" rows="4" style="min-height:92px;" placeholder="Add question prompt, options, landmarks, or relabel boxes..."></textarea>
+            </label>
+          </div>
+        </div>
+
         <div id="specContentRawPane" class="hidden">
           <textarea id="specContentRawInput" class="textarea spec-content-raw-input" rows="8" placeholder="Write plain text, mby :::directive blocks, or relative asset paths (e.g. assets/fig_1.1.png)..."></textarea>
         </div>
 
         <div id="specContentFilePane" class="hidden">
           <div class="row gap-8">
-            <input id="specContentFilePath" type="text" class="input" style="flex:1 1 auto;" placeholder="Relative .md path inside workspace or full .md file path..." />
+            <input id="specContentFilePath" type="text" class="input" style="flex:1 1 auto;" placeholder="notes/section.md (external files are auto-copied into workspace)" readonly />
             <button id="btnPickSpecMdFile" class="btn btn-h30 btn-ghost" type="button">Browse .md...</button>
           </div>
           <p class="muted" style="margin:6px 0 0;">If the file does not start with <code>:::</code>, Finalize smart-wraps it for this spec automatically.</p>

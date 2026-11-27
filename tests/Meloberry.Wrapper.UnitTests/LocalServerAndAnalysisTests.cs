@@ -625,6 +625,51 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.NotNull(provider.GetRequiredService<LocalHttpWrapperServer>());
     }
 
+    [Fact]
+    public async Task ShellHtmlCssAndJs_ExposeImagePane_DirectReadiness_AgentActivityFeed_AndRemovedInitGate()
+    {
+        using var http = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
+
+        var html = await http.GetStringAsync("/");
+        // Phase 3: Dedicated Image tab & pane
+        Assert.Contains("tabSpecContentImage", html);
+        Assert.Contains("specContentImagePane", html);
+        Assert.Contains("btnPickSpecImageFile", html);
+        // Phase 4: Mandatory Initialize gate removed; Copy button moved into #setupStagedCard
+        Assert.DoesNotContain("id=\"btnInitializeWorkspace\"", html);
+        Assert.DoesNotContain("init-footer-card", html);
+        Assert.Contains("id=\"btnCopyStagedItems\"", html);
+        Assert.Contains("id=\"stagedCopyBar\"", html);
+        // Phase 5: 3-card workflow mode picker & Direct Readiness checklist
+        Assert.Contains("id=\"workflowModeCards\"", html);
+        Assert.Contains("id=\"directReadinessPanel\"", html);
+        Assert.Contains("id=\"liveAgentHandoffBanner\"", html);
+        Assert.Contains("id=\"btnCopyLiveHandoff\"", html);
+        // Phase 6: Dedicated Live Agent Activity popover
+        Assert.Contains("id=\"agentActivityWrap\"", html);
+        Assert.Contains("id=\"agentActivityPopover\"", html);
+        Assert.Contains("id=\"agentActivityList\"", html);
+
+        var css = await http.GetStringAsync("/shell/shell.css");
+        Assert.Contains(".row-between", css);
+        Assert.Contains(".agent-activity-popover", css);
+
+        var chromeJs = await http.GetStringAsync("/shell/js/ui/chrome.js");
+        Assert.Contains("recordAgentActivity", chromeJs);
+        Assert.Contains("agentActivityPopover", chromeJs);
+        Assert.DoesNotContain("aws.isInitialized", chromeJs);
+
+        var mainJs = await http.GetStringAsync("/shell/js/main.js");
+        Assert.Contains("recordAgentActivity", mainJs);
+        Assert.Contains("payload.op === \"patch-meta\"", mainJs);
+        Assert.Contains("/api/workspace/import-asset", mainJs);
+        Assert.DoesNotContain("activeWorkspace.isInitialized", mainJs);
+
+        var reviewJs = await http.GetStringAsync("/shell/js/views/prompt/review.js");
+        Assert.Contains("renderDirectReadinessPanel", reviewJs);
+        Assert.Contains("flushLiveDraftSave", reviewJs);
+    }
+
     public async Task DisposeAsync()
     {
         if (_server is not null)
