@@ -286,6 +286,8 @@ public sealed class ReadyWorkspaceHandler(
         }
         stagedFolders = stagedFolders.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
+        var usesShim = File.Exists(Path.Combine(fullWs, "mby-pc.bat"));
+
         var composeInput = new AgentsMdComposeInput(
             WorkspacePath: fullWs,
             Container: request.Draft.Container,
@@ -298,7 +300,8 @@ public sealed class ReadyWorkspaceHandler(
             SelectedSpecs: specDetails,
             MelomgSpecsText: melomgText,
             IncludeLinkBlock: includeLink,
-            ExternalAttachments: distinctExternalAttachments);
+            ExternalAttachments: distinctExternalAttachments,
+            UsesWorkspaceShim: usesShim);
 
         var markdown = AgentsMdComposer.Compose(composeInput);
         var writeRes = await agentsMdWriter.WriteAsync(fullWs, validatedTargetDir, markdown, request.OverwriteConfirmed, ct).ConfigureAwait(false);

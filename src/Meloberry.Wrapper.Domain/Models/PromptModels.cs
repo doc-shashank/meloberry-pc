@@ -23,6 +23,35 @@ public enum AuthoringFormat
     Json
 }
 
+/// <summary>Scope stored inside a `.mbypreset` JSON file.</summary>
+public enum PresetFileScope
+{
+    Workflow,
+    Component
+}
+
+/// <summary>Step-wide workflow mode determining whether Prompt generation is used.</summary>
+public enum WorkflowMode
+{
+    Direct,
+    LiveAgent,
+    ClassicPrompt
+}
+
+/// <summary>Per-spec direct authoring content source.</summary>
+public enum SpecContentMode
+{
+    None,
+    RawText,
+    MarkdownFile
+}
+
+/// <summary>Direct content payload attached to an ordered spec instance.</summary>
+public sealed record SpecContentSource(
+    SpecContentMode Mode = SpecContentMode.None,
+    string? RawText = null,
+    string? MarkdownFilePath = null);
+
 /// <summary>Single shopping-list item selected by the user for an article or quiz.</summary>
 public sealed record ShoppingListSelection(
     string Topic,
@@ -37,7 +66,8 @@ public sealed record OrderedSpecInstance(
     string Id,
     string Topic,
     int InstanceNumber,
-    string? Subtype = null);
+    string? Subtype = null,
+    SpecContentSource? Content = null);
 
 /// <summary>Ordered article or quiz component inside a Prompt Studio blueprint.</summary>
 public sealed record PromptComponentPlan(
@@ -69,7 +99,9 @@ public sealed record PromptDraft(
     string? MbyExecutablePath = null,
     string? MelomgExecutablePath = null,
     IReadOnlyList<string>? CopiedFolders = null,
-    IReadOnlyList<PromptComponentPlan>? Components = null);
+    IReadOnlyList<PromptComponentPlan>? Components = null,
+    WorkflowMode WorkflowMode = WorkflowMode.ClassicPrompt,
+    bool AllowPlaceholdersOnFinalize = false);
 
 /// <summary>Rendered Markdown prompt plus token/length statistics.</summary>
 public sealed record ComposedPrompt(
@@ -88,15 +120,25 @@ public sealed record PromptPreset(
     bool IsBuiltIn = false,
     IReadOnlyList<PromptComponentPlan>? Components = null);
 
-/// <summary>Built-in study prompt presets matching common Meloberry workflows.</summary>
+/// <summary>Portable `.mbypreset` file payload supporting workflow or single-component presets.</summary>
+public sealed record MbyPresetFile(
+    int FormatVersion,
+    PresetFileScope Scope,
+    string Name,
+    string? Description = null,
+    PromptPreset? WorkflowPreset = null,
+    PromptComponentPlan? ComponentPreset = null);
+
+/// <summary>Built-in study prompt presets (3 per container: Session, Article, Quiz).</summary>
 public static class BuiltInPresets
 {
     public static IReadOnlyList<PromptPreset> All { get; } =
     [
+        // Session (3)
         new(
             Id: "full-chapter-session",
             Name: "Full Chapter Study Session",
-            Description: "Two structured teaching articles followed by an active-recall quiz.",
+            Description: "Structured teaching article followed by an active-recall quiz.",
             Container: ContainerKind.Session,
             AuthoringFormat: AuthoringFormat.MarkdownDirectory,
             Selections:
@@ -131,6 +173,77 @@ public static class BuiltInPresets
                     ])
             ]),
         new(
+            Id: "diagram-relabel-drill",
+            Name: "Diagram Relabeling Drill",
+            Description: "PDF diagram extraction + label masking paired with relabeling drills and visual flashcards.",
+            Container: ContainerKind.Session,
+            AuthoringFormat: AuthoringFormat.Json,
+            Selections:
+            [
+                new("image", true, 2),
+                new("relabel", true, 4, null, ["recall", "solid"]),
+                new("flashcard", true, 5, null, ["diagram"])
+            ],
+            IsBuiltIn: true,
+            Components:
+            [
+                new(
+                    "a1",
+                    ComponentKind.Article,
+                    "Annotated Diagrams",
+                    [
+                        new("text", true, 1, "Brief orientation to figure landmarks"),
+                        new("image", true, 2, "Unmasked annotated reference diagrams")
+                    ]),
+                new(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Labeling & Visual Recall",
+                    [
+                        new("relabel", true, 4, "Pin labels onto masked figures", ["recall", "solid"]),
+                        new("flashcard", true, 5, "Front: masked diagram via melomg; Back: unmasked answer", ["diagram"])
+                    ])
+            ]),
+        new(
+            Id: "clinical-case-session",
+            Name: "Clinical Case & Rapid Recall",
+            Description: "Differential summary article paired with clinical reasoning and assertion-reason drills.",
+            Container: ContainerKind.Session,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            Selections:
+            [
+                new("text", true, 1),
+                new("callout", true, 2, null, ["clinical", "warning"]),
+                new("table", true, 1, null, ["hideableCols"]),
+                new("mcq", true, 4, null, ["single"]),
+                new("assertion-reason", true, 3, null, ["4opt"]),
+                new("diff", true, 2, null, ["fill"])
+            ],
+            IsBuiltIn: true,
+            Components:
+            [
+                new(
+                    "a1",
+                    ComponentKind.Article,
+                    "Clinical Overview",
+                    [
+                        new("text", true, 1, "Concise pathophysiology & diagnostic approach"),
+                        new("callout", true, 2, "Key clinical signs and red flags", ["clinical", "warning"]),
+                        new("table", true, 1, "Differential comparison", ["hideableCols"])
+                    ]),
+                new(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Reasoning & Differentiation",
+                    [
+                        new("mcq", true, 4, "Single-best-answer clinical stems", ["single"]),
+                        new("assertion-reason", true, 3, "Cause-and-effect reasoning", ["4opt"]),
+                        new("diff", true, 2, "Compare key presentations", ["fill"])
+                    ])
+            ]),
+
+        // StandaloneArticle (3)
+        new(
             Id: "high-yield-article",
             Name: "High-Yield Revision Article",
             Description: "Standalone deep-dive article with hover link cards, callouts, and hideable tables.",
@@ -157,6 +270,60 @@ public static class BuiltInPresets
                         new("link", true, 3, "Hover cards for quick definitions via mby://card/")
                     ])
             ]),
+        new(
+            Id: "visual-atlas-article",
+            Name: "Visual Atlas & Annotated Figures",
+            Description: "Figure-centric standalone article combining extracted diagrams, captions, and hover notes.",
+            Container: ContainerKind.StandaloneArticle,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            Selections:
+            [
+                new("text", true, 2),
+                new("image", true, 3),
+                new("callout", true, 2, null, ["pearl"]),
+                new("link", true, 2)
+            ],
+            IsBuiltIn: true,
+            Components:
+            [
+                new(
+                    "a1",
+                    ComponentKind.Article,
+                    "Visual Atlas",
+                    [
+                        new("text", true, 2, "Brief structural landmarks and relationships"),
+                        new("image", true, 3, "High-resolution annotated diagrams with captions"),
+                        new("callout", true, 2, "Visual identification pearls", ["pearl"]),
+                        new("link", true, 2, "Hover glossary cards for figure labels")
+                    ])
+            ]),
+        new(
+            Id: "comparative-reference-article",
+            Name: "Comparative Reference Sheet",
+            Description: "Dense side-by-side tables and warning callouts for rapid pre-exam comparison.",
+            Container: ContainerKind.StandaloneArticle,
+            AuthoringFormat: AuthoringFormat.SingleMarkdown,
+            Selections:
+            [
+                new("text", true, 1),
+                new("table", true, 3, null, ["hideableCols", "stickyFirstCol"]),
+                new("callout", true, 2, null, ["warning", "clinical"])
+            ],
+            IsBuiltIn: true,
+            Components:
+            [
+                new(
+                    "a1",
+                    ComponentKind.Article,
+                    "Reference Sheet",
+                    [
+                        new("text", true, 1, "Short orientation header"),
+                        new("table", true, 3, "Comparison matrices with hideable recall columns", ["hideableCols", "stickyFirstCol"]),
+                        new("callout", true, 2, "Classic exam traps and distinctions", ["warning", "clinical"])
+                    ])
+            ]),
+
+        // StandaloneQuiz (3)
         new(
             Id: "active-recall-quiz",
             Name: "Active-Recall Mixed Quiz",
@@ -187,35 +354,55 @@ public static class BuiltInPresets
                     ])
             ]),
         new(
-            Id: "diagram-relabel-drill",
-            Name: "Diagram Relabeling Drill",
-            Description: "PDF diagram extraction + label masking paired with relabeling drills and visual flashcards.",
-            Container: ContainerKind.Session,
+            Id: "flashcard-cloze-sprint",
+            Name: "Rapid Flashcard & Cloze Sprint",
+            Description: "Fast-paced active recall using flashcards, fill-in-the-blank clozes, and spot-the-error.",
+            Container: ContainerKind.StandaloneQuiz,
             AuthoringFormat: AuthoringFormat.Json,
             Selections:
             [
-                new("image", true, 2),
-                new("relabel", true, 4, null, ["recall", "solid"]),
-                new("flashcard", true, 5, null, ["diagram"])
+                new("flashcard", true, 8, null, ["mixed"]),
+                new("fill-blank", true, 5, null, ["fuzzy"]),
+                new("spot-error", true, 3, null, ["requireFix"])
             ],
             IsBuiltIn: true,
             Components:
             [
                 new(
-                    "a1",
-                    ComponentKind.Article,
-                    "Annotated Diagrams",
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Recall Sprint",
                     [
-                        new("text", true, 1, "Brief orientation to figure landmarks"),
-                        new("image", true, 2, "Unmasked annotated reference diagrams")
-                    ]),
+                        new("flashcard", true, 8, "Mixed text and diagram cards", ["mixed"]),
+                        new("fill-blank", true, 5, "Key terminology clozes", ["fuzzy"]),
+                        new("spot-error", true, 3, "Catch & fix subtle misconceptions", ["requireFix"])
+                    ])
+            ]),
+        new(
+            Id: "exam-vignettes-mechanisms",
+            Name: "Exam Vignettes & Mechanisms",
+            Description: "Application-heavy exam drill with MCQs, mechanism ordering, differentiation, and assertion-reason.",
+            Container: ContainerKind.StandaloneQuiz,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            Selections:
+            [
+                new("mcq", true, 6, null, ["single"]),
+                new("mechanism", true, 3, null, ["parallel", "distractors"]),
+                new("diff", true, 2, null, ["rearrange"]),
+                new("assertion-reason", true, 3, null, ["5opt"])
+            ],
+            IsBuiltIn: true,
+            Components:
+            [
                 new(
                     "q1",
                     ComponentKind.Quiz,
-                    "Labeling & Visual Recall",
+                    "Exam Vignettes",
                     [
-                        new("relabel", true, 4, "Pin labels onto masked figures", ["recall", "solid"]),
-                        new("flashcard", true, 5, "Front: masked diagram via melomg; Back: unmasked answer", ["diagram"])
+                        new("mcq", true, 6, "Board-style single-correct vignettes", ["single"]),
+                        new("mechanism", true, 3, "Order pathway steps cleanly", ["parallel", "distractors"]),
+                        new("diff", true, 2, "Compare related entities", ["rearrange"]),
+                        new("assertion-reason", true, 3, "5-option assertion-reason", ["5opt"])
                     ])
             ])
     ];

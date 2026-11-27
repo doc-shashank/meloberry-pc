@@ -20,14 +20,22 @@ public static class DependencyInjection
         services.AddSingleton<IWrapperDataPaths>(_ => new WrapperDataPaths(customDataDir));
         services.AddSingleton<IAtomicFileWriter, AtomicFileWriter>();
         services.AddSingleton<ISettingsStore, JsonSettingsStore>();
+        services.AddSingleton<IPresetFileStore, MbyPresetFileStore>();
+        services.AddSingleton<IWorkspaceDraftStore, WorkspaceDraftStore>();
+        services.AddSingleton<IRuntimeIpcRegistry, RuntimeIpcRegistry>();
         services.AddSingleton<IWebAppAnalysisStore, WebAppAnalysisStore>();
         services.AddSingleton<IManagedAppsStore, ManagedAppsStore>();
+        services.AddSingleton<IWorkspaceShimWriter, WorkspaceShimWriter>();
         services.AddSingleton<IWorkspaceInitializer, WorkspaceInitializer>();
+        services.AddSingleton<IWorkspaceDirectoryBrowser, WorkspaceDirectoryBrowser>();
         services.AddSingleton<IWorkspaceMaintenanceService, WorkspaceMaintenanceService>();
         services.AddSingleton<IWorkspaceFileWatcher, WorkspaceFileWatcherService>();
         services.AddSingleton<IAgentsMdFileWriter, AgentsMdFileWriter>();
         services.AddSingleton<IMbyCliClient, ProcessMbyCliClient>();
         services.AddSingleton<IMelomgCliClient, ProcessMelomgCliClient>();
+        services.AddSingleton<LiveGuiIpcClient>();
+        services.AddSingleton<ToolProxyRunner>();
+        services.AddSingleton<WrapperCliDispatcher>();
         services.AddSingleton<GitHubHttpClientHelper>(sp =>
             new GitHubHttpClientHelper(sp.GetRequiredService<IWrapperMetadataProvider>()));
         services.AddSingleton<IGitHubToolDownloader, GitHubToolDownloader>();
@@ -39,6 +47,7 @@ public static class DependencyInjection
         services.AddSingleton<WorkspaceEndpoints>();
         services.AddSingleton<PromptEndpoints>();
         services.AddSingleton<SystemEndpoints>();
+        services.AddSingleton<LiveControlEndpoints>();
         services.AddSingleton<LocalHttpWrapperServer>();
 
         return services;

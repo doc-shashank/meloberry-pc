@@ -278,6 +278,32 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
         Assert.Contains(overrideMelomg, agentsText);
     }
 
+    [Fact]
+    public void AgentsMdComposer_WithWorkspaceShim_EmitsMbyPcBatCommandsAndLiveControlHints()
+    {
+        var markdown = AgentsMdComposer.Compose(new AgentsMdComposeInput(
+            WorkspacePath: @"C:\ws\shim",
+            Container: ContainerKind.Session,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            WorkspaceMbyFileName: @".\mby-pc.bat mby",
+            WorkspaceMelomgFileName: @".\mby-pc.bat melomg",
+            ExtraWorkspaceExecutables: [],
+            CopiedFiles: ["lecture.pdf"],
+            CopiedFolders: [],
+            SelectedSpecs: [],
+            MelomgSpecsText: "extract all --quality high",
+            IncludeLinkBlock: false,
+            ExternalAttachments: null,
+            UsesWorkspaceShim: true));
+
+        Assert.Contains(".\\mby-pc.bat mby", markdown);
+        Assert.Contains(".\\mby-pc.bat melomg", markdown);
+        Assert.DoesNotContain(@".\.\mby-pc.bat", markdown);
+        Assert.Contains(".\\mby-pc.bat status --json", markdown);
+        Assert.Contains(".\\mby-pc.bat draft get --json", markdown);
+        Assert.Contains(".\\mby-pc.bat finalize --json", markdown);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

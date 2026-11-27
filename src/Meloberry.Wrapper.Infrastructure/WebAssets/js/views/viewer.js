@@ -145,20 +145,38 @@ export function renderViewerMenus() {
 export async function openWebAppPath(path) {
   const res = await api("POST", "/api/viewer/open", path ? { path } : {});
   if (res.ok && !res.data.cancelled) {
-    const frame = document.getElementById("webAppFrame");
-    document.getElementById("viewerPlaceholder").classList.add("hidden");
-    showViewerLoadingOverlay("Applying theme & loading WebApp...");
-    frame.classList.remove("hidden");
-    frame.src = `${res.data.url}?v=${Date.now()}`;
-    switchView("viewer");
-    if (res.data.entry) {
-      const list = (state.settings.recentWebApps || []).filter(x => x.path.toLowerCase() !== res.data.entry.path.toLowerCase());
-      state.settings.recentWebApps = [res.data.entry, ...list].slice(0, 20);
-      renderViewerMenus();
-    }
+    openMountedWebApp({ url: res.data.url, entry: res.data.entry, switchTab: true });
   } else if (!res.ok) {
     toast(res.data?.error?.description || "Unable to open WebApp.", "err");
   }
+}
+
+export function openMountedWebApp({ url, entry, label = null, switchTab = true }) {
+  if (!url) return;
+  const frame = document.getElementById("webAppFrame");
+  document.getElementById("viewerPlaceholder").classList.add("hidden");
+  showViewerLoadingOverlay(label || "Applying theme & loading WebApp...");
+  frame.classList.remove("hidden");
+  frame.src = `${url}?v=${Date.now()}`;
+  if (switchTab) switchView("viewer");
+  if (entry) {
+    const list = (state.settings.recentWebApps || []).filter(x => x.path.toLowerCase() !== entry.path.toLowerCase());
+    state.settings.recentWebApps = [entry, ...list].slice(0, 20);
+    renderViewerMenus();
+  }
+}
+
+export function openMountedWebAppFromSignal(payload) {
+  if (!payload || !payload.url) return;
+  const displayName = payload.title || payload.entry?.name || payload.workspaceId || "Study WebApp";
+  openMountedWebApp({
+    url: payload.url,
+    entry: payload.entry,
+    label: `Auto-loading ${displayName}...`,
+    switchTab: true
+  });
+  refreshViewerDiscovery();
+  toast(`Loaded built WebApp: ${displayName}`, "ok");
 }
 
 export async function buildAndViewWorkspace(workspaceId) {

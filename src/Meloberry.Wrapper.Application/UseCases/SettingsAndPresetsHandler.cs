@@ -1,12 +1,15 @@
 using System.Text.RegularExpressions;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
+using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
 
 namespace Meloberry.Wrapper.Application.UseCases;
 
-/// <summary>Updates persisted user settings and custom shopping-list presets.</summary>
-public sealed partial class SettingsAndPresetsHandler(ISettingsStore settingsStore)
+/// <summary>Updates persisted user settings and custom `.mbypreset` workflow/component presets.</summary>
+public sealed partial class SettingsAndPresetsHandler(
+    ISettingsStore settingsStore,
+    IPresetFileStore presetFileStore)
 {
     private static readonly HashSet<string> AllowedThemes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -75,40 +78,151 @@ public sealed partial class SettingsAndPresetsHandler(ISettingsStore settingsSto
 
     public async Task<IReadOnlyList<PromptPreset>> GetAllPresetsAsync(CancellationToken ct = default)
     {
+        var filePresets = await presetFileStore.LoadWorkflowPresetsAsync(ct).ConfigureAwait(false);
         var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
-        return BuiltInPresets.All.Concat(settings.CustomPresets ?? []).ToList();
+
+        var fileIds = filePresets.Select(p => p.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var legacyExtras = (settings.CustomPresets ?? [])
+            .Where(p => !fileIds.Contains(p.Id))
+            .Select(p => p with { IsBuiltIn = false });
+
+        return BuiltInPresets.All
+            .Concat(filePresets)
+            .Concat(legacyExtras)
+            .ToList();
     }
 
     public async Task<Result<PromptPreset>> SaveCustomPresetAsync(PromptPreset preset, CancellationToken ct = default)
     {
-        var id = string.IsNullOrWhiteSpace(preset.Id) ? $"custom-{Guid.NewGuid():N}"[..16] : preset.Id;
+        var id = string.IsNullOrWhiteSpace(preset.Id) ? $"custom-{Guid.NewGuid():N}"[..16] : preset.Id.Trim();
         var clean = preset with { Id = id, IsBuiltIn = false };
-        var res = await settingsStore.UpdateAsync(current =>
-        {
-            var list = (current.CustomPresets ?? [])
-                .Where(p => !string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase))
-                .Append(clean)
-                .ToList();
-            return current with { CustomPresets = list };
-        }, ct).ConfigureAwait(false);
+        return await presetFileStore.SaveWorkflowPresetAsync(clean, ct).ConfigureAwait(false);
+    }
 
-        return res.IsSuccess ? Result<PromptPreset>.Success(clean) : Result<PromptPreset>.Failure(res.Error!);
+    public async Task<Result<(PromptPreset Preset, string SavedPath)>> SaveWorkflowPresetToFileAsync(
+        string filePath,
+        PromptPreset preset,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(preset);
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return Result<(PromptPreset, string)>.Failure(WrapperErrors.InvalidPresetFile("Target preset file path is empty."));
+        }
+
+        var fallbackName = Path.GetFileNameWithoutExtension(filePath).Replace('_', ' ').Replace('-', ' ').Trim();
+        var cleanName = !string.IsNullOrWhiteSpace(preset.Name)
+            ? preset.Name.Trim()
+            : (string.IsNullOrWhiteSpace(fallbackName) ? "Custom Preset" : fallbackName);
+        var id = string.IsNullOrWhiteSpace(preset.Id) ? $"custom-{Guid.NewGuid():N}"[..16] : preset.Id.Trim();
+        var clean = preset with { Id = id, Name = cleanName, IsBuiltIn = false };
+
+        return await presetFileStore.SaveWorkflowPresetToFileAsync(filePath, clean, ct).ConfigureAwait(false);
     }
 
     public async Task<Result> DeleteCustomPresetAsync(string presetId, CancellationToken ct = default)
     {
-        var res = await settingsStore.UpdateAsync(current =>
+        var fileRes = await presetFileStore.DeleteWorkflowPresetAsync(presetId, ct).ConfigureAwait(false);
+
+        var removedFromLegacy = false;
+        var legacyRes = await settingsStore.UpdateAsync(current =>
         {
             var existing = current.CustomPresets ?? [];
             var remaining = existing.Where(p => !string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase)).ToList();
             if (remaining.Count == existing.Count)
             {
-                return Result<WrapperSettings>.Failure(Domain.Errors.WrapperErrors.PresetNotFound(presetId));
+                return current;
             }
 
-            return Result<WrapperSettings>.Success(current with { CustomPresets = remaining });
+            removedFromLegacy = true;
+            return current with { CustomPresets = remaining };
         }, ct).ConfigureAwait(false);
 
-        return res.IsSuccess ? Result.Success() : Result.Failure(res.Error!);
+        if (legacyRes.IsFailure)
+        {
+            return Result.Failure(legacyRes.Error!);
+        }
+
+        if (fileRes.IsSuccess || removedFromLegacy)
+        {
+            return Result.Success();
+        }
+
+        return fileRes;
+    }
+
+    public async Task<Result<PromptPreset>> ImportWorkflowPresetFileAsync(string filePath, CancellationToken ct = default)
+    {
+        var readRes = await presetFileStore.ReadPresetFileAsync(filePath, ct).ConfigureAwait(false);
+        if (readRes.IsFailure)
+        {
+            return Result<PromptPreset>.Failure(readRes.Error!);
+        }
+
+        var file = readRes.Value;
+        if (file.Scope != PresetFileScope.Workflow || file.WorkflowPreset is null)
+        {
+            return Result<PromptPreset>.Failure(WrapperErrors.InvalidPresetFile(
+                "Selected preset file is not a whole-workflow preset."));
+        }
+
+        var imported = file.WorkflowPreset with
+        {
+            Id = string.IsNullOrWhiteSpace(file.WorkflowPreset.Id)
+                ? $"custom-{Guid.NewGuid():N}"[..16]
+                : file.WorkflowPreset.Id,
+            Name = string.IsNullOrWhiteSpace(file.WorkflowPreset.Name) ? file.Name : file.WorkflowPreset.Name,
+            IsBuiltIn = false
+        };
+
+        return await SaveCustomPresetAsync(imported, ct).ConfigureAwait(false);
+    }
+
+    public async Task<Result<string>> SaveComponentPresetFileAsync(
+        string filePath,
+        PromptComponentPlan component,
+        string? name = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(component);
+        var effectiveName = !string.IsNullOrWhiteSpace(name)
+            ? name.Trim()
+            : (!string.IsNullOrWhiteSpace(component.Title) ? component.Title.Trim() : $"{component.Kind} Preset");
+
+        var envelope = new MbyPresetFile(
+            FormatVersion: 1,
+            Scope: PresetFileScope.Component,
+            Name: effectiveName,
+            Description: $"Saved {component.Kind} component preset",
+            ComponentPreset: component with { Title = effectiveName });
+
+        return await presetFileStore.WritePresetFileAsync(filePath, envelope, ct).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PromptComponentPlan>> LoadComponentPresetFileAsync(
+        string filePath,
+        ComponentKind expectedKind,
+        CancellationToken ct = default)
+    {
+        var readRes = await presetFileStore.ReadPresetFileAsync(filePath, ct).ConfigureAwait(false);
+        if (readRes.IsFailure)
+        {
+            return Result<PromptComponentPlan>.Failure(readRes.Error!);
+        }
+
+        var file = readRes.Value;
+        if (file.Scope != PresetFileScope.Component || file.ComponentPreset is null)
+        {
+            return Result<PromptComponentPlan>.Failure(WrapperErrors.InvalidPresetFile(
+                "Selected preset file is not a single-component (Article/Quiz) preset."));
+        }
+
+        if (file.ComponentPreset.Kind != expectedKind)
+        {
+            return Result<PromptComponentPlan>.Failure(WrapperErrors.InvalidPresetFile(
+                $"Selected preset is a '{file.ComponentPreset.Kind}' preset and cannot be loaded into a '{expectedKind}' card."));
+        }
+
+        return Result<PromptComponentPlan>.Success(file.ComponentPreset);
     }
 }

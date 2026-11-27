@@ -94,8 +94,12 @@ public static class AgentsMdComposer
         ArgumentNullException.ThrowIfNull(input);
 
         var sb = new StringBuilder();
-        var mbyCmd = FormatCliCommand(input.WorkspaceMbyFileName, "mby");
-        var melomgCmd = FormatCliCommand(input.WorkspaceMelomgFileName, "melomg");
+        var mbyCmd = input.UsesWorkspaceShim
+            ? ".\\mby-pc.bat mby"
+            : FormatCliCommand(input.WorkspaceMbyFileName, "mby");
+        var melomgCmd = input.UsesWorkspaceShim
+            ? ".\\mby-pc.bat melomg"
+            : FormatCliCommand(input.WorkspaceMelomgFileName, "melomg");
 
         sb.AppendLine("# AGENTS.md — Meloberry Active Workspace Contract");
         sb.AppendLine();
@@ -119,6 +123,11 @@ public static class AgentsMdComposer
         }
 
         var trimmed = pathOrFileName.Trim();
+        if (trimmed.StartsWith(".\\", StringComparison.Ordinal) || trimmed.StartsWith("./", StringComparison.Ordinal))
+        {
+            return trimmed;
+        }
+
         if (Path.IsPathRooted(trimmed))
         {
             return trimmed.Contains(' ') ? $"& \"{trimmed}\"" : trimmed;
@@ -239,6 +248,10 @@ public static class AgentsMdComposer
         sb.AppendLine($"- **One-Shot Compile & Verify**: `{mbyCmd} build {sourceTarget} -o ./dist_web --verify --json`");
         sb.AppendLine($"- **Persistent Workspace & Package Flow**: `{mbyCmd} apply {sourceTarget} --json` -> `{mbyCmd} check <wsId> --json` -> `{mbyCmd} build <wsId> -o ./dist_web --json` -> `{mbyCmd} pkg export <wsId> android ./out.mbypkg --json`");
         sb.AppendLine($"- **Headless QA**: `{mbyCmd} analyze ./dist_web --headless --json`");
+        if (input.UsesWorkspaceShim)
+        {
+            sb.AppendLine("- **Live Workspace Control (`mby-pc.bat`)**: `.\\mby-pc.bat status --json`, `.\\mby-pc.bat draft get --json`, `.\\mby-pc.bat draft spec set-content <specId> --raw \"...\" --json`, `.\\mby-pc.bat finalize --json`.");
+        }
         sb.AppendLine();
     }
 

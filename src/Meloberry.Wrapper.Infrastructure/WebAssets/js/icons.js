@@ -9,14 +9,29 @@ export function getIcon(key) {
   return matchKey ? state.icons[matchKey] : "";
 }
 
-export function getSpecIcon(topic, subtype) {
+export function getCliSpecIcon(key) {
+  if (!key || !state.cliSpecIcons) return "";
+  const norm = String(key).trim().replace(/^\/+|\/+$/g, "");
+  if (state.cliSpecIcons[norm]) return state.cliSpecIcons[norm];
+  const lower = norm.toLowerCase();
+  const matchKey = Object.keys(state.cliSpecIcons).find(k => k.toLowerCase() === lower);
+  return matchKey ? state.cliSpecIcons[matchKey] : "";
+}
+
+export function getSpecIcon(topic, subtype, category) {
   const t = String(topic || "text").trim().toLowerCase();
   if (subtype) {
     const sub = String(subtype).trim();
-    const hit = getIcon(`specs/${t}-${sub}`);
+    const hit = getCliSpecIcon(`${t}-${sub}`) || getIcon(`specs/${t}-${sub}`);
     if (hit) return hit;
   }
-  return getIcon(`specs/${t}`) || getIcon("specs/text") || "";
+  const baseHit = getCliSpecIcon(t) || getIcon(`specs/${t}`);
+  if (baseHit) return baseHit;
+
+  const inferredCat = category
+    || state.specs?.find(s => (s.topic || "").toLowerCase() === t)?.category
+    || "block";
+  return getIcon(inferredCat === "question" ? "ui/question-generic" : "ui/block-generic") || "";
 }
 
 export function hydrateStaticIcons() {

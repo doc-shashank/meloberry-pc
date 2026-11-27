@@ -39,4 +39,23 @@ public static class PathNormalization
 
         return string.Equals(normLeft, normRight, StringComparison.OrdinalIgnoreCase);
     }
+
+    public static bool IsSameOrDescendantDirectory(string? rootDirectory, string? candidateDirectory)
+    {
+        if (!TryNormalizeDirectoryPath(rootDirectory, out var normRoot) ||
+            !TryNormalizeDirectoryPath(candidateDirectory, out var normCandidate))
+        {
+            return false;
+        }
+
+        if (string.Equals(normRoot, normCandidate, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var rootPrefix = normRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? normRoot
+            : normRoot + Path.DirectorySeparatorChar;
+        return normCandidate.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase);
+    }
 }

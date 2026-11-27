@@ -26,6 +26,10 @@ public static class DependencyInjection
         services.AddSingleton<CaptureAnalysisHandler>();
         services.AddSingleton<SelfUpdateHandler>();
         services.AddSingleton<SettingsAndPresetsHandler>();
+        services.AddSingleton<ProcessCliSignalHandler>();
+        services.AddSingleton<LiveDraftHandler>();
+        services.AddSingleton<ExtractFigureWithMelomgHandler>();
+        services.AddSingleton<FinalizeWorkspaceHandler>();
 
         return services;
     }

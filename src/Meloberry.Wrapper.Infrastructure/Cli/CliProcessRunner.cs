@@ -13,7 +13,8 @@ internal static class CliProcessRunner
         IReadOnlyList<string> args,
         string? workingDir,
         CancellationToken ct,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        string? stdinText = null)
     {
         var effectiveTimeout = timeout ?? DefaultTimeout;
         var psi = new ProcessStartInfo
@@ -45,6 +46,12 @@ internal static class CliProcessRunner
             if (!proc.Start())
             {
                 return (-1, string.Empty, $"Failed to start '{exePath}'.");
+            }
+
+            if (stdinText is not null)
+            {
+                await proc.StandardInput.WriteAsync(stdinText.AsMemory(), ct).ConfigureAwait(false);
+                await proc.StandardInput.FlushAsync(ct).ConfigureAwait(false);
             }
 
             proc.StandardInput.Close();

@@ -9,14 +9,45 @@ namespace Meloberry.Wrapper.Application.UseCases;
 public sealed class WorkspaceSetupHandler(
     IWorkspaceInitializer initializer,
     IManagedAppsStore appsStore,
-    ISettingsStore settingsStore)
+    ISettingsStore settingsStore,
+    IWorkspaceDirectoryBrowser directoryBrowser,
+    IWorkspaceShimWriter? shimWriter = null,
+    IWorkspaceFileWatcher? fileWatcher = null)
 {
+    public async Task<Result<WorkspaceDirectoryListing>> ListDirectoryAsync(string? path, CancellationToken ct = default)
+    {
+        var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
+        var activeWs = settings.ActiveWorkspace?.WorkspacePath;
+        if (!PathNormalization.TryNormalizeDirectoryPath(activeWs, out var normalizedRoot))
+        {
+            return Result<WorkspaceDirectoryListing>.Failure(WrapperErrors.InvalidWorkspaceDir(string.Empty));
+        }
+
+        var target = string.IsNullOrWhiteSpace(path) ? normalizedRoot : path;
+        if (!PathNormalization.IsSameOrDescendantDirectory(normalizedRoot, target))
+        {
+            return Result<WorkspaceDirectoryListing>.Failure(
+                WrapperErrors.InvalidWorkspaceDir("Cannot browse outside the Active Workspace."));
+        }
+
+        var res = await directoryBrowser.ListDirectoryAsync(target, ct).ConfigureAwait(false);
+        if (res.IsSuccess && PathNormalization.AreSameDirectory(res.Value.CurrentPath, normalizedRoot))
+        {
+            return Result<WorkspaceDirectoryListing>.Success(res.Value with { ParentPath = null });
+        }
+
+        return res;
+    }
     public async Task<Result<ActiveWorkspaceState>> SelectWorkspaceAsync(string workspacePath, CancellationToken ct = default)
     {
         if (!PathNormalization.TryNormalizeDirectoryPath(workspacePath, out var fullPath))
         {
             return Result<ActiveWorkspaceState>.Failure(WrapperErrors.InvalidWorkspaceDir(workspacePath));
         }
+
+        var priorSettings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
+        var previousWs = priorSettings.ActiveWorkspace?.WorkspacePath;
+        await SwapActiveWorkspaceShimAsync(previousWs, fullPath, writeIntoTarget: true, ct).ConfigureAwait(false);
 
         var snapshot = await WorkspaceStateSync.ScanAppsSnapshotAsync(appsStore, fullPath, ct).ConfigureAwait(false);
 
@@ -71,6 +102,9 @@ public sealed class WorkspaceSetupHandler(
         ConflictPolicy conflictPolicy,
         CancellationToken ct = default)
     {
+        var priorSettings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
+        var previousWs = priorSettings.ActiveWorkspace?.WorkspacePath;
+
         var initRes = await initializer.InitializeAsync(
             workspacePath,
             selectedAppFileNames,
@@ -85,6 +119,7 @@ public sealed class WorkspaceSetupHandler(
 
         var result = initRes.Value;
         var fullPath = PathNormalization.NormalizeDirectoryPath(result.WorkspacePath);
+        await SwapActiveWorkspaceShimAsync(previousWs, fullPath, writeIntoTarget: false, ct).ConfigureAwait(false);
         var existingAgentsMd = File.Exists(Path.Combine(fullPath, "AGENTS.md"));
         var snapshot = await WorkspaceStateSync.ScanAppsSnapshotAsync(appsStore, fullPath, ct).ConfigureAwait(false);
 
@@ -121,5 +156,29 @@ public sealed class WorkspaceSetupHandler(
         return updateRes.IsSuccess
             ? Result<(WorkspaceInitResult, ActiveWorkspaceState)>.Success((result, resultingState!))
             : Result<(WorkspaceInitResult, ActiveWorkspaceState)>.Failure(updateRes.Error!);
+    }
+
+    private async Task SwapActiveWorkspaceShimAsync(
+        string? previousWorkspacePath,
+        string targetWorkspacePath,
+        bool writeIntoTarget,
+        CancellationToken ct)
+    {
+        if (shimWriter is null)
+        {
+            return;
+        }
+
+        using var _ = fileWatcher?.SuppressScope("workspace", 1200);
+        if (!string.IsNullOrWhiteSpace(previousWorkspacePath) &&
+            !PathNormalization.AreSameDirectory(previousWorkspacePath, targetWorkspacePath))
+        {
+            await shimWriter.RemoveShimIfManagedAsync(previousWorkspacePath, ct).ConfigureAwait(false);
+        }
+
+        if (writeIntoTarget)
+        {
+            await shimWriter.WriteShimAsync(targetWorkspacePath, overwriteExisting: true, ct).ConfigureAwait(false);
+        }
     }
 }

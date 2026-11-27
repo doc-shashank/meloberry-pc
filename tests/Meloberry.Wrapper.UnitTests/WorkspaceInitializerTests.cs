@@ -12,13 +12,15 @@ public sealed class WorkspaceInitializerTests : IDisposable
     private readonly string _tempRoot = Path.Combine(Path.GetTempPath(), $"mby_ws_test_{Guid.NewGuid():N}");
 
     [Fact]
-    public async Task InitializeAsync_CopiesExesAndFilesToRoot_PreservesFolderSubdir_AndNeverDeletesExisting()
+    public async Task InitializeAsync_WritesShimAndCopiesCustomExesAndFilesToRoot_PreservesFolderSubdir_AndNeverDeletesExisting()
     {
         var dataDir = Path.Combine(_tempRoot, "data");
         var paths = new WrapperDataPaths(dataDir);
         Directory.CreateDirectory(paths.AppsDirectory);
         var mbyFake = Path.Combine(paths.AppsDirectory, "mby-cli-2.0.0.exe");
+        var customFake = Path.Combine(paths.AppsDirectory, "custom-tool.exe");
         await File.WriteAllBytesAsync(mbyFake, [(byte)'M', (byte)'Z', 0x90, 0x00]);
+        await File.WriteAllBytesAsync(customFake, [(byte)'M', (byte)'Z', 0x90, 0x01]);
 
         var srcStage = Path.Combine(_tempRoot, "sources");
         var chapterDir = Path.Combine(srcStage, "Chapter02");
@@ -33,7 +35,7 @@ public sealed class WorkspaceInitializerTests : IDisposable
         var preExisting = Path.Combine(workspace, "keep_me.txt");
         await File.WriteAllTextAsync(preExisting, "original user file");
 
-        var initializer = new WorkspaceInitializer(paths, new WebAppAnalysisStore());
+        var initializer = new WorkspaceInitializer(paths, new WebAppAnalysisStore(), new WorkspaceShimWriter());
         var staged = new List<StagedCopyItem>
         {
             new(looseFile, StagedCopyKind.File, "notes.txt", "notes.txt"),
@@ -42,17 +44,19 @@ public sealed class WorkspaceInitializerTests : IDisposable
 
         var res = await initializer.InitializeAsync(
             workspace,
-            ["mby-cli-2.0.0.exe"],
+            ["mby-cli-2.0.0.exe", "custom-tool.exe"],
             staged,
             ConflictPolicy.SkipExisting);
 
         Assert.True(res.IsSuccess);
-        Assert.True(File.Exists(Path.Combine(workspace, "mby-cli-2.0.0.exe")));
+        Assert.False(File.Exists(Path.Combine(workspace, "mby-cli-2.0.0.exe")));
+        Assert.True(File.Exists(Path.Combine(workspace, WorkspaceShimWriter.ShimFileName)));
+        Assert.True(File.Exists(Path.Combine(workspace, "custom-tool.exe")));
         Assert.True(File.Exists(Path.Combine(workspace, "notes.txt")));
         Assert.True(File.Exists(Path.Combine(workspace, "Chapter02", "slides.md")));
         Assert.True(File.Exists(Path.Combine(workspace, "Chapter02", "figs", "a.png")));
         Assert.Equal("original user file", await File.ReadAllTextAsync(preExisting));
-        Assert.Equal(Path.Combine(workspace, "mby-cli-2.0.0.exe"), res.Value.WorkspaceMbyPath);
+        Assert.True(res.Value.ShimWritten);
     }
 
     [Fact]
@@ -234,6 +238,109 @@ public sealed class WorkspaceInitializerTests : IDisposable
         Assert.False(await FileIdentity.AreIdenticalAsync(a, cSameLenDiff));
         Assert.False(await FileIdentity.AreIdenticalAsync(a, dDiffLen));
         Assert.False(await FileIdentity.AreIdenticalAsync(a, Path.Combine(_tempRoot, "missing.bin")));
+    }
+
+    [Fact]
+    public async Task WorkspaceShimWriter_WritesManagedShim_AndOnlyDeletesOwnedShims()
+    {
+        var writer = new WorkspaceShimWriter();
+        var wsManaged = Path.Combine(_tempRoot, "ws_managed");
+        Directory.CreateDirectory(wsManaged);
+
+        var writeRes = await writer.WriteShimAsync(wsManaged);
+        Assert.True(writeRes.IsSuccess);
+        var shimPath = Path.Combine(wsManaged, WorkspaceShimWriter.ShimFileName);
+        Assert.True(File.Exists(shimPath));
+
+        var content = await File.ReadAllTextAsync(shimPath);
+        Assert.Contains(WorkspaceShimWriter.ManagedMarker, content);
+        Assert.Contains("--cli --workspace \"%~dp0.\" %*", content);
+        Assert.Contains("mby-pc-path.txt", content);
+
+        var removed = await writer.RemoveShimIfManagedAsync(wsManaged);
+        Assert.True(removed.IsSuccess);
+        Assert.True(removed.Value);
+        Assert.False(File.Exists(shimPath));
+
+        var removedAgain = await writer.RemoveShimIfManagedAsync(wsManaged);
+        Assert.True(removedAgain.IsSuccess);
+        Assert.False(removedAgain.Value);
+
+        var customUserBat = "@echo off\r\necho custom user script\r\n";
+        await File.WriteAllTextAsync(shimPath, customUserBat);
+        var removedUnmarked = await writer.RemoveShimIfManagedAsync(wsManaged);
+        Assert.True(removedUnmarked.IsSuccess);
+        Assert.False(removedUnmarked.Value);
+        Assert.True(File.Exists(shimPath));
+    }
+
+    [Fact]
+    public async Task SelectWorkspace_MovesManagedShimStrictlyToActiveWorkspace()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data2"));
+        var store = new JsonSettingsStore(paths);
+        var appsStore = new ManagedAppsStore(paths);
+        var shimWriter = new WorkspaceShimWriter();
+        var initializer = new WorkspaceInitializer(paths, new WebAppAnalysisStore(), shimWriter);
+        var setupHandler = new Meloberry.Wrapper.Application.UseCases.WorkspaceSetupHandler(
+            initializer,
+            appsStore,
+            store,
+            new WorkspaceDirectoryBrowser(),
+            shimWriter);
+
+        var ws1 = Path.Combine(_tempRoot, "ws1");
+        var ws2 = Path.Combine(_tempRoot, "ws2");
+        var ws3 = Path.Combine(_tempRoot, "ws3");
+        Directory.CreateDirectory(ws1);
+        Directory.CreateDirectory(ws2);
+        Directory.CreateDirectory(ws3);
+
+        Assert.True((await setupHandler.SelectWorkspaceAsync(ws1)).IsSuccess);
+        Assert.True(File.Exists(Path.Combine(ws1, WorkspaceShimWriter.ShimFileName)));
+
+        Assert.True((await setupHandler.SelectWorkspaceAsync(ws2)).IsSuccess);
+        Assert.False(File.Exists(Path.Combine(ws1, WorkspaceShimWriter.ShimFileName)));
+        Assert.True(File.Exists(Path.Combine(ws2, WorkspaceShimWriter.ShimFileName)));
+
+        Assert.True((await setupHandler.SelectWorkspaceAsync(ws2)).IsSuccess);
+        Assert.True(File.Exists(Path.Combine(ws2, WorkspaceShimWriter.ShimFileName)));
+
+        await File.WriteAllTextAsync(Path.Combine(ws2, WorkspaceShimWriter.ShimFileName), "@echo off\necho keep\n");
+        Assert.True((await setupHandler.SelectWorkspaceAsync(ws3)).IsSuccess);
+        Assert.True(File.Exists(Path.Combine(ws2, WorkspaceShimWriter.ShimFileName)));
+        Assert.True(File.Exists(Path.Combine(ws3, WorkspaceShimWriter.ShimFileName)));
+    }
+
+    [Fact]
+    public async Task WorkspaceInitializer_WritesShimWithoutCopyingMbyOrMelomg_WhileStillCopyingCustomExes()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "data3"));
+        Directory.CreateDirectory(paths.AppsDirectory);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "mby-cli-2.1.2.exe"), [(byte)'M', (byte)'Z', 1]);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "meloberry-melomg-2.2.1.exe"), [(byte)'M', (byte)'Z', 2]);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "custom-helper.exe"), [(byte)'M', (byte)'Z', 3]);
+
+        var ws = Path.Combine(_tempRoot, "ws_init");
+        Directory.CreateDirectory(ws);
+
+        var shimWriter = new WorkspaceShimWriter();
+        var initializer = new WorkspaceInitializer(paths, new WebAppAnalysisStore(), shimWriter);
+
+        var selected = new[] { "mby-cli-2.1.2.exe", "meloberry-melomg-2.2.1.exe", "custom-helper.exe" };
+        var planRes = await initializer.PlanAsync(ws, selected, []);
+        Assert.True(planRes.IsSuccess);
+        Assert.Equal(1, planRes.Value.PlannedCopiesCount);
+
+        var initRes = await initializer.InitializeAsync(ws, selected, [], ConflictPolicy.SkipExisting);
+        Assert.True(initRes.IsSuccess);
+        Assert.True(initRes.Value.ShimWritten);
+        Assert.Equal(Path.Combine(ws, WorkspaceShimWriter.ShimFileName), initRes.Value.WorkspaceShimPath);
+        Assert.True(File.Exists(initRes.Value.WorkspaceShimPath!));
+        Assert.False(File.Exists(Path.Combine(ws, "mby-cli-2.1.2.exe")));
+        Assert.False(File.Exists(Path.Combine(ws, "meloberry-melomg-2.2.1.exe")));
+        Assert.True(File.Exists(Path.Combine(ws, "custom-helper.exe")));
+        Assert.Single(initRes.Value.CopiedApps, a => a == "custom-helper.exe");
     }
 
     public void Dispose()

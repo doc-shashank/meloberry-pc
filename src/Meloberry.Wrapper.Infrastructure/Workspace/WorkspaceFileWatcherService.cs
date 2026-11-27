@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
+using Meloberry.Wrapper.Domain.Models;
 
 namespace Meloberry.Wrapper.Infrastructure.Workspace;
 
@@ -60,6 +61,7 @@ public sealed class WorkspaceFileWatcherService : IWorkspaceFileWatcher, IDispos
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite
                 };
                 watcher.Created += (_, e) => HandleWorkspaceEvent("created", e.FullPath);
+                watcher.Changed += (_, e) => HandleWorkspaceEvent("changed", e.FullPath);
                 watcher.Deleted += (_, e) => HandleWorkspaceEvent("deleted", e.FullPath);
                 watcher.Renamed += (_, e) =>
                 {
@@ -119,13 +121,27 @@ public sealed class WorkspaceFileWatcherService : IWorkspaceFileWatcher, IDispos
             return;
         }
 
-        if (fullPath.Contains($"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+        if (fullPath.Contains($"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) ||
+            fullPath.Contains($"{Path.DirectorySeparatorChar}.meloberry{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
         if (fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
             fileName.EndsWith(".mbytmp", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (string.Equals(fileName, MbyCliSignal.SignalFileName, StringComparison.OrdinalIgnoreCase) &&
+            changeKind is "created" or "changed" &&
+            PathNormalization.AreSameDirectory(Path.GetDirectoryName(fullPath), _activeWorkspacePath))
+        {
+            EmitDebounced("signal", "updated", fullPath, bypassSuppression: true, debounceMs: 120);
+            return;
+        }
+
+        if (changeKind == "changed")
         {
             return;
         }
@@ -162,17 +178,18 @@ public sealed class WorkspaceFileWatcherService : IWorkspaceFileWatcher, IDispos
         _activeSuppressCounts.AddOrUpdate(scope, 0, (_, count) => Math.Max(0, count - 1));
     }
 
-    private void EmitDebounced(string scope, string changeKind, string fullPath)
+    private void EmitDebounced(string scope, string changeKind, string fullPath, bool bypassSuppression = false, int debounceMs = 300)
     {
         var now = DateTimeOffset.UtcNow;
-        if ((_activeSuppressCounts.TryGetValue(scope, out var activeCount) && activeCount > 0) ||
-            (_suppressedUntilByScope.TryGetValue(scope, out var suppressedUntil) && now <= suppressedUntil))
+        if (!bypassSuppression &&
+            ((_activeSuppressCounts.TryGetValue(scope, out var activeCount) && activeCount > 0) ||
+             (_suppressedUntilByScope.TryGetValue(scope, out var suppressedUntil) && now <= suppressedUntil)))
         {
             return;
         }
 
         var key = $"{scope}|{changeKind}|{fullPath}";
-        if (_lastEventByKey.TryGetValue(key, out var prev) && (now - prev).TotalMilliseconds < 300)
+        if (_lastEventByKey.TryGetValue(key, out var prev) && (now - prev).TotalMilliseconds < debounceMs)
         {
             return;
         }

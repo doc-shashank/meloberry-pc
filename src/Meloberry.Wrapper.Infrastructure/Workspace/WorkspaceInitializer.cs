@@ -12,7 +12,8 @@ namespace Meloberry.Wrapper.Infrastructure.Workspace;
 /// </summary>
 public sealed class WorkspaceInitializer(
     IWrapperDataPaths dataPaths,
-    IWebAppAnalysisStore analysisStore) : IWorkspaceInitializer
+    IWebAppAnalysisStore analysisStore,
+    IWorkspaceShimWriter? shimWriter = null) : IWorkspaceInitializer
 {
     private sealed record PlannedFileCopy(
         string SourcePath,
@@ -126,6 +127,20 @@ public sealed class WorkspaceInitializer(
             }
         }
 
+        var shimWritten = false;
+        string? workspaceShimPath = null;
+        if (shimWriter is not null)
+        {
+            var shimRes = await shimWriter.WriteShimAsync(fullWs, overwriteExisting: true, ct).ConfigureAwait(false);
+            if (shimRes.IsFailure)
+            {
+                return Result<WorkspaceInitResult>.Failure(shimRes.Error!);
+            }
+
+            shimWritten = true;
+            workspaceShimPath = shimRes.Value;
+        }
+
         return Result<WorkspaceInitResult>.Success(new WorkspaceInitResult(
             WorkspacePath: fullWs,
             CopiedApps: copiedApps.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
@@ -135,7 +150,9 @@ public sealed class WorkspaceInitializer(
             OverwrittenCount: overwritten,
             WorkspaceMbyPath: wsMbyPath,
             WorkspaceMelomgPath: wsMelomgPath,
-            CopiedRelativePaths: copiedRelativePaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList()));
+            CopiedRelativePaths: copiedRelativePaths.Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+            ShimWritten: shimWritten,
+            WorkspaceShimPath: workspaceShimPath));
     }
 
     public Task<IReadOnlyList<DiscoveredWebApp>> DiscoverWebAppsAsync(string workspacePath, CancellationToken ct = default)
@@ -212,6 +229,12 @@ public sealed class WorkspaceInitializer(
         foreach (var appName in selectedAppFileNames.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var safeName = Path.GetFileName(appName);
+            // mby and melomg execute centrally from apps\ via mby-pc.bat; never copy them into workspaces.
+            if (ManagedAppsStore.IsMbyFileName(safeName) || ManagedAppsStore.IsMelomgFileName(safeName))
+            {
+                continue;
+            }
+
             var srcExe = Path.Combine(dataPaths.AppsDirectory, safeName);
             if (!File.Exists(srcExe))
             {

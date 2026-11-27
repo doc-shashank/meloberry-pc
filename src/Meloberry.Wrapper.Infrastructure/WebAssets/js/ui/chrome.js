@@ -1,6 +1,6 @@
 import { api } from "../api.js";
-import { VIEW_ORDER, state, emit, escapeHtml, formatTruncatedWorkspace } from "../store.js";
-import { registerDropdown, closeAllDropdowns } from "./dropdowns.js";
+import { VIEW_ORDER, WORKFLOW_STEPS, state, emit, escapeHtml, formatTruncatedWorkspace } from "../store.js";
+import { registerDropdown, toggleDropdown, closeAllDropdowns } from "./dropdowns.js";
 import { openInspectModal } from "./modal.js";
 
 export function postWindowCommand(type) {
@@ -107,22 +107,20 @@ export function updateChromeOffset() {
 export function switchView(viewName) {
   closeAllDropdowns();
   const prev = state.currentView;
-  if (prev !== "settings") {
-    state.lastNonSettingsView = prev;
-  }
   state.currentView = viewName;
-  if (viewName !== "settings") {
-    state.lastNonSettingsView = viewName;
-  }
   const dirForward = (VIEW_ORDER[viewName] ?? 0) >= (VIEW_ORDER[prev] ?? 0);
 
-  const map = { setup: "viewSetup", prompt: "viewPrompt", viewer: "viewViewer", settings: "viewSettings" };
-  const tabMap = { setup: "tabSetup", prompt: "tabPrompt", viewer: "tabViewer" };
+  const map = {
+    setup: "viewSetup",
+    format: "viewFormat",
+    organize: "viewOrganize",
+    review: "viewReview",
+    viewer: "viewViewer"
+  };
 
   document.querySelectorAll(".view-panel").forEach(v => {
     v.classList.remove("active", "slide-in-right", "slide-in-left");
   });
-  document.querySelectorAll(".nav-tab").forEach(b => b.classList.remove("active"));
 
   const nextEl = document.getElementById(map[viewName] || "viewSetup");
   nextEl.classList.add("active");
@@ -130,11 +128,22 @@ export function switchView(viewName) {
     nextEl.classList.add(dirForward ? "slide-in-right" : "slide-in-left");
   }
 
-  const tab = document.getElementById(tabMap[viewName]);
-  if (tab) tab.classList.add("active");
+  const activeStepIdx = WORKFLOW_STEPS.indexOf(viewName);
+  document.querySelectorAll(".workflow-stepper .step-node").forEach(btn => {
+    const idx = WORKFLOW_STEPS.indexOf(btn.dataset.view);
+    const isActive = idx >= 0 && idx === activeStepIdx;
+    const isCompleted = activeStepIdx >= 0 && idx >= 0 && idx < activeStepIdx;
+    btn.classList.toggle("active", isActive);
+    btn.classList.toggle("completed", isCompleted);
+    if (isActive) btn.setAttribute("aria-current", "step");
+    else btn.removeAttribute("aria-current");
+  });
+  document.querySelectorAll(".workflow-stepper .step-connector").forEach(conn => {
+    const cIdx = Number(conn.dataset.stepConnector);
+    conn.classList.toggle("reached", activeStepIdx > cIdx);
+  });
 
-  document.getElementById("btnOpenSettings")?.classList.toggle("active", viewName === "settings");
-  document.getElementById("topChromeOverlay").classList.toggle("pulled-up", viewName === "viewer" || viewName === "settings");
+  document.getElementById("topChromeOverlay").classList.toggle("pulled-up", viewName === "viewer");
   updateChromeOffset();
 
   emit("view:changed", { viewName });
@@ -182,10 +191,11 @@ export function syncWorkspaceChrome() {
   const aws = state.settings.activeWorkspace;
   const dot = document.getElementById("wsStatusDot");
   const label = document.getElementById("activeWsLabel");
+  const btn = document.getElementById("activeWsBtn");
 
   if (aws && aws.workspacePath) {
     label.textContent = formatTruncatedWorkspace(aws.workspacePath);
-    label.title = aws.workspacePath;
+    if (btn) btn.title = `${aws.workspacePath} (click to browse directory tree)`;
     dot.classList.toggle("ready", !!aws.isInitialized);
 
     const agentsExists = !!(state.agentsMdStatus && state.agentsMdStatus.exists);
@@ -193,7 +203,7 @@ export function syncWorkspaceChrome() {
     renderAgentsPill(state.agentsMdStatus, false);
   } else {
     label.textContent = "No Active Workspace";
-    label.title = "";
+    if (btn) btn.title = "Select or browse an Active Workspace";
     dot.classList.remove("ready");
     state.prompt.agentsMdExported = false;
     renderAgentsPill(null, false);
@@ -220,25 +230,45 @@ export function renderOutdatedBanner() {
   updateChromeOffset();
 }
 
+export function showLiveAgentActivity(message, level = "info") {
+  if (!message) return;
+  const pill = document.getElementById("liveAgentActivityPill");
+  const textEl = document.getElementById("liveAgentActivityText");
+  if (pill && textEl) {
+    textEl.textContent = message;
+    pill.classList.remove("hidden", "idle");
+    clearTimeout(state.live.activityTimer);
+    state.live.activityTimer = setTimeout(() => {
+      pill.classList.add("idle");
+    }, 10000);
+  }
+
+  addNotification("Live Agent", message, level);
+}
+
 export function wireChromeControls() {
   const titlebar = document.getElementById("titlebar");
   titlebar.addEventListener("mousedown", e => {
-    if (e.button !== 0 || e.target.closest("button, input, select, a, .nav-tabs, .notif-wrap")) return;
+    if (e.button !== 0 || e.target.closest("button, input, select, a, .workflow-stepper, .notif-wrap")) return;
     postWindowCommand("window.drag");
   });
   titlebar.addEventListener("dblclick", e => {
-    if (e.target.closest("button, input, select, a, .nav-tabs, .notif-wrap")) return;
+    if (e.target.closest("button, input, select, a, .workflow-stepper, .notif-wrap")) return;
     postWindowCommand("window.toggleMaximize");
   });
   document.getElementById("btnWinMinimize").onclick = () => postWindowCommand("window.minimize");
   document.getElementById("btnWinMaximize").onclick = () => postWindowCommand("window.toggleMaximize");
   document.getElementById("btnWinClose").onclick = () => postWindowCommand("window.close");
 
-  document.querySelectorAll(".nav-tab").forEach(btn => {
+  document.querySelectorAll(".workflow-stepper .step-node").forEach(btn => {
     btn.onclick = () => switchView(btn.dataset.view);
   });
 
   registerDropdown("btnNotifications", "notifPopover", { wrapSelector: ".notif-wrap" });
+  document.getElementById("liveAgentActivityPill")?.addEventListener("click", e => {
+    e.stopPropagation();
+    toggleDropdown("notifPopover");
+  });
   document.getElementById("btnNotifReadAll").onclick = () => {
     state.notifications.forEach(n => { n.unread = false; });
     renderNotifications();

@@ -9,7 +9,7 @@
 </head>
 <body>
   <div id="app" class="app-shell">
-    <!-- Top 40px Titlebar (Centered 3-Tab Navigation) -->
+    <!-- Top 50px Titlebar (Centered 5-Step Dots & Lines Stepper) -->
     <header id="titlebar" class="titlebar">
       <div class="titlebar-left">
         <div class="brand-group" title="__MBY_PRODUCT_NAME__">
@@ -19,18 +19,30 @@
         </div>
       </div>
 
-      <nav class="nav-tabs titlebar-center" aria-label="Primary views">
-        <button class="nav-tab" data-view="setup" id="tabSetup">
-          <span class="icon-slot" data-icon="ui/nav-setup"></span>
-          <span>Setup</span>
+      <nav class="workflow-stepper titlebar-center" aria-label="Workflow steps">
+        <button type="button" class="step-node" data-view="setup" id="stepSetup">
+          <span class="step-dot-wrap" aria-hidden="true"><span class="step-dot"></span></span>
+          <span class="step-label">Setup</span>
         </button>
-        <button class="nav-tab" data-view="prompt" id="tabPrompt">
-          <span class="icon-slot" data-icon="ui/nav-prompt"></span>
-          <span>Prompt Studio</span>
+        <span class="step-connector" data-step-connector="0" aria-hidden="true"></span>
+        <button type="button" class="step-node" data-view="format" id="stepFormat">
+          <span class="step-dot-wrap" aria-hidden="true"><span class="step-dot"></span></span>
+          <span class="step-label">Format</span>
         </button>
-        <button class="nav-tab" data-view="viewer" id="tabViewer">
-          <span class="icon-slot" data-icon="ui/nav-viewer"></span>
-          <span>WebApp Viewer</span>
+        <span class="step-connector" data-step-connector="1" aria-hidden="true"></span>
+        <button type="button" class="step-node" data-view="organize" id="stepOrganize">
+          <span class="step-dot-wrap" aria-hidden="true"><span class="step-dot"></span></span>
+          <span class="step-label">Organize</span>
+        </button>
+        <span class="step-connector" data-step-connector="2" aria-hidden="true"></span>
+        <button type="button" class="step-node" data-view="review" id="stepReview">
+          <span class="step-dot-wrap" aria-hidden="true"><span class="step-dot"></span></span>
+          <span class="step-label">Review</span>
+        </button>
+        <span class="step-connector" data-step-connector="3" aria-hidden="true"></span>
+        <button type="button" class="step-node" data-view="viewer" id="stepViewer">
+          <span class="step-dot-wrap" aria-hidden="true"><span class="step-dot"></span></span>
+          <span class="step-label">Viewer</span>
         </button>
       </nav>
 
@@ -70,11 +82,17 @@
     <!-- Workspace Stage (Overlay Strip + Sliding Viewport decoupled from reflow) -->
     <div class="workspace-stage">
       <div id="topChromeOverlay" class="top-chrome-overlay">
-        <!-- Second Strip: Workspace Actions -->
+        <!-- Lean Global Workspace Strip (with Interactive Directory Tree Dropdown) -->
         <div id="workspaceStrip" class="workspace-strip">
           <div class="ws-strip-left">
             <span class="ws-dot" id="wsStatusDot"></span>
-            <span id="activeWsLabel" class="ws-strip-label">No Active Workspace</span>
+            <div class="menu-wrap" id="wsTreeWrap">
+              <button type="button" id="activeWsBtn" class="ws-strip-label-btn" title="Click to browse workspace directory tree">
+                <span id="activeWsLabel" class="ws-strip-label">No Active Workspace</span>
+                <span class="ws-tree-caret" aria-hidden="true">&#9662;</span>
+              </button>
+              <div id="wsTreePopover" class="ws-tree-popover hidden"></div>
+            </div>
             <div class="menu-wrap hidden" id="agentsPillWrap">
               <button id="agentsReadyPill" class="pill pill-ok agents-pill-btn" type="button" title="AGENTS.md status &amp; quick actions">
                 <span>AGENTS.md Ready</span>
@@ -92,73 +110,10 @@
                 </button>
               </div>
             </div>
-          </div>
-
-          <div class="ws-strip-actions">
-            <div class="menu-wrap" id="resetMenuWrap">
-              <button id="btnResetWorkspace" class="btn btn-h30 btn-ghost" title="Reset Active Workspace">Reset &#9662;</button>
-              <div id="resetMenu" class="dropdown-menu hidden">
-                <button class="dropdown-item" data-scope="undoReadyWorkspace">
-                  <span>Undo Ready Workspace</span>
-                  <small>Remove exported AGENTS.md &amp; Ready artifacts (keeps .exe tools)</small>
-                </button>
-                <div class="menu-divider"></div>
-                <button class="dropdown-item" data-scope="executablesOnly">
-                  <span>Executables only</span>
-                  <small>Remove Meloberry .exe across workspace &amp; subfolders</small>
-                </button>
-                <button class="dropdown-item" data-scope="executablesAndAgentsMd">
-                  <span>Executables + AGENTS.md</span>
-                  <small>Also remove workspace AGENTS.md</small>
-                </button>
-              </div>
-            </div>
-
-            <div class="menu-wrap" id="readyWsMenuWrap">
-              <button id="btnReadyWorkspace" class="btn btn-h30 btn-primary">Ready Workspace</button>
-              <div id="readyWsMenu" class="dropdown-menu hidden">
-                <button id="optReadyWsRoot" class="dropdown-item" type="button">
-                  <span>In Workspace Root</span>
-                  <small>Export AGENTS.md directly to Active Workspace root</small>
-                </button>
-                <button id="optReadyWsChoose" class="dropdown-item" type="button">
-                  <span>Choose...</span>
-                  <small>Pick a subfolder inside Active Workspace</small>
-                </button>
-              </div>
-            </div>
-
-            <div class="menu-wrap" id="actionsMenuWrap">
-              <button id="btnWorkspaceActions" class="btn btn-h30 btn-accent-soft" type="button">Actions &#9662;</button>
-              <div id="actionsMenu" class="dropdown-menu hidden">
-                <button id="optExportRawJson" class="dropdown-item" type="button">
-                  <span>Export Raw Session JSON</span>
-                  <small>Strict mby JSON blueprint (requires non-empty Qty)</small>
-                </button>
-                <button id="optGenerateTemplate" class="dropdown-item" type="button">
-                  <span>Generate Template...</span>
-                  <small>Export raw JSON &amp; run mby apply to create draft session</small>
-                </button>
-              </div>
-            </div>
-
-            <div class="menu-wrap" id="promptOptionsWrap">
-              <button id="btnPromptOptions" class="btn btn-h30 btn-ghost">Prompt Options &#9662;</button>
-              <div id="promptOptionsMenu" class="dropdown-menu hidden">
-                <button id="optCopyPlainText" class="dropdown-item">
-                  <span>Copy as Plain Text</span>
-                  <small>Strip Markdown syntax for plain chat paste</small>
-                </button>
-                <button id="optCopyMarkdown" class="dropdown-item">
-                  <span>Copy Markdown</span>
-                  <small>Copy structured prompt Markdown</small>
-                </button>
-                <button id="optSaveMarkdown" class="dropdown-item">
-                  <span>Save as Markdown</span>
-                  <small>Save prompt as .md file</small>
-                </button>
-              </div>
-            </div>
+            <button id="liveAgentActivityPill" class="live-agent-pill hidden" type="button" title="Live agent activity — click to open notifications">
+              <span class="live-agent-dot" aria-hidden="true"></span>
+              <span id="liveAgentActivityText">Agent Ready</span>
+            </button>
           </div>
         </div>
 
@@ -172,11 +127,16 @@
         </div>
       </div>
 
-      <!-- Sliding Viewport Wrapper (Android Horizontal Slide Navigation) -->
+      <!-- Sliding Viewport Wrapper -->
       <div class="views-viewport">
-        <!-- View 1: Setup -->
+        <!-- Step 1: Setup -->
         <main id="viewSetup" class="view-panel active">
           <div class="setup-grid">
+            <header class="step-hero">
+              <h1 class="step-hero-title">Setup Workspace</h1>
+              <p class="step-hero-sub">Pick an active folder, select Meloberry CLI tools, and stage source files or folders to initialize.</p>
+            </header>
+
             <section class="card" id="setupWsCard">
               <div class="card-head">
                 <h2>1. Active Workspace</h2>
@@ -191,7 +151,7 @@
 
             <section class="card">
               <div class="card-head">
-                <h2>2. Add Apps</h2>
+                <h2>2. Central CLI Tools &amp; Custom Apps</h2>
                 <div class="row gap-6">
                   <button id="btnImportCustomExe" class="btn btn-h30 btn-ghost">Import .exe</button>
                   <button id="btnRefreshApps" class="btn btn-h30 btn-ghost">Refresh</button>
@@ -249,157 +209,196 @@
           </div>
         </main>
 
-        <!-- View 2: Prompt Studio -->
-        <main id="viewPrompt" class="view-panel">
-          <div class="studio-page-grid">
-            <!-- Row 1: Container & Format (left) | Organization (right) -->
-            <div class="studio-row-top">
-              <section class="card">
-                <div class="card-head">
-                  <h3>Container &amp; Format</h3>
-                  <div class="row gap-6">
-                    <div class="menu-wrap" id="presetMenuWrap">
-                      <button id="btnPresetDropdown" class="btn btn-h30 btn-ghost">
-                        <span id="presetBtnLabel">Preset</span>
-                        <span>&#9662;</span>
-                      </button>
-                      <div id="presetDropdownMenu" class="dropdown-menu hidden"></div>
-                    </div>
-                    <button id="btnSavePreset" class="btn btn-h30 btn-ghost">Save</button>
-                  </div>
-                </div>
+        <!-- Step 2: Format -->
+        <main id="viewFormat" class="view-panel">
+          <div class="step-centered-grid">
+            <header class="step-hero">
+              <h1 class="step-hero-title">Suit Yourself</h1>
+              <p class="step-hero-sub">Choose your container type and authoring format, then add study notes and reference attachments.</p>
+            </header>
 
-                <div class="segmented" id="containerTabs">
+            <section class="card">
+              <div class="card-head">
+                <h3>Container &amp; Format</h3>
+                <div class="segmented segmented-inline" id="containerTabs">
                   <button class="seg-btn active" data-container="session">Session</button>
                   <button class="seg-btn" data-container="standaloneArticle">Article</button>
                   <button class="seg-btn" data-container="standaloneQuiz">Quiz</button>
                 </div>
-
-                <div class="form-grid">
-                  <label class="field">
-                    <span>Title</span>
-                    <input id="promptTitle" type="text" class="input" placeholder="e.g., Chapter 2: Action Potentials" />
-                  </label>
-                  <label class="field">
-                    <span>Format</span>
-                    <select id="promptFormat" class="select select-h30 full-width">
-                      <option value="markdownDirectory">Markdown Directory</option>
-                      <option value="singleMarkdown">Single Markdown</option>
-                      <option value="json">Strict JSON</option>
-                    </select>
-                  </label>
-                  <label class="field field-span2">
-                    <span>Description</span>
-                    <input id="promptDescription" type="text" class="input" placeholder="Scope or focus..." />
-                  </label>
-                </div>
-              </section>
-
-              <section class="card org-card">
-                <div class="card-head">
-                  <h3>Organization</h3>
-                  <div class="row gap-6" id="orgAddButtons">
-                    <button id="btnAddOrgArticle" class="btn btn-h30 btn-ghost">+ Add Article</button>
-                    <button id="btnAddOrgQuiz" class="btn btn-h30 btn-ghost">+ Add Quiz</button>
-                  </div>
-                </div>
-
-                <div id="orgTrack" class="drag-track"></div>
-
-                <div id="orgSelectedBar" class="org-selected-bar hidden">
-                  <span id="orgSelectedBadge" class="pill pill-accent">A1</span>
-                  <input id="orgSelectedTitle" type="text" class="input input-sm" placeholder="Component section title..." />
-                </div>
-              </section>
-            </div>
-
-            <!-- Row 2: What do you want in a <session/article/quiz> -->
-            <section class="card">
-              <div class="card-head">
-                <div class="row gap-10 wrap">
-                  <h3 id="specCardHeading">What do you want in a <code>article</code></h3>
-                  <span id="specSyncStatus" class="sync-status-text"></span>
-                </div>
-                <div class="row gap-8 wrap">
-                  <div class="segmented segmented-inline" id="specCardModeTabs">
-                    <button class="seg-btn active" data-specmode="selector">Selector</button>
-                    <button class="seg-btn" data-specmode="organizer">Organizer</button>
-                  </div>
-                  <button id="btnRefreshSpecs" class="btn btn-h30 btn-ghost">Reload</button>
-                </div>
               </div>
 
-              <!-- Selector Mode: Custom SVG-icon Add Spec Dropdown + Active Rows -->
-              <div id="specSelectorPane">
-                <div class="row gap-8 wrap mb-8">
-                  <div class="menu-wrap" id="selectorSpecDropWrap">
-                    <button id="btnSelectorAddSpecDrop" class="btn btn-h30 btn-ghost">
-                      <span id="selectorAddSpecLabel">+ Add Spec</span>
-                      <span>&#9662;</span>
-                    </button>
-                    <div id="selectorSpecMenu" class="dropdown-menu spec-icon-menu hidden"></div>
-                  </div>
-                  <span class="shop-group-title" id="selectorGroupTitle">Article Blocks</span>
-                </div>
-                <div id="selectorRowsList" class="shopping-list"></div>
+              <div class="form-grid">
+                <label class="field">
+                  <span>Title</span>
+                  <input id="promptTitle" type="text" class="input" placeholder="e.g., Chapter 2: Action Potentials" />
+                </label>
+                <label class="field">
+                  <span>Format</span>
+                  <select id="promptFormat" class="select select-h30 full-width">
+                    <option value="markdownDirectory">Markdown Directory</option>
+                    <option value="singleMarkdown">Single Markdown</option>
+                    <option value="json">Strict JSON</option>
+                  </select>
+                </label>
+                <label class="field field-span2">
+                  <span>Description</span>
+                  <input id="promptDescription" type="text" class="input" placeholder="Scope or focus..." />
+                </label>
               </div>
 
-              <!-- Organizer Mode: Persistent SVG-icon Spec Dropdown + Subtype Picker + Animated Drag Track -->
-              <div id="specOrganizerPane" class="hidden">
-                <div class="row gap-8 wrap mb-8" id="specOrgAddBar">
-                  <div class="menu-wrap" id="orgSpecDropWrap">
-                    <button id="btnOrgSpecDrop" class="btn btn-h30 btn-ghost">
-                      <span id="orgSpecChosenDisplay" class="row gap-6"></span>
-                      <span>&#9662;</span>
-                    </button>
-                    <div id="orgSpecMenu" class="dropdown-menu spec-icon-menu hidden"></div>
-                  </div>
-                  <div class="menu-wrap hidden" id="orgSubtypeDropWrap">
-                    <button id="btnOrgSubtypeDrop" class="btn btn-h30 btn-ghost" type="button">
-                      <span id="orgSubtypeChosenDisplay" class="row gap-6">Generic</span>
-                      <span>&#9662;</span>
-                    </button>
-                    <div id="orgSubtypeMenu" class="dropdown-menu spec-icon-menu hidden"></div>
-                  </div>
-                  <button id="btnSpecOrgAdd" class="btn btn-h30 btn-primary">+ Add</button>
-                  <button id="btnSpecOrgResetOrder" class="btn btn-h30 btn-ghost hidden" type="button" title="Revert to unordered Auto mode">Reset Order</button>
-                  <span id="specOrgHint" class="muted">Preview order — drag or + Add to customize exact sequence</span>
+              <div class="wf-mode-row">
+                <div>
+                  <div class="muted" style="font-weight:700; margin-bottom:2px;">Authoring Workflow Mode</div>
+                  <div id="workflowModeHint" class="wf-mode-hint">Direct authoring: fill spec contents directly in Organize and build with zero prompt overhead.</div>
                 </div>
-                <div id="specOrgTrack" class="drag-track"></div>
+                <div class="segmented segmented-inline" id="workflowModeTabs">
+                  <button class="seg-btn active" type="button" data-wf-mode="direct">Direct</button>
+                  <button class="seg-btn" type="button" data-wf-mode="liveAgent">Live Agent</button>
+                  <button class="seg-btn" type="button" data-wf-mode="classicPrompt">Classic Prompt</button>
+                </div>
               </div>
             </section>
 
-            <!-- Row 3: Study Notes & Attachments (50%) | Prompt Preview (50%) -->
-            <div class="studio-row-bottom">
-              <section class="card notes-card">
-                <div class="card-head">
-                  <h3>Study Notes &amp; Attachments</h3>
-                  <button id="btnAttachPromptFiles" class="btn btn-h30 btn-ghost">+ Attach</button>
-                </div>
-                <textarea id="promptSourceText" class="textarea fixed-textarea" rows="7" placeholder="Paste study text or instructions..."></textarea>
-                <div id="promptAttachmentsList" class="chip-row hidden"></div>
-                <div class="row gap-12 mt-8 wrap">
-                  <label class="check-label"><input id="chkUseMelomg" type="checkbox" checked /> <code>melomg</code> PDF guidance</label>
-                </div>
-              </section>
-
-              <section class="card preview-card">
-                <div class="card-head">
-                  <h3>Prompt Preview</h3>
-                  <div class="muted" id="promptMetrics">0 chars &middot; ~0 tokens</div>
-                </div>
-
-                <pre id="promptPreviewBox" class="prompt-preview compact-preview"></pre>
-              </section>
-            </div>
+            <section id="formatNotesCard" class="card notes-card hidden">
+              <div class="card-head">
+                <h3>Study Notes &amp; Attachments</h3>
+                <button id="btnAttachPromptFiles" class="btn btn-h30 btn-ghost">+ Attach</button>
+              </div>
+              <textarea id="promptSourceText" class="textarea fixed-textarea" rows="8" placeholder="Paste study text or instructions..."></textarea>
+              <div id="promptAttachmentsList" class="chip-row hidden"></div>
+            </section>
           </div>
         </main>
 
-        <!-- View 3: Minimal Full-Bleed WebApp Viewer -->
+        <!-- Step 3: Organize -->
+        <main id="viewOrganize" class="view-panel">
+          <div class="organize-stage">
+            <div class="step-hero-row">
+              <header class="step-hero">
+                <h1 class="step-hero-title">Decide the organization</h1>
+                <p class="step-hero-sub">Arrange articles and quizzes horizontally, organize vertical specs inside each card, or apply reusable templates.</p>
+              </header>
+              <div class="org-toolbar">
+                <span id="specSyncStatus" class="sync-status-text"></span>
+                <button id="btnRefreshSpecs" class="btn btn-h30 btn-ghost" type="button">Reload</button>
+
+                <div class="menu-wrap" id="presetMenuWrap">
+                  <button id="btnPresetDropdown" class="btn btn-h30 btn-ghost" type="button">
+                    <span id="presetBtnLabel">Preset</span>
+                    <span>&#9662;</span>
+                  </button>
+                  <div id="presetDropdownMenu" class="dropdown-menu hidden"></div>
+                </div>
+                <button id="btnSavePreset" class="btn btn-h30 btn-ghost" type="button">
+                  <span class="icon-slot" data-icon="ui/save"></span>
+                  <span>Save</span>
+                </button>
+
+                <div class="menu-wrap" id="orgAddNewWrap">
+                  <button id="btnOrgAddNew" class="btn btn-h30 btn-primary" type="button">Add New &#9662;</button>
+                  <div id="orgAddNewMenu" class="dropdown-menu hidden">
+                    <button id="optOrgAddArticle" class="dropdown-item dropdown-item-row" type="button">
+                      <span class="row gap-8"><span class="spec-icon-wrap" data-icon="ui/article"></span><span>Article</span></span>
+                      <small>Teaching blocks</small>
+                    </button>
+                    <button id="optOrgAddQuiz" class="dropdown-item dropdown-item-row" type="button">
+                      <span class="row gap-8"><span class="spec-icon-wrap" data-icon="ui/quiz"></span><span>Quiz</span></span>
+                      <small>Practice questions</small>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div id="orgCanvasTrack" class="org-canvas-track"></div>
+          </div>
+        </main>
+
+        <!-- Step 4: Review -->
+        <main id="viewReview" class="view-panel">
+          <div class="step-centered-grid review-grid">
+            <header class="step-hero">
+              <h1 class="step-hero-title">Review and Finalize</h1>
+              <p class="step-hero-sub">Inspect the composed prompt, ready your workspace AGENTS.md, scaffold templates, or copy for your AI agent.</p>
+            </header>
+
+            <section class="card review-actions-bar">
+              <div class="row gap-8 wrap">
+                <div class="finalize-cta-group">
+                  <button id="btnFinalizeWebApp" class="btn btn-h32 btn-primary btn-finalize" type="button">Finalize &amp; Build WebApp</button>
+                  <label class="check-label"><input id="chkAllowPlaceholders" type="checkbox" /> Allow Placeholders</label>
+                </div>
+
+                <div class="menu-wrap" id="readyWsMenuWrap">
+                  <button id="btnReadyWorkspace" class="btn btn-h32 btn-accent-soft">Ready Workspace</button>
+                  <div id="readyWsMenu" class="dropdown-menu dropdown-menu-left hidden">
+                    <button id="optReadyWsRoot" class="dropdown-item" type="button">
+                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/check-circle"></span><span>In Workspace Root</span></span>
+                      <small>Export AGENTS.md directly to Active Workspace root</small>
+                    </button>
+                    <button id="optReadyWsChoose" class="dropdown-item" type="button">
+                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/folder-open"></span><span>Choose...</span></span>
+                      <small>Pick a subfolder inside Active Workspace</small>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="menu-wrap" id="actionsMenuWrap">
+                  <button id="btnWorkspaceActions" class="btn btn-h32 btn-accent-soft" type="button">Actions &#9662;</button>
+                  <div id="actionsMenu" class="dropdown-menu dropdown-menu-left hidden">
+                    <button id="optExportRawJson" class="dropdown-item" type="button">
+                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/code"></span><span>Export Raw Session JSON</span></span>
+                      <small>Strict mby JSON blueprint (requires non-empty Qty)</small>
+                    </button>
+                    <button id="optGenerateTemplate" class="dropdown-item" type="button">
+                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/wand"></span><span>Generate Template...</span></span>
+                      <small>Export raw JSON &amp; run mby apply to create draft session</small>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="menu-wrap" id="promptOptionsWrap">
+                  <button id="btnPromptOptions" class="btn btn-h32 btn-ghost">Prompt Options &#9662;</button>
+                  <div id="promptOptionsMenu" class="dropdown-menu dropdown-menu-left hidden">
+                    <button id="optCopyPlainText" class="dropdown-item">
+                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/copy"></span><span>Copy as Plain Text</span></span>
+                      <small>Strip Markdown syntax for plain chat paste</small>
+                    </button>
+                    <button id="optCopyMarkdown" class="dropdown-item">
+                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/code"></span><span>Copy Markdown</span></span>
+                      <small>Copy structured prompt Markdown</small>
+                    </button>
+                    <button id="optSaveMarkdown" class="dropdown-item">
+                      <span class="dropdown-item-head"><span class="icon-slot" data-icon="ui/save"></span><span>Save as Markdown</span></span>
+                      <small>Save prompt as .md file</small>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="muted" id="promptMetrics">0 chars &middot; ~0 tokens</div>
+            </section>
+
+            <section class="card preview-card review-preview-card">
+              <div class="card-head">
+                <div class="row gap-10 wrap">
+                  <h3 id="reviewPreviewHeading">Build Readiness</h3>
+                  <div class="segmented segmented-inline" id="reviewWorkflowModeTabs">
+                    <button class="seg-btn active" type="button" data-wf-mode="direct">Direct</button>
+                    <button class="seg-btn" type="button" data-wf-mode="liveAgent">Live Agent</button>
+                    <button class="seg-btn" type="button" data-wf-mode="classicPrompt">Classic Prompt</button>
+                  </div>
+                </div>
+                <label class="check-label"><input id="chkUseMelomg" type="checkbox" checked /> <code>melomg</code> PDF guidance</label>
+              </div>
+              <pre id="promptPreviewBox" class="prompt-preview review-preview-box"></pre>
+            </section>
+          </div>
+        </main>
+
+        <!-- Step 5: Minimal Full-Bleed WebApp Viewer -->
         <main id="viewViewer" class="view-panel">
           <div class="viewer-full">
             <div id="viewerPlaceholder" class="viewer-empty">
-              <!-- Non-clickable stylized Question Mark SVG graphic -->
               <div class="stylized-q-svg" aria-hidden="true">
                 <svg viewBox="0 0 64 64" width="54" height="54" fill="none">
                   <circle cx="32" cy="32" r="28" stroke="currentColor" stroke-width="2.5" stroke-dasharray="5 4" opacity="0.55"/>
@@ -462,99 +461,90 @@
             </div>
           </div>
         </main>
-
-        <!-- View 4: Full-Page Settings & App Updates -->
-        <main id="viewSettings" class="view-panel">
-          <div class="settings-grid">
-            <section class="card">
-              <div class="settings-page-head">
-                <div class="settings-head-left">
-                  <button id="btnSettingsBack" class="btn btn-h30 btn-ghost" type="button">
-                    <span class="icon-slot" data-icon="ui/back"></span>
-                    <span>Back</span>
-                  </button>
-                  <div>
-                    <h2 style="margin:0;font-size:15px">Settings &amp; App Updates</h2>
-                    <div class="muted" id="settingsMetaLine">__MBY_PRODUCT_NAME__ v__MBY_VERSION_VALUE__</div>
-                  </div>
-                </div>
-                <div class="row gap-8">
-                  <button id="btnSaveSettings" class="btn btn-h30 btn-primary">Save Settings</button>
-                  <button id="btnOpenAppsDir" class="btn btn-h30 btn-ghost">Open apps\ Folder</button>
-                </div>
-              </div>
-            </section>
-
-            <section class="card settings-block">
-              <h3>App Self-Update (Inno Setup)</h3>
-              <div class="row gap-8 wrap">
-                <button id="btnCheckSelfUpdate" class="btn btn-h30 btn-primary">Check for App Updates</button>
-                <button id="btnInstallSelfUpdate" class="btn btn-h30 btn-ok hidden">Download &amp; Install Update</button>
-                <span id="selfUpdateStatusText" class="muted">Checks GitHub only when clicked.</span>
-              </div>
-              <div id="selfUpdateProgressWrap" class="progress-wrap hidden">
-                <div class="progress-bar" id="selfUpdateProgressBar"></div>
-              </div>
-              <div class="form-grid mt-8">
-                <label class="field">
-                  <span>Self-Update GitHub Owner</span>
-                  <input id="setUpdateOwner" type="text" class="input" />
-                </label>
-                <label class="field">
-                  <span>Self-Update GitHub Repo</span>
-                  <input id="setUpdateRepo" type="text" class="input" />
-                </label>
-              </div>
-            </section>
-
-            <section class="card settings-block">
-              <h3>Theme &amp; Paths</h3>
-              <div class="form-grid">
-                <label class="field">
-                  <span>Theme</span>
-                  <select id="setThemeMode" class="select select-h30 full-width">
-                    <option value="berry">Berry</option>
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
-                    <option value="paper">Paper</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>Default Build Output Dir</span>
-                  <input id="setDefaultBuildDir" type="text" class="input" placeholder="Defaults to &lt;Workspace&gt;\&lt;id&gt;_web" />
-                </label>
-                <label class="field">
-                  <span>Custom <code>mby</code> Override</span>
-                  <input id="setMbyOverride" type="text" class="input" placeholder="Auto-resolved" />
-                </label>
-                <label class="field">
-                  <span>Custom <code>melomg</code> Override</span>
-                  <input id="setMelomgOverride" type="text" class="input" placeholder="Auto-resolved" />
-                </label>
-              </div>
-            </section>
-
-            <section class="card settings-block">
-              <h3>Ecosystem Repositories</h3>
-              <div id="ecosystemRepoCards" class="repo-grid"></div>
-            </section>
-          </div>
-        </main>
       </div>
     </div>
   </div>
 
-  <!-- Anchored Spec Pencil Notes Popover (Fixed Size) -->
-  <div id="notePopover" class="note-popover hidden">
-    <div class="note-popover-head">
-      <strong id="notePopoverTitle">Custom Instructions</strong>
-      <button id="btnCloseNotePopover" class="btn btn-xs btn-ghost">Done</button>
+  <!-- Settings & App Updates Modal Popup -->
+  <div id="settingsModal" class="modal-backdrop hidden">
+    <div class="modal-card settings-modal-card" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
+      <div class="modal-head settings-modal-head">
+        <div>
+          <div class="settings-title-row">
+            <h3 id="settingsModalTitle" style="margin:0;font-size:15px">Settings &amp; App Updates</h3>
+            <span id="settingsSavedStatus" class="sync-status-text live hidden">Settings saved</span>
+          </div>
+          <div class="muted" id="settingsMetaLine">__MBY_PRODUCT_NAME__ v__MBY_VERSION_VALUE__</div>
+        </div>
+        <div class="row gap-8">
+          <button id="btnOpenAppsDir" class="btn btn-h30 btn-ghost">Open apps\ Folder</button>
+          <button id="btnCloseSettingsModal" class="btn btn-h30 btn-ghost" type="button" title="Close Settings">&#10005;</button>
+        </div>
+      </div>
+
+      <div class="modal-body settings-modal-body">
+        <section class="card settings-block">
+          <h3>App Self-Update (Inno Setup)</h3>
+          <div class="row gap-8 wrap">
+            <button id="btnCheckSelfUpdate" class="btn btn-h30 btn-primary">Check for App Updates</button>
+            <button id="btnInstallSelfUpdate" class="btn btn-h30 btn-ok hidden">Download &amp; Install Update</button>
+            <span id="selfUpdateStatusText" class="muted">Checks GitHub only when clicked.</span>
+          </div>
+          <div id="selfUpdateProgressWrap" class="progress-wrap hidden">
+            <div class="progress-bar" id="selfUpdateProgressBar"></div>
+          </div>
+          <div class="form-grid mt-8">
+            <label class="field">
+              <span>Self-Update GitHub Owner</span>
+              <input id="setUpdateOwner" type="text" class="input" />
+            </label>
+            <label class="field">
+              <span>Self-Update GitHub Repo</span>
+              <input id="setUpdateRepo" type="text" class="input" />
+            </label>
+          </div>
+        </section>
+
+        <section class="card settings-block">
+          <h3>Theme &amp; Paths</h3>
+          <div class="form-grid">
+            <label class="field">
+              <span>Theme</span>
+              <select id="setThemeMode" class="select select-h30 full-width">
+                <option value="berry">Berry</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+                <option value="paper">Paper</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Default Build Output Dir</span>
+              <input id="setDefaultBuildDir" type="text" class="input" placeholder="Defaults to &lt;Workspace&gt;\&lt;id&gt;_web" />
+            </label>
+            <label class="field">
+              <span>Custom <code>mby</code> Override</span>
+              <input id="setMbyOverride" type="text" class="input" placeholder="Auto-resolved" />
+            </label>
+            <label class="field">
+              <span>Custom <code>melomg</code> Override</span>
+              <input id="setMelomgOverride" type="text" class="input" placeholder="Auto-resolved" />
+            </label>
+          </div>
+        </section>
+
+        <section class="card settings-block">
+          <h3>Ecosystem Repositories</h3>
+          <div id="ecosystemRepoCards" class="repo-grid"></div>
+        </section>
+      </div>
     </div>
-    <textarea id="notePopoverText" class="textarea fixed-textarea" rows="4" placeholder="Specific instructions for this spec..."></textarea>
   </div>
 
-  <!-- Anchored Subtype Distribution Popover -->
-  <div id="distPopover" class="dist-popover hidden"></div>
+  <!-- Anchored Add Spec Popover (Organize View) -->
+  <div id="addSpecPopover" class="add-spec-popover hidden"></div>
+
+  <!-- Anchored Spec Inspector Popover (Organize View) -->
+  <div id="specInspectorPopover" class="spec-inspector-popover hidden"></div>
 
   <!-- Positioned 350ms Hover Full-Path Tooltip -->
   <div id="hoverPathTooltip" class="path-tooltip hidden"></div>
@@ -589,6 +579,92 @@
       <div class="modal-foot">
         <button id="btnInputModalCancel" class="btn btn-h30 btn-ghost">Cancel</button>
         <button id="btnInputModalOk" class="btn btn-h30 btn-primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Expanded Spec Content & Inline melomg Extractor Modal -->
+  <div id="specContentModal" class="modal-backdrop hidden">
+    <div class="modal-card spec-content-modal-card">
+      <div class="modal-head">
+        <div class="row gap-8">
+          <h3 id="specContentModalTitle">Edit Spec Content</h3>
+          <span id="specContentTopicBadge" class="pill pill-accent"></span>
+        </div>
+        <button id="btnCloseSpecContentModal" class="btn btn-xs btn-ghost" type="button">Close</button>
+      </div>
+      <div class="modal-body spec-content-modal-body">
+        <div class="row-between wrap gap-8">
+          <div class="segmented segmented-inline" id="specContentModeTabs">
+            <button class="seg-btn active" type="button" data-spec-content-mode="none">None</button>
+            <button class="seg-btn" type="button" data-spec-content-mode="rawText">Raw Text</button>
+            <button class="seg-btn" type="button" data-spec-content-mode="markdownFile">Markdown File (.md)</button>
+          </div>
+          <span id="specContentModeStatus" class="muted"></span>
+        </div>
+
+        <pre id="specContentSyntaxHint" class="spec-content-syntax-hint hidden"></pre>
+
+        <div id="specContentRawPane" class="hidden">
+          <textarea id="specContentRawInput" class="textarea spec-content-raw-input" rows="8" placeholder="Write plain text, mby :::directive blocks, or relative asset paths (e.g. assets/fig_1.1.png)..."></textarea>
+        </div>
+
+        <div id="specContentFilePane" class="hidden">
+          <div class="row gap-8">
+            <input id="specContentFilePath" type="text" class="input" style="flex:1 1 auto;" placeholder="Relative .md path inside workspace or full .md file path..." />
+            <button id="btnPickSpecMdFile" class="btn btn-h30 btn-ghost" type="button">Browse .md...</button>
+          </div>
+          <p class="muted" style="margin:6px 0 0;">If the file does not start with <code>:::</code>, Finalize smart-wraps it for this spec automatically.</p>
+        </div>
+
+        <div id="specMelomgExtractor" class="melomg-extractor-box hidden">
+          <div class="row-between wrap gap-8">
+            <strong>Extract Figure via <code>melomg</code></strong>
+            <span id="specMelomgStatus" class="muted"></span>
+          </div>
+          <div id="specMelomgMissing" class="row-between wrap gap-8 hidden">
+            <span class="muted"><code>melomg</code> CLI is not installed yet. Install it in Setup or attach a local image path manually.</span>
+            <button id="btnSpecMelomgGoSetup" class="btn btn-xs btn-primary" type="button">Install in Setup</button>
+          </div>
+          <div id="specMelomgControls">
+            <div class="melomg-extractor-grid">
+              <label class="field">
+                <span>Source PDF</span>
+                <div class="row gap-6">
+                  <select id="specMelomgPdfSelect" class="select select-h30" style="flex:1 1 auto;"></select>
+                  <button id="btnSpecMelomgBrowsePdf" class="btn btn-h30 btn-ghost" type="button">Browse</button>
+                </div>
+              </label>
+              <label class="field">
+                <span>Figure Query</span>
+                <input id="specMelomgQuery" type="text" class="input" placeholder="e.g. Figure 1.1, p4, f1" />
+              </label>
+              <button id="btnSpecMelomgExtract" class="btn btn-h30 btn-primary" type="button">Extract</button>
+            </div>
+            <div class="row gap-12 wrap" style="margin-top:8px;">
+              <label class="row gap-6 muted" style="font-size:12px;">
+                <span>Quality</span>
+                <select id="specMelomgQuality" class="select select-h30">
+                  <option value="medium">Medium</option>
+                  <option value="high" selected>High</option>
+                  <option value="ultra">Ultra</option>
+                </select>
+              </label>
+              <label class="check-label"><input id="specMelomgMaskAll" type="checkbox" /> Mask labels</label>
+            </div>
+            <div id="specMelomgPreviewWrap" class="melomg-preview-wrap hidden" style="margin-top:8px;">
+              <img id="specMelomgPreviewImg" class="melomg-preview-thumb" alt="Extracted figure preview" />
+              <div style="min-width:0;flex:1 1 auto;">
+                <div id="specMelomgPreviewPath" style="font-family:'Cascadia Code',Consolas,monospace;font-size:11.5px;"></div>
+                <div id="specMelomgPreviewMeta" class="muted" style="margin-top:3px;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button id="btnClearSpecContent" class="btn btn-h30 btn-danger-ghost" type="button">Clear Content</button>
+        <button id="btnSaveSpecContent" class="btn btn-h30 btn-primary" type="button">Save &amp; Done</button>
       </div>
     </div>
   </div>

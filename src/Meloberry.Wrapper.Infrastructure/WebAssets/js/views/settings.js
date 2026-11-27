@@ -1,9 +1,80 @@
 import { api } from "../api.js";
-import { state, emit, escapeHtml, withButtonBusy } from "../store.js";
-import { addNotification, applyTheme, switchView, toast } from "../ui/chrome.js";
+import { state, emit, escapeHtml } from "../store.js";
+import { addNotification, applyTheme, toast } from "../ui/chrome.js";
+import { closeAllDropdowns } from "../ui/dropdowns.js";
+
+let debounceTimer = null;
+let saveSeq = 0;
+let lastSavedSignature = "";
+let lastToolSignature = "";
+
+function buildSettingsPayload() {
+  return {
+    themeMode: document.getElementById("setThemeMode")?.value || "berry",
+    defaultBuildOutputDir: document.getElementById("setDefaultBuildDir")?.value || "",
+    mbyExecutableOverride: document.getElementById("setMbyOverride")?.value || "",
+    melomgExecutableOverride: document.getElementById("setMelomgOverride")?.value || "",
+    selfUpdateRepoOwner: document.getElementById("setUpdateOwner")?.value || "",
+    selfUpdateRepoName: document.getElementById("setUpdateRepo")?.value || ""
+  };
+}
+
+function signatureOf(payload) {
+  return JSON.stringify(payload);
+}
+
+function toolSignatureOf(payload) {
+  return `${payload.mbyExecutableOverride || ""}||${payload.melomgExecutableOverride || ""}`;
+}
+
+function showSettingsSavedWipe() {
+  const el = document.getElementById("settingsSavedStatus");
+  if (!el) return;
+  el.textContent = "Settings saved";
+  el.classList.remove("hidden", "sync-wipe-in");
+  void el.offsetWidth;
+  el.classList.add("sync-wipe-in");
+}
+
+async function persistSettingsNow() {
+  clearTimeout(debounceTimer);
+  const payload = buildSettingsPayload();
+  const sig = signatureOf(payload);
+  if (sig === lastSavedSignature) return;
+
+  const mySeq = ++saveSeq;
+  const toolsChanged = toolSignatureOf(payload) !== lastToolSignature;
+  const res = await api("PUT", "/api/settings", payload);
+  if (mySeq !== saveSeq) return;
+
+  if (res.ok) {
+    state.settings = res.data;
+    const synced = buildSettingsPayload();
+    lastSavedSignature = signatureOf(synced);
+    lastToolSignature = toolSignatureOf(synced);
+    applyTheme(state.settings.themeMode);
+    emit("viewer:theme-changed");
+    if (toolsChanged) {
+      emit("apps:refresh", false);
+      emit("specs:reload", true);
+    }
+    emit("prompt:refresh");
+    showSettingsSavedWipe();
+  } else {
+    toast(res.data?.error?.description || "Failed to save settings.", "err");
+  }
+}
+
+function scheduleAutoSave(delayMs = 450) {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    persistSettingsNow();
+  }, delayMs);
+}
 
 export function renderEcosystemRepos() {
   const cards = document.getElementById("ecosystemRepoCards");
+  if (!cards) return;
   cards.innerHTML = "";
   state.ecosystemRepos.forEach(r => {
     const card = document.createElement("div");
@@ -25,42 +96,55 @@ export function syncSettingsInputs() {
   document.getElementById("setMelomgOverride").value = state.settings.melomgExecutableOverride || "";
   document.getElementById("setUpdateOwner").value = state.settings.selfUpdateRepoOwner || state.metadata.selfUpdateRepoOwner || "doc-shashank";
   document.getElementById("setUpdateRepo").value = state.settings.selfUpdateRepoName || state.metadata.selfUpdateRepoName || "meloberry-pc";
+  const initial = buildSettingsPayload();
+  lastSavedSignature = signatureOf(initial);
+  lastToolSignature = toolSignatureOf(initial);
+}
+
+export function isSettingsModalOpen() {
+  const modal = document.getElementById("settingsModal");
+  return !!(modal && !modal.classList.contains("hidden"));
+}
+
+export function openSettingsModal() {
+  closeAllDropdowns();
+  syncSettingsInputs();
+  document.getElementById("settingsSavedStatus")?.classList.add("hidden");
+  document.getElementById("settingsModal")?.classList.remove("hidden");
+  document.getElementById("btnOpenSettings")?.classList.add("active");
+}
+
+export function closeSettingsModal() {
+  clearTimeout(debounceTimer);
+  persistSettingsNow();
+  document.getElementById("settingsModal")?.classList.add("hidden");
+  document.getElementById("btnOpenSettings")?.classList.remove("active");
 }
 
 export function wireSettingsView() {
   document.getElementById("btnOpenSettings").onclick = () => {
-    if (state.currentView === "settings") {
-      switchView(state.lastNonSettingsView || "setup");
-    } else {
-      switchView("settings");
-    }
+    if (isSettingsModalOpen()) closeSettingsModal();
+    else openSettingsModal();
   };
-  document.getElementById("btnSettingsBack").onclick = () => {
-    switchView(state.lastNonSettingsView || "setup");
-  };
+  document.getElementById("btnCloseSettingsModal").onclick = closeSettingsModal;
 
-  const btnSaveSettings = document.getElementById("btnSaveSettings");
-  btnSaveSettings.onclick = withButtonBusy(btnSaveSettings, "Saving...", async () => {
-    const payload = {
-      themeMode: document.getElementById("setThemeMode").value,
-      defaultBuildOutputDir: document.getElementById("setDefaultBuildDir").value,
-      mbyExecutableOverride: document.getElementById("setMbyOverride").value,
-      melomgExecutableOverride: document.getElementById("setMelomgOverride").value,
-      selfUpdateRepoOwner: document.getElementById("setUpdateOwner").value,
-      selfUpdateRepoName: document.getElementById("setUpdateRepo").value
-    };
-    const res = await api("PUT", "/api/settings", payload);
-    if (res.ok) {
-      state.settings = res.data;
-      applyTheme(state.settings.themeMode);
-      emit("viewer:theme-changed");
-      emit("apps:refresh", false);
-      emit("specs:reload", true);
-      emit("prompt:refresh");
-      toast("Settings saved.", "ok");
-    } else {
-      toast(res.data?.error?.description || "Failed to save settings.", "err");
-    }
+  const modal = document.getElementById("settingsModal");
+  modal?.addEventListener("click", e => {
+    if (e.target === modal) closeSettingsModal();
+  });
+
+  document.getElementById("setThemeMode").addEventListener("change", e => {
+    applyTheme(e.target.value);
+    emit("viewer:theme-changed");
+    persistSettingsNow();
+  });
+
+  ["setDefaultBuildDir", "setMbyOverride", "setMelomgOverride", "setUpdateOwner", "setUpdateRepo"].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("input", () => scheduleAutoSave(450));
+    el.addEventListener("change", () => persistSettingsNow());
+    el.addEventListener("blur", () => persistSettingsNow());
   });
 
   document.getElementById("btnOpenAppsDir").onclick = () =>

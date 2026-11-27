@@ -196,6 +196,20 @@ public sealed class WorkspaceMaintenanceService(
                 }
             }
 
+            if (scope == WorkspaceResetScope.ExecutablesAndAgentsMd)
+            {
+                var shimTarget = Path.GetFullPath(Path.Combine(plan.WorkspacePath, WorkspaceShimWriter.ShimFileName));
+                if (shimTarget.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase) && File.Exists(shimTarget))
+                {
+                    var shimContent = await File.ReadAllTextAsync(shimTarget, ct).ConfigureAwait(false);
+                    if (shimContent.Contains(WorkspaceShimWriter.ManagedMarker, StringComparison.Ordinal))
+                    {
+                        File.Delete(shimTarget);
+                        removed.Add(WorkspaceShimWriter.ShimFileName);
+                    }
+                }
+            }
+
             return Result<WorkspaceResetResult>.Success(new WorkspaceResetResult(
                 plan.WorkspacePath,
                 removed,

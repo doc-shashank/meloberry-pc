@@ -6,6 +6,7 @@
   --accent: #b8295b;
   --accent-soft: #fce8ef;
   --select: #2563eb;
+  --select-soft: #e0e7ff;
   --border: #ecd7e0;
   --ok: #198754;
   --warn: #d97706;
@@ -19,6 +20,7 @@ html[data-theme="light"] {
   --accent: #2563eb;
   --accent-soft: #dbeafe;
   --select: #7c3aed;
+  --select-soft: #ede9fe;
   --border: #e2e8f0;
 }
 html[data-theme="dark"] {
@@ -29,5 +31,6 @@ html[data-theme="dark"] {
   --accent: #f43f5e;
   --accent-soft: #311520;
   --select: #38bdf8;
+  --select-soft: rgba(56, 189, 248, 0.16);
   --border: #2a2f3d;
 }

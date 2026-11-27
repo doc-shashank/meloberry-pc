@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using Meloberry.Wrapper.Application.Abstractions;
+using Meloberry.Wrapper.Application.UseCases;
 using Meloberry.Wrapper.Infrastructure.Server.Endpoints;
 
 namespace Meloberry.Wrapper.Infrastructure.Server;
@@ -19,6 +20,9 @@ public sealed class LocalHttpWrapperServer : IAsyncDisposable, IDisposable
     private readonly WorkspaceEndpoints _workspaceEndpoints;
     private readonly PromptEndpoints _promptEndpoints;
     private readonly SystemEndpoints _systemEndpoints;
+    private readonly LiveControlEndpoints _liveControlEndpoints;
+    private readonly ProcessCliSignalHandler _cliSignalHandler;
+    private readonly LiveDraftHandler _liveDraftHandler;
 
     private readonly string _token = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(24));
     private HttpListener? _listener;
@@ -35,7 +39,10 @@ public sealed class LocalHttpWrapperServer : IAsyncDisposable, IDisposable
         AppsEndpoints appsEndpoints,
         WorkspaceEndpoints workspaceEndpoints,
         PromptEndpoints promptEndpoints,
-        SystemEndpoints systemEndpoints)
+        SystemEndpoints systemEndpoints,
+        LiveControlEndpoints liveControlEndpoints,
+        ProcessCliSignalHandler cliSignalHandler,
+        LiveDraftHandler liveDraftHandler)
     {
         _fileWatcher = fileWatcher;
         _sseHub = sseHub;
@@ -44,8 +51,12 @@ public sealed class LocalHttpWrapperServer : IAsyncDisposable, IDisposable
         _workspaceEndpoints = workspaceEndpoints;
         _promptEndpoints = promptEndpoints;
         _systemEndpoints = systemEndpoints;
+        _liveControlEndpoints = liveControlEndpoints;
+        _cliSignalHandler = cliSignalHandler;
+        _liveDraftHandler = liveDraftHandler;
 
         _fileWatcher.Changed += OnWorkspaceFileChanged;
+        _liveDraftHandler.DraftChanged += OnLiveDraftChanged;
     }
 
     public int Port { get; private set; }
@@ -273,13 +284,60 @@ public sealed class LocalHttpWrapperServer : IAsyncDisposable, IDisposable
         if (await _appsEndpoints.TryHandleAsync(req, resp, method, path, ct).ConfigureAwait(false)) return;
         if (await _workspaceEndpoints.TryHandleAsync(req, resp, method, path, ViewerBaseUrl, ct).ConfigureAwait(false)) return;
         if (await _promptEndpoints.TryHandleAsync(req, resp, method, path, ct).ConfigureAwait(false)) return;
+        if (await _liveControlEndpoints.TryHandleAsync(req, resp, method, path, ViewerBaseUrl, ct).ConfigureAwait(false)) return;
         if (await _systemEndpoints.TryHandleAsync(req, resp, method, path, ViewerBaseUrl, ct).ConfigureAwait(false)) return;
 
         await HttpEnvelope.WriteJsonErrorAsync(resp, 404, "Route.NotFound", $"Unknown API endpoint: {method} {path}", ct).ConfigureAwait(false);
     }
 
-    private void OnWorkspaceFileChanged(WorkspaceFileChangeEvent evt) =>
+    private void OnLiveDraftChanged(LiveDraftChangedEvent evt)
+    {
+        _sseHub.Broadcast("draft-updated", new
+        {
+            workspacePath = evt.WorkspacePath,
+            draft = evt.Draft,
+            source = evt.Source,
+            summary = evt.Summary,
+            targetCompId = evt.TargetComponentId,
+            targetSpecId = evt.TargetSpecId
+        });
+    }
+
+    private void OnWorkspaceFileChanged(WorkspaceFileChangeEvent evt)
+    {
+        if (string.Equals(evt.Scope, "signal", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = HandleCliSignalAsync(evt.FullPath);
+            return;
+        }
+
         _sseHub.Broadcast("fschange", evt);
+    }
+
+    private async Task HandleCliSignalAsync(string fullPath)
+    {
+        try
+        {
+            var token = _cts?.Token ?? CancellationToken.None;
+            var res = await _cliSignalHandler.ProcessFileAsync(fullPath, token).ConfigureAwait(false);
+            if (res is { IsSuccess: true, Value: { } built })
+            {
+                _sseHub.Broadcast("webapp-built", new
+                {
+                    slotId = built.SlotId,
+                    url = $"{ViewerBaseUrl.TrimEnd('/')}{built.RelativeUrl}",
+                    entry = built.Entry,
+                    workspaceId = built.WorkspaceId,
+                    title = built.Title,
+                    signalId = built.SignalId
+                });
+            }
+        }
+        catch
+        {
+            // Swallow transient signal file read/mount errors so watcher loop never crashes.
+        }
+    }
 
     private static bool IsValidLocalHost(string? hostHeader, int port)
     {
@@ -310,6 +368,7 @@ public sealed class LocalHttpWrapperServer : IAsyncDisposable, IDisposable
         }
 
         _fileWatcher.Changed -= OnWorkspaceFileChanged;
+        _liveDraftHandler.DraftChanged -= OnLiveDraftChanged;
         _sseHub.CompleteAll();
 
         if (_cts is not null)

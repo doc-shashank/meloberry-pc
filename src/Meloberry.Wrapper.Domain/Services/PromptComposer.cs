@@ -155,6 +155,16 @@ public static class PromptComposer
 
         var catalogByTopic = catalog.ToDictionary(s => s.Topic, StringComparer.OrdinalIgnoreCase);
         var components = ResolveEffectiveComponents(draft, catalogByTopic);
+        if (draft.WorkflowMode == WorkflowMode.Direct)
+        {
+            return PromptWorkflowModeComposers.ComposeDirectReadiness(draft, components);
+        }
+
+        if (draft.WorkflowMode == WorkflowMode.LiveAgent)
+        {
+            return PromptWorkflowModeComposers.ComposeLiveAgentPrompt(draft, components);
+        }
+
         var allSelections = components.SelectMany(c => c.Selections).ToList();
 
         var sb = new StringBuilder();
@@ -380,13 +390,13 @@ public static class PromptComposer
 
     private static string FormatCliInvocation(string? exePath, string? workingDir, string fallbackName)
     {
-        if (string.IsNullOrWhiteSpace(exePath))
-        {
-            return fallbackName;
-        }
-
         if (!string.IsNullOrWhiteSpace(workingDir))
         {
+            if (string.IsNullOrWhiteSpace(exePath))
+            {
+                return $".\\mby-pc.bat {fallbackName}";
+            }
+
             try
             {
                 var fullExe = Path.GetFullPath(exePath);
@@ -395,17 +405,20 @@ public static class PromptComposer
                 {
                     return ".\\" + Path.GetRelativePath(workingDir, fullExe);
                 }
+
+                return $".\\mby-pc.bat {fallbackName}";
             }
             catch
             {
                 // Fall back to original executable string on invalid path characters.
+                return exePath;
             }
         }
 
-        return exePath;
+        return string.IsNullOrWhiteSpace(exePath) ? fallbackName : exePath;
     }
 
-    private static string ToWorkspaceRelativeDisplay(string filePath, string? workingDir)
+    internal static string ToWorkspaceRelativeDisplay(string filePath, string? workingDir)
     {
         if (string.IsNullOrWhiteSpace(workingDir) || string.IsNullOrWhiteSpace(filePath))
         {

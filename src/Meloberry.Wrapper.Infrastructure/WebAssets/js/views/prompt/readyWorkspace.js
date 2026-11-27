@@ -30,9 +30,9 @@ export async function readyWorkspace(
     return;
   }
 
-  const hasWorkspaceMby = state.apps.some(a => a.kind === "mby" && a.isPresentInWorkspace);
-  if (!hasWorkspaceMby && !alreadyWarnedMissingMby) {
-    toast("Active Workspace does not have Meloberry CLI (mby) yet.", "warn", { persistent: true, key: "missing-ws-mby" });
+  const hasMbyInstalled = Boolean(state.resolvedTools?.mby || state.apps.some(a => a.kind === "mby" && a.isInstalled));
+  if (!hasMbyInstalled && !alreadyWarnedMissingMby) {
+    toast("Meloberry CLI (mby) is not installed yet — install it in Setup to run workspace commands via mby-pc.bat.", "warn", { persistent: true, key: "missing-ws-mby" });
     alreadyWarnedMissingMby = true;
   }
 

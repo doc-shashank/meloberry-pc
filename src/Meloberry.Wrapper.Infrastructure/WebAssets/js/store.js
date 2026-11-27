@@ -1,8 +1,10 @@
-export const VIEW_ORDER = { setup: 0, prompt: 1, viewer: 2, settings: 3 };
+export const VIEW_ORDER = { setup: 0, format: 1, organize: 2, review: 3, viewer: 4 };
+export const WORKFLOW_STEPS = ["setup", "format", "organize", "review", "viewer"];
 
 export const state = {
-  metadata: { version: "1.0.0", productName: "Meloberry PC", selfUpdateRepoOwner: "doc-shashank", selfUpdateRepoName: "meloberry-pc" },
+  metadata: { version: "1.2.0", productName: "Meloberry PC", selfUpdateRepoOwner: "doc-shashank", selfUpdateRepoName: "meloberry-pc" },
   icons: {},
+  cliSpecIcons: {},
   paperThemeFallbackCss: "",
   appsDirectory: "",
   viewerOrigin: "",
@@ -11,10 +13,8 @@ export const state = {
   resolvedTools: { mby: null, melomg: null },
   appUpdateChecks: {},
   outdatedTools: [],
-  resetScope: "executablesOnly",
   conflictPolicy: "skipExisting",
   currentView: "setup",
-  lastNonSettingsView: "setup",
   selectedAppNames: new Set(),
   stagedItems: [],
   specs: [],
@@ -39,24 +39,29 @@ export const state = {
     extraAttachments: [],
     useMelomgForPdfs: true,
     agentsMdExported: false,
+    workflowMode: "direct",
+    allowPlaceholdersOnFinalize: false,
     components: [],
-    selectedComponentId: null,
-    containerCache: { session: null, standaloneArticle: null, standaloneQuiz: null },
-    specCardMode: "selector",
-    organizerChosenTopic: null,
-    organizerChosenSubtype: ""
+    containerCache: { session: null, standaloneArticle: null, standaloneQuiz: null }
+  },
+  live: {
+    agentTouchedIds: new Set(),
+    lastAgentActivity: null,
+    activityTimer: null,
+    suppressDraftPush: false,
+    draftSaveTimer: null,
+    hoveredSpecTarget: null
   },
   composedPrompt: { markdown: "", plainText: "", characterCount: 0, approximateTokens: 0 },
   activeConfirmAction: null,
   activeInputResolve: null,
-  activeNoteTarget: null,
-  activeDistTarget: null,
+  activeAddSpecCompId: null,
+  activeInspectorTarget: null,
   hoverTimer: null,
-  dragOrgIndex: null,
-  dragSpecOrgIndex: null,
+  dragCard: null,
+  dragSpec: null,
   lastAddedOrgId: null,
   lastAddedSpecOrgId: null,
-  lastAddedSelectorTopic: null,
   promptDragScrolled: false,
   viewerLoadToken: 0,
   viewerLoadFadeTimer: null,

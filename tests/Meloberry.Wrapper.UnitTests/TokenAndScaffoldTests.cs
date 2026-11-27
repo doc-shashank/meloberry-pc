@@ -344,6 +344,84 @@ public sealed class TokenAndScaffoldTests : IDisposable
         Assert.Equal("other", SpecCatalogDefaults.GetCategoryForTopic("unknown-topic"));
     }
 
+    [Fact]
+    public void PromptComposer_DirectAndLiveAgentAndClassicModes_RenderExpectedContracts()
+    {
+        var directDraft = new PromptDraft(
+            Container: ContainerKind.Session,
+            Title: "Renal Physiology",
+            Description: "Filtration and clearance",
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: "Ignored long notes in direct mode",
+            Selections: [],
+            Attachments: [],
+            WorkingDirectory: @"C:\ws\renal",
+            WorkflowMode: WorkflowMode.Direct,
+            AllowPlaceholdersOnFinalize: true,
+            Components:
+            [
+                new PromptComponentPlan(
+                    "a1",
+                    ComponentKind.Article,
+                    "Glomerular Filtration",
+                    [new ShoppingListSelection("text", true, 1), new ShoppingListSelection("image", true, 1)],
+                    [
+                        new OrderedSpecInstance("s1", "text", 1, Content: new SpecContentSource(SpecContentMode.RawText, "Starling forces...")),
+                        new OrderedSpecInstance("s2", "image", 1)
+                    ]),
+                new PromptComponentPlan(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Quick Check",
+                    [new ShoppingListSelection("mcq", true, 1)],
+                    [
+                        new OrderedSpecInstance("s3", "mcq", 1, Subtype: "single", Content: new SpecContentSource(SpecContentMode.MarkdownFile, null, "q1.md"))
+                    ])
+            ]);
+
+        var directOut = PromptComposer.Compose(directDraft, SpecCatalogDefaults.BuiltInFallbackCatalog);
+        Assert.Contains("Build Readiness", directOut.Markdown, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("2 components", directOut.Markdown, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("2 filled", directOut.Markdown, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("1 empty", directOut.Markdown, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Schema & Playbook Contract", directOut.Markdown);
+
+        var liveOut = PromptComposer.Compose(directDraft with
+        {
+            Title = "Cardio Review",
+            SourceText = "Focus on aortic stenosis.",
+            Attachments = [new SourceAttachment(@"C:\ws\renal\chapter4.pdf", "pdf")],
+            UseMelomgForPdfs = true,
+            WorkflowMode = WorkflowMode.LiveAgent
+        }, SpecCatalogDefaults.BuiltInFallbackCatalog);
+
+        Assert.Contains(".\\mby-pc.bat status --json", liveOut.Markdown);
+        Assert.Contains(".\\mby-pc.bat draft get --json", liveOut.Markdown);
+        Assert.Contains(".\\mby-pc.bat draft spec set-content", liveOut.Markdown);
+        Assert.Contains(".\\mby-pc.bat finalize --json", liveOut.Markdown);
+        Assert.Contains("RawText", liveOut.Markdown);
+        Assert.Contains("MarkdownFile", liveOut.Markdown);
+        Assert.Contains("Empty", liveOut.Markdown);
+
+        var classicWs = PromptComposer.Compose(new PromptDraft(
+            Container: ContainerKind.Session,
+            Title: "Classical Workspace Prompt",
+            Description: "",
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: "",
+            Selections: [new ShoppingListSelection("mcq", true, 3)],
+            Attachments: [],
+            UseMelomgForPdfs: true,
+            WorkingDirectory: @"C:\ws\bio",
+            MbyExecutablePath: @"C:\Users\Alice\AppData\Local\Meloberry\apps\mby-cli-2.1.2.exe",
+            MelomgExecutablePath: @"C:\Users\Alice\AppData\Local\Meloberry\apps\meloberry-melomg-2.1.0.exe",
+            WorkflowMode: WorkflowMode.ClassicPrompt), SpecCatalogDefaults.BuiltInFallbackCatalog);
+
+        Assert.Contains("`.\\mby-pc.bat mby`", classicWs.Markdown);
+        Assert.Contains("`.\\mby-pc.bat melomg`", classicWs.Markdown);
+        Assert.DoesNotContain(@"AppData\Local\Meloberry\apps\mby-cli", classicWs.Markdown);
+    }
+
     public void Dispose()
     {
         try

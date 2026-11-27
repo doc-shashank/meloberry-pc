@@ -1,0 +1,504 @@
+using Meloberry.Wrapper.Application.Abstractions;
+using Meloberry.Wrapper.Domain.Common;
+using Meloberry.Wrapper.Domain.Errors;
+using Meloberry.Wrapper.Domain.Models;
+
+namespace Meloberry.Wrapper.Application.UseCases;
+
+/// <summary>Authoritative live coordinator for reading and mutating per-workspace authoring drafts.</summary>
+public sealed class LiveDraftHandler(
+    IWorkspaceDraftStore draftStore,
+    ISettingsStore settingsStore)
+{
+    public event Action<LiveDraftChangedEvent>? DraftChanged;
+
+    public async Task<Result<(string WorkspacePath, PromptDraft Draft)>> GetDraftAsync(
+        string? workspacePath = null,
+        CancellationToken ct = default)
+    {
+        var resolvedWs = await ResolveWorkspacePathAsync(workspacePath, ct).ConfigureAwait(false);
+        if (resolvedWs.IsFailure)
+        {
+            return Result<(string, PromptDraft)>.Failure(resolvedWs.Error!);
+        }
+
+        var draft = await draftStore.LoadAsync(resolvedWs.Value, ct).ConfigureAwait(false);
+        return Result<(string, PromptDraft)>.Success((resolvedWs.Value, NormalizeDraft(draft, resolvedWs.Value)));
+    }
+
+    public async Task<Result<PromptDraft>> ReplaceDraftAsync(
+        string? workspacePath,
+        PromptDraft draft,
+        string source = "ui",
+        string summary = "Draft updated",
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(draft);
+        var resolvedWs = await ResolveWorkspacePathAsync(workspacePath, ct).ConfigureAwait(false);
+        if (resolvedWs.IsFailure)
+        {
+            return Result<PromptDraft>.Failure(resolvedWs.Error!);
+        }
+
+        var fullWs = resolvedWs.Value;
+        var normalized = NormalizeDraft(draft, fullWs);
+        var saveRes = await draftStore.SaveAsync(fullWs, normalized, ct).ConfigureAwait(false);
+        if (saveRes.IsFailure)
+        {
+            return saveRes;
+        }
+
+        DraftChanged?.Invoke(new LiveDraftChangedEvent(
+            fullWs,
+            saveRes.Value,
+            string.IsNullOrWhiteSpace(source) ? "ui" : source,
+            string.IsNullOrWhiteSpace(summary) ? "Draft updated" : summary));
+        return saveRes;
+    }
+
+    public async Task<Result<LiveDraftMutationResult>> MutateAsync(
+        string? workspacePath,
+        LiveDraftMutationRequest request,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var resolvedWs = await ResolveWorkspacePathAsync(workspacePath, ct).ConfigureAwait(false);
+        if (resolvedWs.IsFailure)
+        {
+            return Result<LiveDraftMutationResult>.Failure(resolvedWs.Error!);
+        }
+
+        var fullWs = resolvedWs.Value;
+        var current = NormalizeDraft(await draftStore.LoadAsync(fullWs, ct).ConfigureAwait(false), fullWs);
+        var op = (request.Op ?? string.Empty).Trim().ToLowerInvariant();
+        var source = string.IsNullOrWhiteSpace(request.Source) ? "agent" : request.Source.Trim();
+
+        Result<LiveDraftMutationResult> mutationRes = op switch
+        {
+            "patch-meta" => ApplyPatchMeta(current, request),
+            "add-comp" => ApplyAddComponent(current, request),
+            "rm-comp" => ApplyRemoveComponent(current, request),
+            "move-comp" => ApplyMoveComponent(current, request),
+            "add-spec" => ApplyAddSpec(current, request),
+            "rm-spec" => ApplyRemoveSpec(current, request),
+            "move-spec" => ApplyMoveSpec(current, request),
+            "set-content" => ApplySetContent(fullWs, current, request),
+            _ => Result<LiveDraftMutationResult>.Failure(
+                WrapperErrors.InvalidPromptDraft($"Unsupported live draft operation '{request.Op}'."))
+        };
+
+        if (mutationRes.IsFailure)
+        {
+            return mutationRes;
+        }
+
+        var normalized = NormalizeDraft(mutationRes.Value.Draft, fullWs);
+        var saveRes = await draftStore.SaveAsync(fullWs, normalized, ct).ConfigureAwait(false);
+        if (saveRes.IsFailure)
+        {
+            return Result<LiveDraftMutationResult>.Failure(saveRes.Error!);
+        }
+
+        var finalRes = mutationRes.Value with { Draft = saveRes.Value };
+        DraftChanged?.Invoke(new LiveDraftChangedEvent(
+            fullWs,
+            saveRes.Value,
+            source,
+            finalRes.Summary,
+            finalRes.TargetComponentId,
+            finalRes.TargetSpecId));
+
+        return Result<LiveDraftMutationResult>.Success(finalRes);
+    }
+
+    private async Task<Result<string>> ResolveWorkspacePathAsync(string? explicitWorkspacePath, CancellationToken ct)
+    {
+        var candidate = explicitWorkspacePath;
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
+            candidate = settings.ActiveWorkspace?.WorkspacePath;
+        }
+
+        if (!PathNormalization.TryNormalizeDirectoryPath(candidate, out var fullWs))
+        {
+            return Result<string>.Failure(WrapperErrors.InvalidWorkspaceDir(candidate ?? string.Empty));
+        }
+
+        return Result<string>.Success(fullWs);
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyPatchMeta(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        var comps = (current.Components ?? []).ToList();
+        var nextTitle = req.Title ?? current.Title;
+        if (!string.IsNullOrWhiteSpace(req.TargetId))
+        {
+            var idx = comps.FindIndex(c => string.Equals(c.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+            if (idx < 0)
+            {
+                return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Component '{req.TargetId}' not found."));
+            }
+
+            if (!string.IsNullOrWhiteSpace(req.Title))
+            {
+                comps[idx] = comps[idx] with { Title = req.Title.Trim() };
+            }
+
+            var updatedCompDraft = current with { Components = comps };
+            return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+                updatedCompDraft,
+                $"Renamed component {comps[idx].Id}",
+                comps[idx].Id));
+        }
+
+        var next = current with
+        {
+            Container = req.Container ?? current.Container,
+            Title = nextTitle,
+            Description = req.Description ?? current.Description,
+            AuthoringFormat = req.AuthoringFormat ?? current.AuthoringFormat,
+            WorkflowMode = req.WorkflowMode ?? current.WorkflowMode,
+            AllowPlaceholdersOnFinalize = req.AllowPlaceholdersOnFinalize ?? current.AllowPlaceholdersOnFinalize
+        };
+        return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(next, "Updated draft metadata"));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyAddComponent(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        var kind = req.ComponentKind ?? ComponentKind.Article;
+        var comps = (current.Components ?? []).ToList();
+        var id = $"{(kind == ComponentKind.Quiz ? "q" : "a")}_{Guid.NewGuid().ToString("N")[..6]}";
+        var title = !string.IsNullOrWhiteSpace(req.Title)
+            ? req.Title.Trim()
+            : (kind == ComponentKind.Quiz ? "Practice Quiz" : "Study Article");
+        comps.Add(new PromptComponentPlan(id, kind, title, [], []));
+        var next = current with { Components = comps };
+        return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(next, $"Added {kind} '{title}'", id));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyRemoveComponent(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.TargetId))
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("Target component ID is required."));
+        }
+
+        var comps = (current.Components ?? []).ToList();
+        var idx = comps.FindIndex(c => string.Equals(c.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0)
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Component '{req.TargetId}' not found."));
+        }
+
+        comps.RemoveAt(idx);
+        return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+            current with { Components = comps },
+            $"Removed component {req.TargetId}",
+            req.TargetId));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyMoveComponent(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.TargetId) || !req.Index.HasValue)
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("TargetId and Index are required for move-comp."));
+        }
+
+        var comps = (current.Components ?? []).ToList();
+        var idx = comps.FindIndex(c => string.Equals(c.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0)
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Component '{req.TargetId}' not found."));
+        }
+
+        var targetIdx = Math.Clamp(req.Index.Value, 0, Math.Max(0, comps.Count - 1));
+        var item = comps[idx];
+        comps.RemoveAt(idx);
+        comps.Insert(targetIdx, item);
+        return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+            current with { Components = comps },
+            $"Moved component {item.Id} to index {targetIdx}",
+            item.Id));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyAddSpec(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.TargetId) || string.IsNullOrWhiteSpace(req.Topic))
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("Component TargetId and Topic are required for add-spec."));
+        }
+
+        var comps = (current.Components ?? []).ToList();
+        var compIdx = comps.FindIndex(c => string.Equals(c.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+        if (compIdx < 0)
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Component '{req.TargetId}' not found."));
+        }
+
+        var comp = EnsureOrderedItems(comps[compIdx]);
+        var ordered = (comp.OrderedItems ?? []).ToList();
+        var qty = Math.Clamp(req.Count ?? 1, 1, 50);
+        var topic = req.Topic.Trim().ToLowerInvariant();
+        string? lastSpecId = null;
+
+        for (var i = 0; i < qty; i++)
+        {
+            lastSpecId = $"{comp.Id}_{topic}_{Guid.NewGuid().ToString("N")[..6]}";
+            var content = req.ContentMode is not null && req.ContentMode != SpecContentMode.None
+                ? new SpecContentSource(req.ContentMode.Value, req.RawText, req.MarkdownFilePath)
+                : null;
+            ordered.Add(new OrderedSpecInstance(lastSpecId, topic, 1, string.IsNullOrWhiteSpace(req.Subtype) ? null : req.Subtype.Trim(), content));
+        }
+
+        var updatedComp = SyncSelectionsFromOrderedItems(comp with { OrderedItems = ordered }, topic, req.Notes);
+        comps[compIdx] = updatedComp;
+        return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+            current with { Components = comps },
+            $"Added {qty} {topic} spec(s) to {comp.Title}",
+            comp.Id,
+            lastSpecId));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyRemoveSpec(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.TargetId))
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("Target spec ID is required."));
+        }
+
+        var comps = (current.Components ?? []).ToList();
+        for (var c = 0; c < comps.Count; c++)
+        {
+            var comp = EnsureOrderedItems(comps[c]);
+            var ordered = (comp.OrderedItems ?? []).ToList();
+            var sIdx = ordered.FindIndex(s => string.Equals(s.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+            if (sIdx < 0)
+            {
+                continue;
+            }
+
+            var removed = ordered[sIdx];
+            ordered.RemoveAt(sIdx);
+            comps[c] = SyncSelectionsFromOrderedItems(comp with { OrderedItems = ordered }, removed.Topic, null);
+            return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+                current with { Components = comps },
+                $"Removed {removed.Topic} from {comp.Title}",
+                comp.Id,
+                removed.Id));
+        }
+
+        return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Spec '{req.TargetId}' not found."));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyMoveSpec(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.TargetId) || !req.Index.HasValue)
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("TargetId and Index are required for move-spec."));
+        }
+
+        var comps = (current.Components ?? []).ToList();
+        for (var c = 0; c < comps.Count; c++)
+        {
+            var comp = EnsureOrderedItems(comps[c]);
+            var ordered = (comp.OrderedItems ?? []).ToList();
+            var sIdx = ordered.FindIndex(s => string.Equals(s.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+            if (sIdx < 0)
+            {
+                continue;
+            }
+
+            var targetIdx = Math.Clamp(req.Index.Value, 0, Math.Max(0, ordered.Count - 1));
+            var item = ordered[sIdx];
+            ordered.RemoveAt(sIdx);
+            ordered.Insert(targetIdx, item);
+            comps[c] = SyncSelectionsFromOrderedItems(comp with { OrderedItems = ordered }, item.Topic, null);
+            return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+                current with { Components = comps },
+                $"Moved {item.Topic} to position {targetIdx + 1}",
+                comp.Id,
+                item.Id));
+        }
+
+        return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Spec '{req.TargetId}' not found."));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplySetContent(string fullWs, PromptDraft current, LiveDraftMutationRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.TargetId))
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("Target spec ID is required for set-content."));
+        }
+
+        var mode = req.ContentMode ?? (!string.IsNullOrWhiteSpace(req.MarkdownFilePath)
+            ? SpecContentMode.MarkdownFile
+            : (!string.IsNullOrWhiteSpace(req.RawText) ? SpecContentMode.RawText : SpecContentMode.None));
+
+        string? normalizedRelMd = null;
+        if (mode == SpecContentMode.MarkdownFile)
+        {
+            var relRes = ValidateAndNormalizeWorkspaceMarkdownPath(fullWs, req.MarkdownFilePath);
+            if (relRes.IsFailure)
+            {
+                return Result<LiveDraftMutationResult>.Failure(relRes.Error!);
+            }
+
+            normalizedRelMd = relRes.Value;
+        }
+
+        var contentSource = mode switch
+        {
+            SpecContentMode.RawText => new SpecContentSource(SpecContentMode.RawText, req.RawText ?? string.Empty, null),
+            SpecContentMode.MarkdownFile => new SpecContentSource(SpecContentMode.MarkdownFile, null, normalizedRelMd),
+            _ => new SpecContentSource(SpecContentMode.None, null, null)
+        };
+
+        var comps = (current.Components ?? []).ToList();
+        for (var c = 0; c < comps.Count; c++)
+        {
+            var comp = EnsureOrderedItems(comps[c]);
+            var ordered = (comp.OrderedItems ?? []).ToList();
+            var sIdx = ordered.FindIndex(s => string.Equals(s.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+            if (sIdx < 0)
+            {
+                continue;
+            }
+
+            ordered[sIdx] = ordered[sIdx] with { Content = contentSource };
+            comps[c] = SyncSelectionsFromOrderedItems(comp with { OrderedItems = ordered }, ordered[sIdx].Topic, req.Notes);
+            return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+                current with { Components = comps },
+                $"Updated {ordered[sIdx].Topic} content ({mode})",
+                comp.Id,
+                ordered[sIdx].Id));
+        }
+
+        return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Spec '{req.TargetId}' not found."));
+    }
+
+    private static Result<string> ValidateAndNormalizeWorkspaceMarkdownPath(string fullWs, string? rawPath)
+    {
+        if (string.IsNullOrWhiteSpace(rawPath))
+        {
+            return Result<string>.Failure(WrapperErrors.InvalidPath("Markdown file path cannot be empty."));
+        }
+
+        try
+        {
+            var trimmed = rawPath.Trim().Replace('/', Path.DirectorySeparatorChar);
+            var candidate = Path.IsPathRooted(trimmed)
+                ? Path.GetFullPath(trimmed)
+                : Path.GetFullPath(Path.Combine(fullWs, trimmed));
+            var fullRoot = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
+            if (!candidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result<string>.Failure(WrapperErrors.InvalidPath("Markdown file must be inside the Active Workspace."));
+            }
+
+            var ext = Path.GetExtension(candidate);
+            if (!string.Equals(ext, ".md", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(ext, ".markdown", StringComparison.OrdinalIgnoreCase))
+            {
+                return Result<string>.Failure(WrapperErrors.InvalidPath("Attached spec file must be a .md or .markdown file."));
+            }
+
+            if (!File.Exists(candidate))
+            {
+                return Result<string>.Failure(WrapperErrors.InvalidPath($"Markdown file not found: {rawPath}"));
+            }
+
+            return Result<string>.Success(Path.GetRelativePath(fullWs, candidate).Replace('\\', '/'));
+        }
+        catch (Exception ex)
+        {
+            return Result<string>.Failure(WrapperErrors.InvalidPath($"Invalid Markdown path: {ex.Message}"));
+        }
+    }
+
+    private static PromptDraft NormalizeDraft(PromptDraft draft, string fullWs)
+    {
+        var comps = (draft.Components ?? [])
+            .Select(comp => SyncSelectionsFromOrderedItems(EnsureOrderedItems(comp), null, null))
+            .ToList();
+
+        return draft with
+        {
+            WorkingDirectory = fullWs,
+            Components = comps,
+            Selections = comps.SelectMany(c => c.Selections.Where(s => s.Enabled)).ToList()
+        };
+    }
+
+    private static PromptComponentPlan EnsureOrderedItems(PromptComponentPlan comp)
+    {
+        if (comp.OrderedItems is not null)
+        {
+            return comp;
+        }
+
+        var synthesized = new List<OrderedSpecInstance>();
+        var idx = 1;
+        foreach (var sel in comp.Selections.Where(s => s.Enabled))
+        {
+            var count = sel.DesiredCount.GetValueOrDefault(1);
+            if (count <= 0) count = 1;
+            for (var i = 1; i <= count; i++)
+            {
+                synthesized.Add(new OrderedSpecInstance($"{comp.Id}_{sel.Topic}_{idx}", sel.Topic, i));
+                idx++;
+            }
+        }
+
+        return comp with { OrderedItems = synthesized };
+    }
+
+    private static PromptComponentPlan SyncSelectionsFromOrderedItems(
+        PromptComponentPlan comp,
+        string? touchTopic,
+        string? updatedNotes)
+    {
+        var ordered = (comp.OrderedItems ?? []).ToList();
+        var perTopicCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var renumbered = new List<OrderedSpecInstance>(ordered.Count);
+
+        foreach (var inst in ordered)
+        {
+            var nextNum = perTopicCounts.GetValueOrDefault(inst.Topic) + 1;
+            perTopicCounts[inst.Topic] = nextNum;
+            renumbered.Add(inst with { InstanceNumber = nextNum });
+        }
+
+        var existingSelections = comp.Selections.ToDictionary(s => s.Topic, StringComparer.OrdinalIgnoreCase);
+        var mergedSelections = new List<ShoppingListSelection>();
+
+        foreach (var (topic, count) in perTopicCounts)
+        {
+            existingSelections.TryGetValue(topic, out var prev);
+            var notes = !string.IsNullOrWhiteSpace(touchTopic) &&
+                        string.Equals(topic, touchTopic, StringComparison.OrdinalIgnoreCase) &&
+                        updatedNotes is not null
+                ? updatedNotes
+                : prev?.Notes;
+
+            var subtypeCounts = renumbered
+                .Where(o => string.Equals(o.Topic, topic, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(o.Subtype))
+                .GroupBy(o => o.Subtype!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
+            mergedSelections.Add(new ShoppingListSelection(
+                Topic: topic,
+                Enabled: true,
+                DesiredCount: count,
+                Notes: notes,
+                Modes: prev?.Modes,
+                ModeCounts: subtypeCounts.Count > 0 ? subtypeCounts : prev?.ModeCounts));
+        }
+
+        return comp with
+        {
+            OrderedItems = renumbered,
+            Selections = mergedSelections
+        };
+    }
+}

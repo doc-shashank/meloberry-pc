@@ -64,10 +64,18 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         {
             Assert.True(iconsDoc.RootElement.TryGetProperty("ui/nav-setup", out _));
             Assert.True(iconsDoc.RootElement.TryGetProperty("ui/distribute", out _));
-            Assert.True(iconsDoc.RootElement.TryGetProperty("specs/callout-pearl", out _));
-            Assert.True(iconsDoc.RootElement.TryGetProperty("specs/case", out _));
-            Assert.True(iconsDoc.RootElement.TryGetProperty("specs/match", out _));
-            Assert.True(iconsDoc.RootElement.TryGetProperty("specs/numeric", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/article", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/quiz", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/arrow-up", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/save", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/folder-open", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/copy", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/code", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/wand", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/check-circle", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/block-generic", out _));
+            Assert.True(iconsDoc.RootElement.TryGetProperty("ui/question-generic", out _));
+            Assert.False(iconsDoc.RootElement.TryGetProperty("specs/callout-pearl", out _));
         }
         var svgResp = await shellHttp.GetAsync("/shell/icons/ui/nav-setup.svg");
         Assert.Equal(HttpStatusCode.OK, svgResp.StatusCode);
@@ -326,7 +334,7 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task StaticAssetHost_BundlesAllEightStylesheets_AndServesModularJsGraph()
+    public async Task StaticAssetHost_BundlesAllStylesheets_AndServesFiveStepWorkflowAssets()
     {
         using var shellHttp = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
 
@@ -337,6 +345,53 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.Contains("<script type=\"module\" src=\"/shell/js/main.js\"></script>", html);
         Assert.DoesNotContain("window.__MBY_TOKEN__", html);
         Assert.DoesNotContain("/shell/shell.js", html);
+
+        Assert.Contains("class=\"workflow-stepper", html);
+        foreach (var step in new[] { "setup", "format", "organize", "review", "viewer" })
+        {
+            Assert.Contains($"data-view=\"{step}\"", html);
+        }
+
+        foreach (var viewId in new[] { "id=\"viewSetup\"", "id=\"viewFormat\"", "id=\"viewOrganize\"", "id=\"viewReview\"", "id=\"viewViewer\"" })
+        {
+            Assert.Contains(viewId, html);
+        }
+
+        foreach (var heading in new[] { "Setup Workspace", "Suit Yourself", "Decide the organization", "Review and Finalize" })
+        {
+            Assert.Contains(heading, html);
+        }
+
+        Assert.DoesNotContain("btnResetWorkspace", html);
+        Assert.DoesNotContain("id=\"resetMenuWrap\"", html);
+        Assert.DoesNotContain("id=\"viewSettings\"", html);
+        Assert.DoesNotContain("id=\"btnSaveSettings\"", html);
+        Assert.DoesNotContain("mbypreset", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("id=\"settingsModal\"", html);
+        Assert.Contains("id=\"settingsSavedStatus\"", html);
+        Assert.Contains("id=\"activeWsBtn\"", html);
+        Assert.Contains("id=\"wsTreePopover\"", html);
+
+        var formatStart = html.IndexOf("id=\"viewFormat\"", StringComparison.Ordinal);
+        var organizeStart = html.IndexOf("id=\"viewOrganize\"", StringComparison.Ordinal);
+        var reviewStart = html.IndexOf("id=\"viewReview\"", StringComparison.Ordinal);
+        var viewerStart = html.IndexOf("id=\"viewViewer\"", StringComparison.Ordinal);
+        Assert.True(formatStart > 0 && organizeStart > formatStart && reviewStart > organizeStart && viewerStart > reviewStart);
+
+        var containerTabsIdx = html.IndexOf("id=\"containerTabs\"", StringComparison.Ordinal);
+        Assert.True(containerTabsIdx > formatStart && containerTabsIdx < organizeStart, "Expected #containerTabs inside #viewFormat.");
+
+        foreach (var organizeToolbarId in new[] { "id=\"presetMenuWrap\"", "id=\"btnSavePreset\"", "id=\"orgAddNewWrap\"", "id=\"btnRefreshSpecs\"" })
+        {
+            var idx = html.IndexOf(organizeToolbarId, StringComparison.Ordinal);
+            Assert.True(idx > organizeStart && idx < reviewStart, $"Expected '{organizeToolbarId}' inside #viewOrganize.");
+        }
+
+        foreach (var reviewId in new[] { "id=\"readyWsMenuWrap\"", "id=\"actionsMenuWrap\"", "id=\"promptOptionsWrap\"", "id=\"chkUseMelomg\"" })
+        {
+            var idx = html.IndexOf(reviewId, StringComparison.Ordinal);
+            Assert.True(idx > reviewStart && idx < viewerStart, $"Expected '{reviewId}' inside #viewReview.");
+        }
 
         var oldJsResp = await shellHttp.GetAsync("/shell/shell.js");
         Assert.Equal(HttpStatusCode.NotFound, oldJsResp.StatusCode);
@@ -350,13 +405,24 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         [
             ":root {",
             "html[data-theme=\"paper\"]",
+            "::-webkit-scrollbar",
             ".app-shell",
+            "Segoe Script",
+            ".sync-wipe-in",
             ".titlebar {",
+            ".workflow-stepper",
+            ".ws-strip-label-btn",
             ".setup-grid",
-            ".studio-page-grid",
-            "@media (max-width: 980px)",
+            ".review-actions-bar",
+            ".org-canvas-track",
+            ".org-track-centered",
+            ".org-spec-list",
+            ".org-drag-ghost",
             ".viewer-full",
-            ".modal-backdrop"
+            ".add-spec-popover.kind-quiz",
+            ".modal-backdrop",
+            ".settings-modal-card",
+            ".ws-tree-popover"
         ];
 
         var lastIdx = -1;
@@ -407,14 +473,129 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
             }
         }
 
-        Assert.True(visited.Count >= 12, $"Expected at least 12 ES modules in graph, found {visited.Count}.");
+        Assert.True(visited.Count >= 16, $"Expected at least 16 ES modules in graph, found {visited.Count}.");
+        Assert.True(visited.ContainsKey("/shell/js/ui/workspaceTree.js"));
+        Assert.False(visited.ContainsKey("/shell/js/views/prompt/numberWipe.js"));
+        Assert.True(visited.ContainsKey("/shell/js/views/prompt/organizeDrag.js"));
+        Assert.True(visited.ContainsKey("/shell/js/views/prompt/organizeFlip.js"));
+        Assert.True(visited.ContainsKey("/shell/js/views/prompt/organize.js"));
+        Assert.True(visited.ContainsKey("/shell/js/views/prompt/format.js"));
+        Assert.True(visited.ContainsKey("/shell/js/views/prompt/review.js"));
         var allJs = string.Join("\n", visited.Values);
+        Assert.DoesNotContain("mbypreset", allJs, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("window.__onWindowState", allJs);
         Assert.Contains("window.__onNativeDrop", allJs);
 
         Assert.Equal(HttpStatusCode.NotFound, (await shellHttp.GetAsync("/shell/js/../shell.html")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await shellHttp.GetAsync("/shell/js/../../missing.js")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await shellHttp.GetAsync("/shell/js/does-not-exist.js")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Server_WorkspaceTreeEndpoint_BoundsNavigationInsideActiveWorkspace()
+    {
+        using var shellHttp = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
+        var rootDir = Path.Combine(_tempRoot, "tree_root");
+        var subA = Path.Combine(rootDir, "Alpha");
+        var subANested = Path.Combine(subA, "Deep");
+        Directory.CreateDirectory(subANested);
+        Directory.CreateDirectory(Path.Combine(rootDir, "Beta"));
+        Directory.CreateDirectory(Path.Combine(rootDir, ".hiddenDot"));
+        await File.WriteAllTextAsync(Path.Combine(rootDir, "notes.md"), "hi");
+
+        using var selReq = new HttpRequestMessage(HttpMethod.Post, "/api/workspace/select")
+        {
+            Content = new StringContent($"{{\"path\":{JsonSerializer.Serialize(rootDir)}}}", Encoding.UTF8, "application/json")
+        };
+        selReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var selResp = await shellHttp.SendAsync(selReq);
+        Assert.Equal(HttpStatusCode.OK, selResp.StatusCode);
+
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"/api/workspace/tree?path={Uri.EscapeDataString(rootDir)}");
+        req.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var resp = await shellHttp.SendAsync(req);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("parentPath").ValueKind);
+
+        var folders = doc.RootElement.GetProperty("folders").EnumerateArray().ToList();
+        Assert.Equal(2, folders.Count);
+        Assert.Equal("Alpha", folders[0].GetProperty("name").GetString());
+        Assert.True(folders[0].GetProperty("hasSubfolders").GetBoolean());
+        Assert.Equal("Beta", folders[1].GetProperty("name").GetString());
+        Assert.False(folders[1].GetProperty("hasSubfolders").GetBoolean());
+
+        var files = doc.RootElement.GetProperty("files").EnumerateArray().ToList();
+        Assert.Equal(2, files.Count);
+        Assert.Contains(files, f => f.GetProperty("name").GetString() == "mby-pc.bat");
+        Assert.Contains(files, f => f.GetProperty("name").GetString() == "notes.md");
+
+        using var subReq = new HttpRequestMessage(HttpMethod.Get, $"/api/workspace/tree?path={Uri.EscapeDataString(subA)}");
+        subReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var subResp = await shellHttp.SendAsync(subReq);
+        Assert.Equal(HttpStatusCode.OK, subResp.StatusCode);
+        using var subDoc = JsonDocument.Parse(await subResp.Content.ReadAsStringAsync());
+        Assert.Equal(rootDir, subDoc.RootElement.GetProperty("parentPath").GetString(), StringComparer.OrdinalIgnoreCase);
+
+        using var outsideReq = new HttpRequestMessage(HttpMethod.Get, $"/api/workspace/tree?path={Uri.EscapeDataString(_tempRoot)}");
+        outsideReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var outsideResp = await shellHttp.SendAsync(outsideReq);
+        Assert.Equal(HttpStatusCode.BadRequest, outsideResp.StatusCode);
+
+        using var badReq = new HttpRequestMessage(HttpMethod.Get, $"/api/workspace/tree?path={Uri.EscapeDataString(Path.Combine(rootDir, "missing_tree"))}");
+        badReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        var badResp = await shellHttp.SendAsync(badReq);
+        Assert.Equal(HttpStatusCode.BadRequest, badResp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Server_CliSignalFile_BroadcastsWebAppBuiltSseEvent()
+    {
+        using var shellHttp = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
+        var wsDir = Path.Combine(_tempRoot, "signal_ws");
+        var webDir = Path.Combine(wsDir, "lesson_web");
+        Directory.CreateDirectory(webDir);
+        await File.WriteAllTextAsync(Path.Combine(webDir, "index.html"), "<html><body>Auto WebApp</body></html>");
+        await File.WriteAllTextAsync(Path.Combine(webDir, "app.js"), "console.log('auto');");
+
+        using var selReq = new HttpRequestMessage(HttpMethod.Post, "/api/workspace/select")
+        {
+            Content = new StringContent($"{{\"path\":{JsonSerializer.Serialize(wsDir)}}}", Encoding.UTF8, "application/json")
+        };
+        selReq.Headers.Add("X-Mby-Token", _server.AuthToken);
+        Assert.Equal(HttpStatusCode.OK, (await shellHttp.SendAsync(selReq)).StatusCode);
+
+        using var sseReq = new HttpRequestMessage(HttpMethod.Get, $"/api/events?token={Uri.EscapeDataString(_server.AuthToken)}");
+        using var sseResp = await shellHttp.SendAsync(sseReq, HttpCompletionOption.ResponseHeadersRead);
+        Assert.Equal(HttpStatusCode.OK, sseResp.StatusCode);
+
+        await using var stream = await sseResp.Content.ReadAsStreamAsync();
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        Assert.Equal(": connected", await reader.ReadLineAsync());
+        Assert.Equal(string.Empty, await reader.ReadLineAsync());
+
+        var signalPath = Path.Combine(wsDir, MbyCliSignal.SignalFileName);
+        await File.WriteAllTextAsync(signalPath, "version=1\nevent=webapp_built\nid=srv-sig-1\npath=lesson_web\ntitle=Auto Lesson\n");
+
+        string? evtLine = null;
+        string? dataLine = null;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var line = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            if (line == "event: webapp-built")
+            {
+                evtLine = line;
+                dataLine = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                break;
+            }
+        }
+
+        Assert.Equal("event: webapp-built", evtLine);
+        Assert.StartsWith("data: ", dataLine);
+        Assert.Contains(_server.ViewerBaseUrl.TrimEnd('/'), dataLine);
+        Assert.Contains("Auto Lesson", dataLine);
     }
 
     [Fact]

@@ -1,7 +1,8 @@
 import { api } from "../api.js";
+import { loadWorkspaceDraft } from "./prompt/promptDraft.js";
 import { state, emit, escapeHtml, extractFolderName, withButtonBusy } from "../store.js";
 import { getIcon } from "../icons.js";
-import { registerDropdown, closeAllDropdowns } from "../ui/dropdowns.js";
+import { registerDropdown } from "../ui/dropdowns.js";
 import { openConfirmModal, closeConfirmModal, showPathTooltip, hidePathTooltip } from "../ui/modal.js";
 import {
   addNotification,
@@ -95,6 +96,7 @@ export async function selectWorkspace(path) {
     state.agentsMdStatus = st.ok ? st.data : null;
     await refreshApps(false);
     loadWorkspaceDraftState();
+    await loadWorkspaceDraft(wsState.workspacePath);
     renderRecentWorkspaces();
     renderOutdatedBanner();
     await previewPlan();
@@ -124,31 +126,35 @@ export function renderAppsCart() {
   container.innerHTML = "";
 
   state.apps.forEach(app => {
+    const isManagedCli = app.kind === "mby" || app.kind === "melomg";
     const card = document.createElement("div");
-    const checked = state.selectedAppNames.has(app.fileName);
+    const checked = isManagedCli ? app.isInstalled : state.selectedAppNames.has(app.fileName);
     card.className = `app-card ${checked ? "selected" : ""}`;
 
     const top = document.createElement("div");
     top.className = "app-card-top";
 
-    const lbl = document.createElement("label");
+    const lbl = document.createElement(isManagedCli ? "div" : "label");
     lbl.className = "check-label";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = checked;
-    cb.disabled = !app.isInstalled;
-    cb.onchange = async () => {
-      if (cb.checked) state.selectedAppNames.add(app.fileName);
-      else state.selectedAppNames.delete(app.fileName);
-      card.classList.toggle("selected", cb.checked);
-      await previewPlan();
-    };
+    if (!isManagedCli) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = checked;
+      cb.disabled = !app.isInstalled;
+      cb.onchange = async () => {
+        if (cb.checked) state.selectedAppNames.add(app.fileName);
+        else state.selectedAppNames.delete(app.fileName);
+        card.classList.toggle("selected", cb.checked);
+        await previewPlan();
+      };
+      lbl.appendChild(cb);
+    }
 
     const titleSpan = document.createElement("span");
     if (app.kind === "mby") titleSpan.innerHTML = "Meloberry <code>cli</code>";
     else if (app.kind === "melomg") titleSpan.innerHTML = "Meloberry <code>melomg</code>";
     else titleSpan.textContent = app.displayName;
-    lbl.append(cb, titleSpan);
+    lbl.appendChild(titleSpan);
 
     const statusEl = document.createElement("span");
     if (app.isInstalled) {
@@ -164,7 +170,9 @@ export function renderAppsCart() {
 
     const desc = document.createElement("div");
     desc.className = "muted";
-    desc.textContent = app.isInstalled ? (app.description || app.fileName) : "Not installed. Download from GitHub.";
+    desc.textContent = app.isInstalled
+      ? (isManagedCli ? `Central tool (${app.fileName}) \u00b7 invoked via mby-pc.bat` : (app.description || app.fileName))
+      : "Not installed. Download from GitHub.";
     card.appendChild(desc);
 
     const actions = document.createElement("div");
@@ -400,104 +408,14 @@ export async function initializeWorkspace() {
   renderRecentWorkspaces();
   emit("prompt:attachments-changed");
   emit("prompt:refresh");
-  switchView("prompt");
+  switchView("format");
 
   const ir = res.data.initResult;
-  toast(`Initialized (${ir.copiedApps.length} tools, ${ir.copiedFiles.length} files, ${ir.copiedFolders.length} folders).`, "ok");
-}
-
-export async function triggerResetPrompt() {
-  const aws = state.settings.activeWorkspace;
-  if (!aws || !aws.workspacePath) {
-    toast("No Active Workspace selected.", "err");
-    return;
-  }
-
-  const res = await api("POST", "/api/workspace/reset/plan", {
-    workspacePath: aws.workspacePath,
-    scope: state.resetScope
-  });
-  if (!res.ok) {
-    toast(res.data?.error?.description || "Failed to scan workspace for Reset.", "err");
-    return;
-  }
-
-  const plan = res.data;
-  if (plan.totalCount === 0) {
-    if (state.resetScope === "undoReadyWorkspace") {
-      toast("No Ready Workspace artifacts (AGENTS.md) found to undo.", "info");
-    } else {
-      toast("No Meloberry executables" + (state.resetScope === "executablesAndAgentsMd" ? " or AGENTS.md" : "") + " found.", "info");
-    }
-    return;
-  }
-
-  const seenItems = new Set();
-  const items = [];
-  [...(plan.executablesToRemove || []), ...(plan.readyArtifactsToRemove || []), ...(plan.agentsMdToRemove ? [plan.agentsMdToRemove] : [])]
-    .forEach(rel => {
-      if (rel && !seenItems.has(rel.toLowerCase())) {
-        seenItems.add(rel.toLowerCase());
-        items.push(rel);
-      }
-    });
-
-  const isUndo = state.resetScope === "undoReadyWorkspace";
-  openConfirmModal({
-    title: isUndo ? "Undo Ready Workspace?" : "Confirm Workspace Reset",
-    body: isUndo
-      ? `Remove ${items.length} Ready Workspace file(s) from "${plan.workspacePath}"? Executables will remain untouched.`
-      : `Remove ${items.length} file(s) from "${plan.workspacePath}" (recursively across subfolders)?`,
-    preText: items.join("\n"),
-    proceedText: isUndo ? "Remove Ready Artifacts" : "Delete Listed Files",
-    showProceed: true,
-    onProceed: async () => {
-      closeConfirmModal();
-      const execRes = await api("POST", "/api/workspace/reset/execute", {
-        workspacePath: plan.workspacePath,
-        scope: state.resetScope
-      });
-      if (!execRes.ok) {
-        toast(execRes.data?.error?.description || "Reset failed.", "err");
-        return;
-      }
-
-      if (execRes.data.activeWorkspace) state.settings.activeWorkspace = execRes.data.activeWorkspace;
-      if (execRes.data.resetResult.removedAgentsMd || state.resetScope === "undoReadyWorkspace") {
-        const st = await api("GET", `/api/workspace/agents-md/status?workspacePath=${encodeURIComponent(plan.workspacePath)}`);
-        state.agentsMdStatus = st.ok ? st.data : null;
-        state.prompt.agentsMdExported = !!(state.agentsMdStatus && state.agentsMdStatus.exists);
-      }
-
-      const outRes = await api("GET", `/api/workspace/outdated?workspacePath=${encodeURIComponent(plan.workspacePath)}`);
-      state.outdatedTools = outRes.ok ? (outRes.data.outdatedTools || []) : [];
-
-      await refreshApps(false);
-      syncWorkspaceChrome();
-      renderAppsCart();
-      renderOutdatedBanner();
-      emit("prompt:refresh");
-
-      if (isUndo) {
-        const count = (execRes.data.resetResult.removedReadyArtifacts || execRes.data.resetResult.removedRelativePaths || []).length;
-        toast(`Reverted Ready Workspace (removed ${count} artifact(s)).`, "ok");
-      } else {
-        toast(`Reset removed ${execRes.data.resetResult.removedRelativePaths.length} executable(s)${execRes.data.resetResult.removedAgentsMd ? " + AGENTS.md" : ""}.`, "ok");
-      }
-    }
-  });
+  const shimTxt = ir.shimWritten ? "mby-pc.bat + " : "";
+  toast(`Initialized (${shimTxt}${ir.copiedApps.length} custom app(s), ${ir.copiedFiles.length} files, ${ir.copiedFolders.length} folders).`, "ok");
 }
 
 export function wireSetupView() {
-  registerDropdown("btnResetWorkspace", "resetMenu", { wrapSelector: "#resetMenuWrap" });
-  document.querySelectorAll("#resetMenu .dropdown-item").forEach(btn => {
-    btn.onclick = () => {
-      state.resetScope = btn.dataset.scope;
-      closeAllDropdowns();
-      triggerResetPrompt();
-    };
-  });
-
   document.getElementById("btnDismissOutdated").onclick = () => {
     document.getElementById("outdatedToolsBar").classList.add("hidden");
     updateChromeOffset();

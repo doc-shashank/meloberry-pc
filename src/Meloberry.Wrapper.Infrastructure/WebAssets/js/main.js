@@ -1,5 +1,5 @@
 import { api, openEventStream } from "./api.js";
-import { state, on, extractFolderName } from "./store.js";
+import { state, on, emit, extractFolderName, VIEW_ORDER } from "./store.js";
 import { loadIconRegistry } from "./icons.js";
 import { wireGlobalOverlayDismissal } from "./ui/dropdowns.js";
 import { closeConfirmModal, closeInputPromptModal, wireModalControls } from "./ui/modal.js";
@@ -7,12 +7,14 @@ import {
   addNotification,
   applyTheme,
   renderOutdatedBanner,
+  showLiveAgentActivity,
   switchView,
   syncWorkspaceChrome,
   toast,
   updateChromeOffset,
   wireChromeControls
 } from "./ui/chrome.js";
+import { wireWorkspaceTree } from "./ui/workspaceTree.js";
 import {
   loadWorkspaceDraftState,
   previewPlan,
@@ -24,21 +26,29 @@ import {
   wireSetupView
 } from "./views/setup.js";
 import {
+  applyRemoteDraft,
   loadPresets,
   loadSpecs,
+  loadWorkspaceDraft,
   refreshPromptOptionsAvailability,
   refreshPromptPreview,
-  renderPromptAttachments,
-  wirePromptStudioView
-} from "./views/prompt/index.js";
+  wirePromptDraftEvents
+} from "./views/prompt/promptDraft.js";
+import { renderPromptAttachments, wireFormatView } from "./views/prompt/format.js";
+import { highlightAgentTargets, wireOrganizeView } from "./views/prompt/organize.js";
+import { closeSpecContentModal, initSpecContentModal, isSpecContentModalOpen, openSpecContentModal } from "./views/prompt/specContentModal.js";
+import { wireReviewView } from "./views/prompt/review.js";
 import {
   applyViewerThemeOverride,
+  openMountedWebAppFromSignal,
   openWebAppPath,
   refreshViewerDiscovery,
   syncOverrideThemeUi,
   wireViewerView
 } from "./views/viewer.js";
 import {
+  closeSettingsModal,
+  isSettingsModalOpen,
   renderEcosystemRepos,
   syncSettingsInputs,
   wireSettingsView
@@ -91,6 +101,41 @@ function startRealtimeEvents() {
       }
     }
   });
+  es.addEventListener("webapp-built", ev => {
+    let payload;
+    try { payload = JSON.parse(ev.data); } catch { return; }
+    if (!payload || !payload.url) return;
+    openMountedWebAppFromSignal(payload);
+    const title = payload.title || payload.entry?.name || payload.workspaceId || "Study WebApp";
+    addNotification("WebApp Auto-Loaded", `${title} was built by mby CLI and opened in Viewer.`, "info");
+  });
+  es.addEventListener("draft-updated", ev => {
+    let payload;
+    try { payload = JSON.parse(ev.data); } catch { return; }
+    if (!payload || payload.source !== "agent" || !payload.draft) return;
+
+    applyRemoteDraft(payload.draft);
+    showLiveAgentActivity(payload.summary || "Agent updated blueprint", "info");
+    if (state.prompt.workflowMode === "liveAgent" && state.currentView !== "viewer" && state.currentView !== "organize") {
+      switchView("organize");
+    }
+    requestAnimationFrame(() => highlightAgentTargets(payload.targetCompId, payload.targetSpecId));
+    refreshPromptPreview({ skipSave: true });
+  });
+  es.addEventListener("view-requested", ev => {
+    let payload;
+    try { payload = JSON.parse(ev.data); } catch { return; }
+    if (payload?.view && VIEW_ORDER[payload.view] !== undefined) {
+      switchView(payload.view);
+    }
+  });
+  es.addEventListener("agent-activity", ev => {
+    let payload;
+    try { payload = JSON.parse(ev.data); } catch { return; }
+    if (payload?.message) {
+      showLiveAgentActivity(payload.message, payload.level || "info");
+    }
+  });
   state.eventSource = es;
 }
 
@@ -104,8 +149,16 @@ function wireDragAndDrop() {
       if (eventTarget && eventTarget.closest("#setupWsCard")) return { view: "setup", target: "setup-workspace", el: document.getElementById("setupWsCard") };
       return { view: "setup", target: "setup-staged", el: document.getElementById("setupStagedCard") };
     }
-    if (state.currentView === "prompt") {
-      return { view: "prompt", target: "prompt-notes", el: document.querySelector("#viewPrompt .notes-card") };
+    if (state.currentView === "format") {
+      return { view: "format", target: "prompt-notes", el: document.querySelector("#viewFormat .notes-card") };
+    }
+    if (state.currentView === "organize") {
+      const tileEl = eventTarget?.closest?.(".org-spec-tile");
+      if (tileEl) {
+        state.live.hoveredSpecTarget = { compId: tileEl.dataset.compId || "", specId: tileEl.dataset.specId || "" };
+        return { view: "organize", target: "spec-tile", el: tileEl };
+      }
+      return { view: "organize", target: "organize-canvas", el: document.getElementById("orgCanvasTrack") };
     }
     if (state.currentView === "viewer") {
       return { view: "viewer", target: "viewer", el: document.querySelector("#viewViewer .viewer-full") };
@@ -125,7 +178,7 @@ function wireDragAndDrop() {
     clearDropHighlights();
     if (info && info.el) {
       info.el.classList.add("drop-target-active");
-      if (info.view === "prompt" && !state.promptDragScrolled) {
+      if (info.view === "format" && !state.promptDragScrolled) {
         state.promptDragScrolled = true;
         info.el.scrollIntoView({ behavior: "smooth", block: "center" });
       }
@@ -188,7 +241,7 @@ function wireDragAndDrop() {
       return;
     }
 
-    if (view === "prompt") {
+    if (view === "format") {
       const filesOnly = items.filter(i => i.kind === "file");
       const foldersCount = items.length - filesOnly.length;
       if (foldersCount > 0) {
@@ -209,6 +262,26 @@ function wireDragAndDrop() {
         await refreshPromptPreview();
         toast(`Attached ${attached} file(s) to Study Notes.`, "ok");
       }
+      return;
+    }
+
+    if (view === "organize") {
+      const mdFile = items.find(i => i.kind === "file" && /\.(md|markdown)$/i.test(i.path));
+      const hover = state.live.hoveredSpecTarget;
+      if (mdFile && hover?.compId && hover?.specId) {
+        const comp = state.prompt.components.find(c => c.id === hover.compId);
+        const inst = comp?.orderedItems?.find(o => o.id === hover.specId);
+        if (inst) {
+          inst.content = { mode: "markdownFile", rawText: null, markdownFilePath: mdFile.path };
+          emit("prompt:preset-modified");
+          emit("organize:render");
+          await refreshPromptPreview();
+          toast(`Attached ${mdFile.path.split(/[\\/]/).pop()} to ${inst.topic}.`, "ok");
+        }
+      } else if (mdFile) {
+        toast("Drop a .md file directly onto a spec tile in Organize to attach it.", "warn");
+      }
+      state.live.hoveredSpecTarget = null;
       return;
     }
 
@@ -238,12 +311,15 @@ function wireCrossViewEvents() {
   on("view:changed", ({ viewName }) => {
     if (viewName === "viewer") {
       refreshViewerDiscovery();
-    } else if (viewName === "settings") {
-      syncSettingsInputs();
     }
   });
   on("apps:refresh", render => refreshApps(!!render));
   on("viewer:theme-changed", applyViewerThemeOverride);
+  on("spec:open-content-modal", opts => {
+    if (opts?.compId && opts?.instId) {
+      openSpecContentModal(opts.compId, opts.instId, { focusMelomg: !!opts.focusMelomg });
+    }
+  });
 }
 
 async function bootstrap() {
@@ -277,6 +353,9 @@ async function bootstrap() {
   renderOutdatedBanner();
   await loadPresets();
   await loadSpecs(false);
+  if (state.settings.activeWorkspace?.workspacePath) {
+    await loadWorkspaceDraft(state.settings.activeWorkspace.workspacePath);
+  }
   renderAppsCart();
   renderRecentWorkspaces();
   renderPromptAttachments();
@@ -285,10 +364,10 @@ async function bootstrap() {
   startRealtimeEvents();
 
   const hasValidActiveWs = state.settings.activeWorkspace && state.settings.activeWorkspace.isInitialized;
-  switchView(hasValidActiveWs ? "prompt" : "setup");
+  switchView(hasValidActiveWs ? "format" : "setup");
   updateChromeOffset();
   if (hasValidActiveWs) {
-    refreshPromptPreview();
+    await refreshPromptPreview({ skipSave: true });
   }
 }
 
@@ -299,11 +378,22 @@ wireGlobalOverlayDismissal(() => {
   if (!document.getElementById("inputPromptModal").classList.contains("hidden")) {
     closeInputPromptModal(null);
   }
+  if (isSpecContentModalOpen()) {
+    closeSpecContentModal();
+  }
+  if (isSettingsModalOpen()) {
+    closeSettingsModal();
+  }
 });
 wireModalControls();
 wireChromeControls();
+wireWorkspaceTree({ selectWorkspace });
 wireSetupView();
-wirePromptStudioView();
+wirePromptDraftEvents();
+wireFormatView();
+wireOrganizeView();
+initSpecContentModal();
+wireReviewView();
 wireViewerView();
 wireSettingsView();
 wireCrossViewEvents();

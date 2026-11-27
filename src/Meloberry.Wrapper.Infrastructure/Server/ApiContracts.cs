@@ -47,3 +47,55 @@ internal sealed record UpdateSettingsApiRequest(
     bool? OverrideWebAppTheme = null);
 
 internal sealed record OverrideThemeApiRequest(bool OverrideWebAppTheme);
+
+internal sealed record SaveComponentPresetApiRequest(PromptComponentPlan Component, string? SuggestedName);
+
+internal sealed record LoadComponentPresetApiRequest(ComponentKind ExpectedKind);
+
+internal sealed record LiveDraftSaveApiRequest(
+    string? WorkspacePath,
+    PromptDraft? Draft,
+    string? Source = "ui",
+    string? Summary = "Updated draft");
+
+internal sealed record LiveMutateApiRequest(
+    string? WorkspacePath,
+    string? Op,
+    string? Source = "agent",
+    string? TargetId = null,
+    ContainerKind? Container = null,
+    string? Title = null,
+    string? Description = null,
+    AuthoringFormat? AuthoringFormat = null,
+    WorkflowMode? WorkflowMode = null,
+    bool? AllowPlaceholdersOnFinalize = null,
+    ComponentKind? ComponentKind = null,
+    string? Topic = null,
+    string? Subtype = null,
+    int? Index = null,
+    int? Count = null,
+    SpecContentMode? ContentMode = null,
+    string? RawText = null,
+    string? MarkdownFilePath = null,
+    string? Notes = null);
+
+internal sealed record LiveFinalizeApiRequest(
+    string? WorkspacePath = null,
+    bool? AllowPlaceholders = null,
+    string? OutputDir = null,
+    bool VerifyStaticOnly = true);
+
+internal sealed record LiveUiApiRequest(
+    string? Action,
+    string? View = null,
+    string? Path = null,
+    string? Message = null,
+    string? Level = null);
+
+internal sealed record ExtractFigureApiRequest(
+    string? WorkspacePath,
+    string PdfPath,
+    string Query,
+    int? Quality = null,
+    bool MaskAll = false,
+    bool EmitMeta = false);

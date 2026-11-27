@@ -8,9 +8,21 @@ public interface IWrapperDataPaths
 {
     string BaseDirectory { get; }
     string AppsDirectory { get; }
+    string PresetsDirectory { get; }
+    string ComponentPresetsDirectory { get; }
     string UpdatesDirectory { get; }
     string WebView2UserDataDirectory { get; }
     string SettingsFilePath { get; }
+    string ExePointerFilePath { get; }
+    string RuntimeIpcFilePath { get; }
+}
+
+/// <summary>Manages the active-workspace-only `mby-pc.bat` shim replacing per-workspace tool copies.</summary>
+public interface IWorkspaceShimWriter
+{
+    Task<Result<string>> WriteShimAsync(string workspacePath, bool overwriteExisting = true, CancellationToken ct = default);
+    Task<Result<bool>> RemoveShimIfManagedAsync(string workspacePath, CancellationToken ct = default);
+    string RenderShimContent();
 }
 
 /// <summary>Manages %LOCALAPPDATA%\Meloberry\apps\ executables and local .exe imports.</summary>
@@ -51,21 +63,41 @@ public interface IAgentsMdFileWriter
     Task<Result<AgentsMdStatus>> WriteAsync(string workspacePath, string? targetDirectoryOverride, string content, bool overwriteConfirmed, CancellationToken ct = default);
 }
 
+/// <summary>Live spec catalog plus embedded SVG icons resolved from `mby-cli`.</summary>
+public sealed record SpecCatalogResult(
+    IReadOnlyList<SpecTopicItem> Specs,
+    IReadOnlyDictionary<string, string> SpecIcons);
+
 /// <summary>Executes `mby` CLI commands out-of-process with MBY_AGENT=1.</summary>
 public interface IMbyCliClient
 {
     Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default);
+    Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default);
     Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default);
     Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default);
     Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default);
     Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default);
     Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default);
+    Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default);
 }
 
 /// <summary>Executes `melomg` CLI commands out-of-process with MBY_AGENT=1.</summary>
 public interface IMelomgCliClient
 {
     Task<Result<string>> GetSpecTextAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default);
+    Task<Result<IReadOnlyList<MelomgDocumentSummary>>> ListDocumentsAsync(string exePath, string? workingDir, CancellationToken ct = default);
+    Task<Result<MelomgExtractResult>> ExtractFigureAsync(
+        string exePath,
+        string targetOrPdf,
+        string selector,
+        string outputDir,
+        int? quality,
+        bool maskAll,
+        bool emitMeta,
+        bool retainDb,
+        bool offline,
+        string? workingDir,
+        CancellationToken ct = default);
 }
 
 /// <summary>Downloads verified CLI executables from GitHub Releases or contents/app.</summary>
@@ -171,3 +203,80 @@ public interface IAtomicFileWriter
     void CopyFile(string sourcePath, string destinationPath, string tempSuffix = ".tmp");
     void WriteStream(string destinationPath, Stream contentStream, string tempSuffix = ".tmp");
 }
+
+/// <summary>Reads and writes `.mbypreset` files for whole workflows and individual component cards.</summary>
+public interface IPresetFileStore
+{
+    Task<IReadOnlyList<PromptPreset>> LoadWorkflowPresetsAsync(CancellationToken ct = default);
+    Task<Result<PromptPreset>> SaveWorkflowPresetAsync(PromptPreset preset, CancellationToken ct = default);
+    Task<Result<(PromptPreset Preset, string SavedPath)>> SaveWorkflowPresetToFileAsync(string filePath, PromptPreset preset, CancellationToken ct = default);
+    Task<Result> DeleteWorkflowPresetAsync(string presetId, CancellationToken ct = default);
+    Task<Result<string>> WritePresetFileAsync(string filePath, MbyPresetFile presetFile, CancellationToken ct = default);
+    Task<Result<MbyPresetFile>> ReadPresetFileAsync(string filePath, CancellationToken ct = default);
+}
+
+/// <summary>Enumerates immediate folders and files inside a directory for the Active Workspace tree popup.</summary>
+public interface IWorkspaceDirectoryBrowser
+{
+    Task<Result<WorkspaceDirectoryListing>> ListDirectoryAsync(string directoryPath, CancellationToken ct = default);
+}
+
+/// <summary>Persists the live per-workspace authoring draft inside .meloberry/pc-draft.json.</summary>
+public interface IWorkspaceDraftStore
+{
+    Task<PromptDraft> LoadAsync(string workspacePath, CancellationToken ct = default);
+    Task<Result<PromptDraft>> SaveAsync(string workspacePath, PromptDraft draft, CancellationToken ct = default);
+}
+
+/// <summary>Active GUI loopback IPC endpoint metadata stored in %LOCALAPPDATA%\Meloberry\runtime-ipc.json.</summary>
+public sealed record RuntimeIpcInfo(
+    int Pid,
+    int ShellPort,
+    int ViewerPort,
+    string Token,
+    DateTimeOffset StartedUtc);
+
+/// <summary>Tracks the active Meloberry PC GUI HTTP instance for --cli live synchronization.</summary>
+public interface IRuntimeIpcRegistry
+{
+    Task WriteCurrentAsync(int shellPort, int viewerPort, string token, CancellationToken ct = default);
+    RuntimeIpcInfo? TryReadActive();
+    void CleanupCurrent();
+}
+
+/// <summary>Event emitted whenever the live workspace draft is mutated from UI or CLI.</summary>
+public sealed record LiveDraftChangedEvent(
+    string WorkspacePath,
+    PromptDraft Draft,
+    string Source,
+    string Summary,
+    string? TargetComponentId = null,
+    string? TargetSpecId = null);
+
+/// <summary>Surgical draft mutation command executed via GUI or `mby-pc.bat draft`.</summary>
+public sealed record LiveDraftMutationRequest(
+    string Op,
+    string? Source = "agent",
+    string? TargetId = null,
+    ContainerKind? Container = null,
+    string? Title = null,
+    string? Description = null,
+    AuthoringFormat? AuthoringFormat = null,
+    WorkflowMode? WorkflowMode = null,
+    bool? AllowPlaceholdersOnFinalize = null,
+    ComponentKind? ComponentKind = null,
+    string? Topic = null,
+    string? Subtype = null,
+    int? Index = null,
+    int? Count = null,
+    SpecContentMode? ContentMode = null,
+    string? RawText = null,
+    string? MarkdownFilePath = null,
+    string? Notes = null);
+
+/// <summary>Result returned by `LiveDraftHandler.MutateAsync`.</summary>
+public sealed record LiveDraftMutationResult(
+    PromptDraft Draft,
+    string Summary,
+    string? TargetComponentId = null,
+    string? TargetSpecId = null);

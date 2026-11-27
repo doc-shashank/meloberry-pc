@@ -69,7 +69,9 @@ public sealed record WorkspaceInitResult(
     int OverwrittenCount,
     string? WorkspaceMbyPath,
     string? WorkspaceMelomgPath,
-    IReadOnlyList<string> CopiedRelativePaths);
+    IReadOnlyList<string> CopiedRelativePaths,
+    bool ShimWritten = false,
+    string? WorkspaceShimPath = null);
 
 /// <summary>Persisted state of the currently selected Active Workspace.</summary>
 public sealed record ActiveWorkspaceState(
@@ -145,3 +147,21 @@ public sealed record WorkspaceToolUpdateResult(
     string WorkspacePath,
     IReadOnlyList<string> RemovedOldRelativePaths,
     IReadOnlyList<string> CopiedNewFileNames);
+
+/// <summary>Single folder entry in the interactive workspace tree dropdown.</summary>
+public sealed record WorkspaceTreeFolder(
+    string Name,
+    string FullPath,
+    bool HasSubfolders);
+
+/// <summary>Single read-only file entry in the interactive workspace tree dropdown.</summary>
+public sealed record WorkspaceTreeFile(
+    string Name,
+    string Extension);
+
+/// <summary>Directory listing returned when browsing or climbing the Active Workspace tree.</summary>
+public sealed record WorkspaceDirectoryListing(
+    string CurrentPath,
+    string? ParentPath,
+    IReadOnlyList<WorkspaceTreeFolder> Folders,
+    IReadOnlyList<WorkspaceTreeFile> Files);

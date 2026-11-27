@@ -38,6 +38,7 @@ public sealed partial class StaticAssetHost(
         "WebAssets.styles.chrome.css",
         "WebAssets.styles.setup.css",
         "WebAssets.styles.studio.css",
+        "WebAssets.styles.organize.css",
         "WebAssets.styles.viewer.css",
         "WebAssets.styles.overlays.css"
     ];
@@ -55,6 +56,8 @@ public sealed partial class StaticAssetHost(
     });
 
     public static string PaperThemeFallbackCss => PaperThemeCssLazy.Value;
+
+    public static IReadOnlyDictionary<string, string> GetEmbeddedIconMapSnapshot() => IconMapLazy.Value;
 
     public async Task ServeShellHtmlAsync(HttpListenerResponse resp, string token, CancellationToken ct)
     {

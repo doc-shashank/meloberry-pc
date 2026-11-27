@@ -63,119 +63,6 @@ export function syncModesFromDistribution(sel, primaryGroup, secondaryGroups) {
   }
 }
 
-export function applyTotalQtyChange(sel, spec, newTotalRaw) {
-  const { primaryGroup, secondaryGroups } = getSpecModeStructure(spec);
-  if (newTotalRaw === null || newTotalRaw <= 0) {
-    sel.desiredCount = null;
-    sel.modeCounts = null;
-    return;
-  }
-
-  const newTotal = Math.min(99, Math.max(1, newTotalRaw));
-  if (!primaryGroup || !primaryGroup.options.length) {
-    sel.desiredCount = newTotal;
-    sel.modeCounts = null;
-    return;
-  }
-
-  const counts = getActiveModeCounts(sel, primaryGroup);
-  const activePrimaryKeys = getPrimarySubtypeKeys(sel, primaryGroup);
-  if (!activePrimaryKeys.length) {
-    sel.desiredCount = newTotal;
-    sel.modeCounts = null;
-    return;
-  }
-
-  if (!Object.keys(counts).length) {
-    counts[activePrimaryKeys[0]] = newTotal;
-    sel.modeCounts = counts;
-    syncModesFromDistribution(sel, primaryGroup, secondaryGroups);
-    return;
-  }
-
-  const leftmostKey = primaryGroup.options[0].key;
-  const otherKeys = primaryGroup.options.slice(1).map(o => o.key);
-  const othersSum = otherKeys.reduce((sum, k) => sum + (counts[k] || 0), 0);
-
-  if (newTotal >= othersSum) {
-    const firstVal = newTotal - othersSum;
-    if (firstVal > 0) counts[leftmostKey] = firstVal;
-    else delete counts[leftmostKey];
-  } else {
-    delete counts[leftmostKey];
-    let excess = othersSum - newTotal;
-    for (let i = otherKeys.length - 1; i >= 0 && excess > 0; i--) {
-      const k = otherKeys[i];
-      const cur = counts[k] || 0;
-      if (cur > 0) {
-        const take = Math.min(cur, excess);
-        const rem = cur - take;
-        if (rem > 0) counts[k] = rem;
-        else delete counts[k];
-        excess -= take;
-      }
-    }
-  }
-
-  sel.modeCounts = counts;
-  syncModesFromDistribution(sel, primaryGroup, secondaryGroups);
-}
-
-export function handlePrimaryChipClick(comp, spec, sel, optKey) {
-  const { primaryGroup, secondaryGroups } = getSpecModeStructure(spec);
-  if (!primaryGroup) return;
-  const totalQty = sel.desiredCount && sel.desiredCount > 0 ? sel.desiredCount : 0;
-  const counts = getActiveModeCounts(sel, primaryGroup);
-  const activeKeys = getPrimarySubtypeKeys(sel, primaryGroup);
-  const isActive = activeKeys.includes(optKey);
-
-  if (totalQty === 0) {
-    if (isActive) {
-      sel.modes = (sel.modes || []).filter(m => m !== optKey);
-    } else {
-      const siblingKeys = primaryGroup.options.map(o => o.key);
-      sel.modes = [...(sel.modes || []).filter(m => !siblingKeys.includes(m)), optKey];
-    }
-    sel.modeCounts = null;
-    return;
-  }
-
-  if (totalQty === 1) {
-    sel.modeCounts = isActive ? null : { [optKey]: 1 };
-    if (isActive) {
-      sel.modes = (sel.modes || []).filter(m => !primaryGroup.options.some(o => o.key === m));
-    }
-    syncModesFromDistribution(sel, primaryGroup, secondaryGroups);
-    return;
-  }
-
-  if (isActive) {
-    delete counts[optKey];
-    sel.modeCounts = Object.keys(counts).length ? counts : null;
-    if (!sel.modeCounts) {
-      sel.modes = (sel.modes || []).filter(m => !primaryGroup.options.some(o => o.key === m));
-      sel.desiredCount = totalQty;
-    } else {
-      syncModesFromDistribution(sel, primaryGroup, secondaryGroups);
-    }
-    return;
-  }
-
-  if (!Object.keys(counts).length) {
-    counts[optKey] = totalQty;
-  } else {
-    const donorKey = Object.keys(counts).find(k => counts[k] > 1);
-    if (donorKey) {
-      counts[donorKey] -= 1;
-      counts[optKey] = 1;
-    } else {
-      counts[optKey] = 1;
-    }
-  }
-  sel.modeCounts = counts;
-  syncModesFromDistribution(sel, primaryGroup, secondaryGroups);
-}
-
 export function handleSecondaryChipToggle(spec, sel, optKey, group) {
   sel.modes = sel.modes || [];
   if (group.multiSelect) {
@@ -212,14 +99,14 @@ export function buildOrganizationDisplayItems(comp) {
   }
 
   const preview = [];
-  comp.selections.filter(s => s.enabled).forEach(sel => {
+  (comp.selections || []).filter(s => s.enabled).forEach(sel => {
     const { primaryGroup } = getSpecModeStructure(sel.topic);
     const isAuto = !sel.desiredCount || sel.desiredCount <= 0;
     if (isAuto) {
       const activePrimary = getPrimarySubtypeKeys(sel, primaryGroup);
       const sub = activePrimary.length === 1 ? activePrimary[0] : null;
       preview.push({
-        id: `${sel.topic}_1_auto`,
+        id: `${comp.id}_${sel.topic}_1_auto`,
         topic: sel.topic,
         instanceNumber: 1,
         subtype: sub,
@@ -235,7 +122,7 @@ export function buildOrganizationDisplayItems(comp) {
       countKeys.forEach(sub => {
         for (let i = 0; i < counts[sub] && num < sel.desiredCount; i++) {
           num++;
-          preview.push({ id: `${sel.topic}_${num}`, topic: sel.topic, instanceNumber: num, subtype: sub, isAuto: false });
+          preview.push({ id: `${comp.id}_${sel.topic}_${num}`, topic: sel.topic, instanceNumber: num, subtype: sub, isAuto: false });
         }
       });
     }
@@ -244,7 +131,7 @@ export function buildOrganizationDisplayItems(comp) {
       : null;
     while (num < sel.desiredCount) {
       num++;
-      preview.push({ id: `${sel.topic}_${num}`, topic: sel.topic, instanceNumber: num, subtype: fallbackSub, isAuto: false });
+      preview.push({ id: `${comp.id}_${sel.topic}_${num}`, topic: sel.topic, instanceNumber: num, subtype: fallbackSub, isAuto: false });
     }
   });
   return preview;
@@ -253,64 +140,21 @@ export function buildOrganizationDisplayItems(comp) {
 export function materializeOrderedItems(comp) {
   if (comp.orderedItems && comp.orderedItems.length > 0) return;
   comp.orderedItems = buildOrganizationDisplayItems(comp).map(it => ({
-    id: `${it.topic}_${it.instanceNumber}_${Math.random().toString(36).slice(2, 6)}`,
+    id: it.id || `${comp.id}_${it.topic}_${it.instanceNumber}_${Math.random().toString(36).slice(2, 6)}`,
     topic: it.topic,
     instanceNumber: it.instanceNumber,
     subtype: it.subtype || null
   }));
 }
 
-export function syncOrderedItemsFromSelections(comp) {
-  if (!comp.orderedItems) return;
-
-  const desiredCounts = {};
-  const desiredModeQueues = {};
-  comp.selections.filter(s => s.enabled).forEach(s => {
-    const k = s.topic.toLowerCase();
-    desiredCounts[k] = Math.max(1, s.desiredCount || 1);
-    const { primaryGroup } = getSpecModeStructure(s.topic);
-    const counts = getActiveModeCounts(s, primaryGroup);
-    const q = [];
-    Object.entries(counts).forEach(([sub, n]) => {
-      for (let i = 0; i < n; i++) q.push(sub);
-    });
-    desiredModeQueues[k] = q;
-  });
-
-  const existing = [...comp.orderedItems];
-  const currentCounts = {};
-  const kept = [];
-
-  existing.forEach(inst => {
-    const k = (inst.topic || "").toLowerCase();
-    const targetMax = desiredCounts[k] || 0;
-    const seen = currentCounts[k] || 0;
-    if (seen < targetMax) {
-      currentCounts[k] = seen + 1;
-      kept.push({ ...inst, instanceNumber: seen + 1 });
-    }
-  });
-
-  comp.selections.filter(s => s.enabled).forEach(s => {
-    const k = s.topic.toLowerCase();
-    const count = desiredCounts[k] || 0;
-    let seen = currentCounts[k] || 0;
-    const q = desiredModeQueues[k] || [];
-    while (seen < count) {
-      const sub = q[seen] || null;
-      seen++;
-      kept.push({ id: `${s.topic}_${seen}_${Math.random().toString(36).slice(2, 6)}`, topic: s.topic, instanceNumber: seen, subtype: sub });
-    }
-  });
-
-  comp.orderedItems = kept.length ? kept : null;
-}
-
 export function syncSelectionsFromOrderedItems(comp, touchedTopic = null) {
   const counts = {};
+  const topicOrder = [];
   const subtypeCountsByTopic = {};
+
   (comp.orderedItems || []).forEach(inst => {
     const k = (inst.topic || "").toLowerCase();
+    if (!counts[k]) topicOrder.push(inst.topic);
     counts[k] = (counts[k] || 0) + 1;
     inst.instanceNumber = counts[k];
     if (inst.subtype) {
@@ -318,6 +162,8 @@ export function syncSelectionsFromOrderedItems(comp, touchedTopic = null) {
       subtypeCountsByTopic[k][inst.subtype] = (subtypeCountsByTopic[k][inst.subtype] || 0) + 1;
     }
   });
+
+  topicOrder.forEach(topic => findOrInitSelection(comp, topic));
 
   const touchedKey = touchedTopic ? touchedTopic.toLowerCase() : null;
   comp.selections.forEach(sel => {
@@ -329,10 +175,14 @@ export function syncSelectionsFromOrderedItems(comp, touchedTopic = null) {
         sel.desiredCount = c;
       }
       const subCounts = subtypeCountsByTopic[k];
+      const { primaryGroup, secondaryGroups } = getSpecModeStructure(sel.topic);
       if (subCounts && Object.keys(subCounts).length > 0) {
         sel.modeCounts = subCounts;
-        const { primaryGroup, secondaryGroups } = getSpecModeStructure(sel.topic);
         syncModesFromDistribution(sel, primaryGroup, secondaryGroups);
+      } else {
+        sel.modeCounts = null;
+        const primaryValid = new Set((primaryGroup?.options || []).map(o => o.key));
+        sel.modes = (sel.modes || []).filter(m => !primaryValid.has(m));
       }
     } else {
       sel.enabled = false;

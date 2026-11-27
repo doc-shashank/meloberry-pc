@@ -49,6 +49,11 @@ public static class WrapperErrors
         $"Prompt preset '{presetId}' was not found.",
         ErrorType.NotFound);
 
+    public static Error InvalidPresetFile(string detail) => new(
+        "Preset.InvalidFile",
+        detail,
+        ErrorType.Validation);
+
     public static Error DownloadFailed(string message, string? hint = null) => new(
         "GitHub.DownloadFailed",
         message,

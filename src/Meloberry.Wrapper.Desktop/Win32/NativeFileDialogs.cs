@@ -28,7 +28,7 @@ internal sealed class NativeFileDialogs(Win32WindowHost windowHost) : INativeDia
                 dialog.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR);
                 TrySetInitialFolder(dialog, initialDir);
 
-                var hr = dialog.Show(windowHost.Handle);
+                var hr = ShowCentered(() => dialog.Show(windowHost.Handle));
                 if (hr == ERROR_CANCELLED)
                 {
                     return null;
@@ -78,7 +78,7 @@ internal sealed class NativeFileDialogs(Win32WindowHost windowHost) : INativeDia
                 ApplySingleFilter(dialog, filterLabel, filterPattern);
                 TrySetInitialFolder(dialog, initialDir);
 
-                var hr = dialog.Show(windowHost.Handle);
+                var hr = ShowCentered(() => dialog.Show(windowHost.Handle));
                 if (hr == ERROR_CANCELLED)
                 {
                     return [];
@@ -142,7 +142,7 @@ internal sealed class NativeFileDialogs(Win32WindowHost windowHost) : INativeDia
                 ApplySingleFilter(dialog, filterLabel, $"*.{filterExtension.TrimStart('.')}");
                 TrySetInitialFolder(dialog, initialDir);
 
-                var hr = dialog.Show(windowHost.Handle);
+                var hr = ShowCentered(() => dialog.Show(windowHost.Handle));
                 if (hr == ERROR_CANCELLED)
                 {
                     return null;
@@ -165,6 +165,74 @@ internal sealed class NativeFileDialogs(Win32WindowHost windowHost) : INativeDia
                 Marshal.FinalReleaseComObject(dialog);
             }
         }, ct);
+    }
+
+    private int ShowCentered(Func<int> showDialog)
+    {
+        var ownerHwnd = windowHost.Handle;
+        if (ownerHwnd == IntPtr.Zero)
+        {
+            return showDialog();
+        }
+
+        var centered = false;
+        IntPtr hook = IntPtr.Zero;
+        Win32Native.HookProc proc = (nCode, wParam, lParam) =>
+        {
+            if (nCode == Win32Native.HCBT_ACTIVATE && !centered && wParam != IntPtr.Zero && wParam != ownerHwnd)
+            {
+                var isOwned = Win32Native.GetWindow(wParam, Win32Native.GW_OWNER) == ownerHwnd
+                    || Win32Native.GetParent(wParam) == ownerHwnd;
+                if (isOwned &&
+                    Win32Native.GetWindowRect(ownerHwnd, out var ownerRect) &&
+                    Win32Native.GetWindowRect(wParam, out var dlgRect))
+                {
+                    var dlgW = Math.Max(200, dlgRect.right - dlgRect.left);
+                    var dlgH = Math.Max(150, dlgRect.bottom - dlgRect.top);
+                    var x = ownerRect.left + ((ownerRect.right - ownerRect.left) - dlgW) / 2;
+                    var y = ownerRect.top + ((ownerRect.bottom - ownerRect.top) - dlgH) / 2;
+
+                    var monitor = Win32Native.MonitorFromWindow(ownerHwnd, Win32Native.MONITOR_DEFAULTTONEAREST);
+                    if (monitor != IntPtr.Zero)
+                    {
+                        var mi = new Win32Native.MONITORINFO { cbSize = (uint)Marshal.SizeOf<Win32Native.MONITORINFO>() };
+                        if (Win32Native.GetMonitorInfoW(monitor, ref mi))
+                        {
+                            var work = mi.rcWork;
+                            x = Math.Clamp(x, work.left, Math.Max(work.left, work.right - dlgW));
+                            y = Math.Clamp(y, work.top, Math.Max(work.top, work.bottom - dlgH));
+                        }
+                    }
+
+                    Win32Native.SetWindowPos(
+                        wParam,
+                        IntPtr.Zero,
+                        x,
+                        y,
+                        0,
+                        0,
+                        Win32Native.SWP_NOSIZE | Win32Native.SWP_NOZORDER | Win32Native.SWP_NOACTIVATE);
+                    centered = true;
+                }
+            }
+
+            return Win32Native.CallNextHookEx(hook, nCode, wParam, lParam);
+        };
+
+        hook = Win32Native.SetWindowsHookExW(Win32Native.WH_CBT, proc, IntPtr.Zero, Win32Native.GetCurrentThreadId());
+        try
+        {
+            return showDialog();
+        }
+        finally
+        {
+            if (hook != IntPtr.Zero)
+            {
+                Win32Native.UnhookWindowsHookEx(hook);
+            }
+
+            GC.KeepAlive(proc);
+        }
     }
 
     private static void TrySetInitialFolder(IFileDialog dialog, string? initialDir)

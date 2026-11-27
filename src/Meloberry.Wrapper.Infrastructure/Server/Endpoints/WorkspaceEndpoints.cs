@@ -16,8 +16,18 @@ public sealed class WorkspaceEndpoints(
     WorkspaceMaintenanceHandler workspaceMaintenance,
     ReadyWorkspaceHandler readyWorkspace,
     ManageLibraryHandler libraryHandler,
-    WorkspaceActionsHandler workspaceActions)
+    WorkspaceActionsHandler workspaceActions,
+    ExtractFigureWithMelomgHandler extractFigure)
 {
+    private static readonly Dictionary<string, string> AssetMimeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".png"] = "image/png",
+        [".jpg"] = "image/jpeg",
+        [".jpeg"] = "image/jpeg",
+        [".webp"] = "image/webp",
+        [".gif"] = "image/gif",
+        [".svg"] = "image/svg+xml"
+    };
     public async Task<bool> TryHandleAsync(
         HttpListenerRequest req,
         HttpListenerResponse resp,
@@ -112,6 +122,14 @@ public sealed class WorkspaceEndpoints(
                     mbyWorkspaces = wsRes.IsSuccess ? wsRes.Value : [],
                     mbyError = wsRes.IsFailure ? wsRes.Error?.Description : null
                 }, ct).ConfigureAwait(false);
+                return true;
+            }
+
+            case ("/api/workspace/tree", "GET"):
+            {
+                var targetPath = req.QueryString["path"];
+                var res = await workspaceSetup.ListDirectoryAsync(targetPath, ct).ConfigureAwait(false);
+                await HttpEnvelope.WriteResultAsync(resp, res, ct).ConfigureAwait(false);
                 return true;
             }
 
@@ -292,6 +310,76 @@ public sealed class WorkspaceEndpoints(
                 var res = await workspaceActions.ExportPackageAsync(body.WorkspaceId, body.Target ?? "android", outPath, ct).ConfigureAwait(false);
                 await HttpEnvelope.WriteResultAsync(resp, res, ct).ConfigureAwait(false);
                 return true;
+            }
+
+            case ("/api/melomg/extract-figure", "POST"):
+            {
+                var body = await HttpEnvelope.ReadJsonAsync<ExtractFigureApiRequest>(req, ct).ConfigureAwait(false);
+                if (body is null || string.IsNullOrWhiteSpace(body.PdfPath) || string.IsNullOrWhiteSpace(body.Query))
+                {
+                    await HttpEnvelope.WriteJsonErrorAsync(resp, 400, "Request.Invalid", "PdfPath and Query are required.", ct).ConfigureAwait(false);
+                    return true;
+                }
+
+                var res = await extractFigure.ExtractAsync(new ExtractFigureRequest(
+                    body.WorkspacePath,
+                    body.PdfPath,
+                    body.Query,
+                    body.Quality,
+                    body.MaskAll,
+                    body.EmitMeta), ct).ConfigureAwait(false);
+                await HttpEnvelope.WriteResultAsync(resp, res, ct).ConfigureAwait(false);
+                return true;
+            }
+
+            case ("/api/workspace/asset", "GET"):
+            {
+                var relPath = req.QueryString["relPath"];
+                var ws = req.QueryString["workspacePath"];
+                if (string.IsNullOrWhiteSpace(ws))
+                {
+                    var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
+                    ws = settings.ActiveWorkspace?.WorkspacePath;
+                }
+
+                if (string.IsNullOrWhiteSpace(relPath) ||
+                    !PathNormalization.TryNormalizeDirectoryPath(ws, out var fullWs))
+                {
+                    resp.StatusCode = 404;
+                    resp.Close();
+                    return true;
+                }
+
+                string target;
+                try
+                {
+                    var decoded = Uri.UnescapeDataString(relPath).Trim().Replace('/', Path.DirectorySeparatorChar);
+                    var rootPrefix = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
+                    target = Path.GetFullPath(Path.Combine(fullWs, decoded));
+                    var ext = Path.GetExtension(target);
+                    if (!target.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) ||
+                        !AssetMimeTypes.TryGetValue(ext, out var mime) ||
+                        !File.Exists(target))
+                    {
+                        resp.StatusCode = 404;
+                        resp.Close();
+                        return true;
+                    }
+
+                    resp.ContentType = mime;
+                    resp.Headers["Cache-Control"] = "no-store";
+                    resp.StatusCode = 200;
+                    await using var fs = File.OpenRead(target);
+                    await fs.CopyToAsync(resp.OutputStream, ct).ConfigureAwait(false);
+                    resp.Close();
+                    return true;
+                }
+                catch
+                {
+                    resp.StatusCode = 404;
+                    resp.Close();
+                    return true;
+                }
             }
 
             default:
