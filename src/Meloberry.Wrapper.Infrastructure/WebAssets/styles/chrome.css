@@ -144,10 +144,55 @@
 }
 .notif-head { padding: 9px 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; }
 .notif-list { overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; max-height: 330px; }
-.notif-item { min-width: 0; overflow-wrap: anywhere; word-break: break-word; padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.notif-item {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.notif-item:hover { background: var(--bg); }
 .notif-item.unread { background: var(--accent-soft); }
+.notif-item.kind-err { border-left-color: var(--bad); }
+.notif-item.kind-warn { border-left-color: var(--warn); }
+.notif-item.kind-ok { border-left-color: var(--ok); }
+.notif-item.kind-info { border-left-color: var(--accent); }
+.notif-item.unread.kind-err { background: color-mix(in srgb, var(--bad) 9%, var(--surface)); }
+.notif-item.unread.kind-warn { background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
 .notif-item-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; font-weight: 700; min-width: 0; }
 .notif-item-top > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.notif-title-wrap { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.notif-kind-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--accent); }
+.notif-kind-dot.kind-err { background: var(--bad); }
+.notif-kind-dot.kind-warn { background: var(--warn); }
+.notif-kind-dot.kind-ok { background: var(--ok); }
+.notif-code-pill {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.notif-sublist {
+  margin: 3px 0 0;
+  padding-left: 16px;
+  font-size: 11.5px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notif-time { white-space: nowrap; flex-shrink: 0; font-size: 11px; }
 .notif-item .muted { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 
 /* Workspace Stage & Pull-Up Overlay Strip */
@@ -320,4 +365,10 @@
   .brand-name { display: none; }
   .step-label { font-size: 10px; }
   .step-connector { width: 12px; }
+}
+
+@media (max-height: 580px) {
+  #viewReview { overflow-y: auto; }
+  .review-grid { height: auto; min-height: 100%; }
+  .review-preview-card { min-height: 320px; }
 }

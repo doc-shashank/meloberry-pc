@@ -1,7 +1,7 @@
 import { api } from "../../api.js";
 import { state, emit, on, escapeHtml, withButtonBusy } from "../../store.js";
 import { registerDropdown, closeAllDropdowns } from "../../ui/dropdowns.js";
-import { addNotification, toast } from "../../ui/chrome.js";
+import { addNotification, switchView, toast } from "../../ui/chrome.js";
 import { buildPromptDraftPayload, flushLiveDraftSave, refreshPromptOptionsAvailability, refreshPromptPreview } from "./promptDraft.js";
 import { buildOrganizationDisplayItems, materializeOrderedItems } from "./specModes.js";
 import { getSpecContentBadge } from "./organize.js";
@@ -38,9 +38,22 @@ function renderDirectReadinessPanel() {
     sec.innerHTML = `<div class="readiness-comp-head"><strong>${escapeHtml(comp.title || comp.kind)}</strong><span class="pill">${escapeHtml(comp.kind)}</span></div>`;
 
     if (!items.length) {
+      total++;
       const emptyRow = document.createElement("div");
       emptyRow.className = "readiness-spec-row is-empty";
-      emptyRow.innerHTML = '<span class="muted">No specs added yet in this component.</span>';
+      emptyRow.innerHTML = '<span class="muted">Empty card \u2014 add at least one spec or remove this card</span>';
+      const right = document.createElement("div");
+      right.className = "row gap-8";
+      const pill = document.createElement("span");
+      pill.className = "pill pill-warn";
+      pill.textContent = "Empty";
+      const goBtn = document.createElement("button");
+      goBtn.type = "button";
+      goBtn.className = "btn btn-xs btn-ghost";
+      goBtn.textContent = "Fix in Organize";
+      goBtn.onclick = () => switchView("organize");
+      right.append(pill, goBtn);
+      emptyRow.appendChild(right);
       sec.appendChild(emptyRow);
     }
 
@@ -175,8 +188,9 @@ async function runFinalizeFromUi() {
 
   if (!res.ok) {
     const msg = res.data?.error?.description || "Finalize failed.";
-    toast(msg, "err");
-    addNotification("Finalize Blocked", msg, "err");
+    const code = res.data?.error?.code || null;
+    toast(msg, "err", { notify: false });
+    addNotification("Finalize Blocked", msg, "err", { code });
   }
 }
 

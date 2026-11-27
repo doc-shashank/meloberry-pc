@@ -25,7 +25,7 @@ import {
   wireSetupView
 } from "./views/setup.js";
 import {
-  applyRemoteDraft,
+  applyAnimatedAgentDraft,
   loadPresets,
   loadSpecs,
   loadWorkspaceDraft,
@@ -127,7 +127,7 @@ function startRealtimeEvents() {
       ? payload.draft
       : { ...payload.draft, workflowMode: state.prompt.workflowMode || "direct" };
 
-    applyRemoteDraft(nextDraft);
+    applyAnimatedAgentDraft(nextDraft, payload);
     const draftActId = `draft_${++state.live.activitySeq}`;
     recordAgentActivity({
       id: draftActId,

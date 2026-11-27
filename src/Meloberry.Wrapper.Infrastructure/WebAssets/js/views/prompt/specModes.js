@@ -126,12 +126,14 @@ export function buildOrganizationDisplayItems(comp) {
         }
       });
     }
-    const fallbackSub = !countKeys.length && getPrimarySubtypeKeys(sel, primaryGroup).length === 1
-      ? getPrimarySubtypeKeys(sel, primaryGroup)[0]
-      : null;
+    const activePrimary = !countKeys.length ? getPrimarySubtypeKeys(sel, primaryGroup) : [];
+    let fallbackIdx = 0;
     while (num < sel.desiredCount) {
       num++;
-      preview.push({ id: `${comp.id}_${sel.topic}_${num}`, topic: sel.topic, instanceNumber: num, subtype: fallbackSub, isAuto: false });
+      const sub = activePrimary.length > 0
+        ? activePrimary[fallbackIdx++ % activePrimary.length]
+        : null;
+      preview.push({ id: `${comp.id}_${sel.topic}_${num}`, topic: sel.topic, instanceNumber: num, subtype: sub, isAuto: false });
     }
   });
   return preview;

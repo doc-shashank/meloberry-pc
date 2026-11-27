@@ -130,6 +130,14 @@ function findSpecTargetBeforeNode(listEl, draggedTile, clientY) {
 }
 
 export function attachSpecDrag(tileEl, comp, { onClick, onCommit }) {
+  let pendingClickTimer = null;
+  tileEl.addEventListener("dblclick", () => {
+    if (pendingClickTimer) {
+      clearTimeout(pendingClickTimer);
+      pendingClickTimer = null;
+    }
+  });
+
   tileEl.addEventListener("pointerdown", downEvt => {
     if (downEvt.button !== 0 || downEvt.target.closest("button, .org-spec-remove")) return;
 
@@ -153,6 +161,10 @@ export function attachSpecDrag(tileEl, comp, { onClick, onCommit }) {
       if (!active) {
         if (dist < 5) return;
         active = true;
+        if (pendingClickTimer) {
+          clearTimeout(pendingClickTimer);
+          pendingClickTimer = null;
+        }
         closeAllDropdowns();
         const created = createDragGhost(tileEl);
         ghost = created.ghost;
@@ -203,7 +215,17 @@ export function attachSpecDrag(tileEl, comp, { onClick, onCommit }) {
     const handleUp = () => {
       cleanup();
       if (!active) {
-        if (onClick) onClick(tileEl);
+        if (onClick) {
+          if (pendingClickTimer) {
+            clearTimeout(pendingClickTimer);
+            pendingClickTimer = null;
+            return;
+          }
+          pendingClickTimer = setTimeout(() => {
+            pendingClickTimer = null;
+            onClick(tileEl);
+          }, 180);
+        }
         return;
       }
 

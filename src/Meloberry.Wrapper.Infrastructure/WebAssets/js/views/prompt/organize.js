@@ -7,6 +7,7 @@ import { animateFromPositions, capturePositions } from "./organizeFlip.js";
 import { attachCardDrag, attachSpecDrag } from "./organizeDrag.js";
 import { buildCardPresetMenuControl, renderPresetMenu, wireOrganizePresetToolbar } from "./organizePresets.js";
 import { openAddSpecPopover, openSpecInspectorPopover, wireSpecPopovers } from "./specPopovers.js";
+import { extractSpecPreviewSnippet } from "./specTemplates.js";
 
 function transferTopicMetadata(sourceComp, targetComp, topic) {
   const srcSel = (sourceComp.selections || []).find(s => s.topic.toLowerCase() === topic.toLowerCase());
@@ -179,16 +180,27 @@ function buildSpecTile(comp, inst, onMutated) {
 
   const meta = document.createElement("div");
   meta.className = "org-spec-tile-meta";
+  const headRow = document.createElement("div");
+  headRow.className = "org-spec-tile-head-row";
   const labelEl = document.createElement("span");
   labelEl.className = "org-spec-tile-label";
   labelEl.textContent = inst.topic;
-  meta.appendChild(labelEl);
+  headRow.appendChild(labelEl);
 
   if (subLabel) {
     const subEl = document.createElement("span");
     subEl.className = "org-spec-tile-sub";
     subEl.textContent = subLabel;
-    meta.appendChild(subEl);
+    headRow.appendChild(subEl);
+  }
+  meta.appendChild(headRow);
+
+  const snippet = extractSpecPreviewSnippet(inst.content);
+  if (snippet) {
+    const snipEl = document.createElement("span");
+    snipEl.className = "org-spec-tile-snippet";
+    snipEl.textContent = snippet;
+    meta.appendChild(snipEl);
   }
   left.append(iconEl, meta);
 
@@ -205,7 +217,7 @@ function buildSpecTile(comp, inst, onMutated) {
   if (badge) {
     const cBadge = document.createElement("button");
     cBadge.type = "button";
-    cBadge.className = "spec-content-badge";
+    cBadge.className = `spec-content-badge${badge.complete === false ? " is-incomplete" : ""}`;
     cBadge.textContent = badge.label;
     cBadge.title = badge.title;
     cBadge.onpointerdown = e => e.stopPropagation();

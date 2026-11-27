@@ -1,6 +1,7 @@
 import { api } from "../../api.js";
 import { state, emit, on } from "../../store.js";
 import { getSpecModeStructure, getActiveModeCounts } from "./specModes.js";
+import { capturePositionsByKey, animateFromKeyedPositions, animateLabelWipe } from "./organizeFlip.js";
 
 export function markPresetModified() {
   if (!state.activePresetName) return;
@@ -255,6 +256,56 @@ export function applyRemoteDraft(draft) {
     emit("organize:render");
   } finally {
     state.live.suppressDraftPush = false;
+  }
+}
+
+export function applyAnimatedAgentDraft(nextDraft, payload = {}) {
+  if (!nextDraft) return;
+  const track = document.getElementById("orgCanvasTrack");
+  const prevCardRects = capturePositionsByKey(track, ".org-comp-card", "compId");
+  const prevSpecRects = capturePositionsByKey(track, ".org-spec-tile", "specId");
+  const titleEl = document.getElementById("promptTitle");
+  const descEl = document.getElementById("promptDescription");
+  const prevTitle = titleEl ? titleEl.value : (state.prompt.title || "");
+  const prevDesc = descEl ? descEl.value : (state.prompt.description || "");
+  const prevCompTitles = new Map((state.prompt.components || []).map(c => [c.id, c.title || ""]));
+
+  if (payload?.op === "add-comp" && payload.targetCompId) {
+    state.lastAddedOrgId = payload.targetCompId;
+  }
+  if (payload?.op === "add-spec" && payload.targetSpecId) {
+    state.lastAddedSpecOrgId = payload.targetSpecId;
+  }
+
+  applyRemoteDraft(nextDraft);
+
+  const movedCardIds = animateFromKeyedPositions(track, ".org-comp-card", "compId", prevCardRects, 260);
+  animateFromKeyedPositions(
+    track,
+    ".org-spec-tile",
+    "specId",
+    prevSpecRects,
+    220,
+    el => movedCardIds.has(el.dataset?.compId)
+  );
+
+  const nextTitle = nextDraft.title || "";
+  const nextDesc = nextDraft.description || "";
+  if (prevTitle !== nextTitle) {
+    animateLabelWipe(titleEl, prevTitle, nextTitle);
+  }
+  if (prevDesc !== nextDesc) {
+    animateLabelWipe(descEl, prevDesc, nextDesc);
+  }
+  if (track) {
+    (nextDraft.components || []).forEach(c => {
+      const oldT = prevCompTitles.get(c.id);
+      const nextT = c.title || "";
+      if (oldT !== undefined && oldT !== nextT) {
+        const inp = track.querySelector(`.org-comp-card[data-comp-id="${CSS.escape(c.id)}"] .org-comp-title-input`);
+        animateLabelWipe(inp, oldT, nextT);
+      }
+    });
   }
 }
 

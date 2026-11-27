@@ -249,7 +249,7 @@ public static class AgentsMdComposer
         {
             sb.AppendLine();
             sb.AppendLine("### Live GUI Control Protocol (`mby-pc.bat`)");
-            sb.AppendLine("1. **Configure Metadata (Step 2 - Format)**: `.\\mby-pc.bat ui view format --json` -> `.\\mby-pc.bat draft patch --title \"...\" --desc \"...\" --container session|article|quiz --json`");
+            sb.AppendLine("1. **Configure Metadata (Step 2 - Details)**: `.\\mby-pc.bat ui view details --json` -> `.\\mby-pc.bat draft patch --title \"...\" --desc \"...\" --container session|article|quiz --json`");
             sb.AppendLine("2. **Organize Cards & Specs (Step 3 - Organize)**: `.\\mby-pc.bat ui view organize --json` -> `.\\mby-pc.bat draft comp add|rename|move|rm` & `.\\mby-pc.bat draft spec add|update|move|rm`");
             sb.AppendLine("3. **Populate Spec Content Live**: `.\\mby-pc.bat draft spec set-content <specId> --raw \"...\" --json` (or `--file ./notes.md` or `--image assets/fig.png --caption \"...\"`)");
             sb.AppendLine("4. **Compile & Open Viewer (Step 4 -> Step 5)**: `.\\mby-pc.bat finalize --json` (builds via `mby batch -` and opens Step 5 Viewer automatically)");

@@ -282,6 +282,28 @@ public static partial class WorkspaceMarkdownAssembler
         }
 
         var body = (rawBody ?? string.Empty).TrimStart('\uFEFF').Trim();
+        if (topic == "flashcard")
+        {
+            var target = FormatMarkdownImageTarget(relImg);
+            var imgLine = $"![]({target})";
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return $":::flashcard\n:::front\n{imgLine}\n:::back\nAnswer\n:::";
+            }
+
+            if (StartsWithOuterDirective(body, "flashcard"))
+            {
+                return InjectImageIntoFlashcardFront(body, imgLine);
+            }
+
+            if (IsInnerSubDirective(body))
+            {
+                return $":::flashcard\n{InjectImageIntoFlashcardFront(body, imgLine)}\n:::";
+            }
+
+            return $":::flashcard\n:::front\n{imgLine}\n{body}\n:::back\nAnswer\n:::";
+        }
+
         if (StartsWithOuterDirective(body, topic))
         {
             return InjectImageIntoPrefencedDirective(body, relImg);
@@ -322,6 +344,29 @@ public static partial class WorkspaceMarkdownAssembler
         var firstLine = (nlIdx >= 0 ? content[..nlIdx] : content).TrimEnd('\r').Trim();
         return firstLine.Equals(":::front", StringComparison.OrdinalIgnoreCase) ||
                firstLine.Equals(":::back", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string InjectImageIntoFlashcardFront(string content, string imgLine)
+    {
+        if (content.Contains(imgLine, StringComparison.OrdinalIgnoreCase))
+        {
+            return content;
+        }
+
+        const string frontMarker = ":::front";
+        var idx = content.IndexOf(frontMarker, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0)
+        {
+            return content;
+        }
+
+        var insertPos = content.IndexOf('\n', idx);
+        if (insertPos < 0)
+        {
+            return $"{content}\n{imgLine}";
+        }
+
+        return content.Insert(insertPos + 1, $"{imgLine}\n");
     }
 
     private static string InjectImageIntoPrefencedDirective(string body, string relImg)
@@ -400,6 +445,15 @@ public static partial class WorkspaceMarkdownAssembler
             }
         }
 
+        if (topic == "flashcard" && !string.IsNullOrWhiteSpace(explicitImage))
+        {
+            var imgLine = $"![]({FormatMarkdownImageTarget(explicitImage)})";
+            var wrappedBody = IsInnerSubDirective(content)
+                ? InjectImageIntoFlashcardFront(content, imgLine)
+                : $":::front\n{imgLine}\n{content}\n:::back\nAnswer";
+            return $":::flashcard\n{wrappedBody}\n:::";
+        }
+
         var attrs = BuildDefaultDirectiveAttributes(topic, inst.Subtype, explicitImage, ref requiresPlaceholderImg);
         var header = attrs.Count == 0
             ? $":::{topic}"
@@ -458,7 +512,7 @@ public static partial class WorkspaceMarkdownAssembler
                 break;
         }
 
-        if (!string.IsNullOrWhiteSpace(explicitImage) && topic is not ("relabel" or "diagram-explore"))
+        if (!string.IsNullOrWhiteSpace(explicitImage) && topic is not ("relabel" or "diagram-explore" or "flashcard"))
         {
             attrs.Add($"image=\"{explicitImage}\"");
         }
@@ -468,6 +522,12 @@ public static partial class WorkspaceMarkdownAssembler
 
     private static string BuildImageDirectivePlaceholder(string topic, string? subtype, string relImg, int num)
     {
+        if (topic == "flashcard")
+        {
+            var target = FormatMarkdownImageTarget(relImg);
+            return $":::flashcard\n:::front\n![]({target})\nFlashcard Front {num}\n:::back\nFlashcard Answer {num}\n:::";
+        }
+
         var dummy = false;
         var attrs = BuildDefaultDirectiveAttributes(topic, subtype, relImg, ref dummy);
         if (topic == "numeric")
@@ -515,7 +575,9 @@ public static partial class WorkspaceMarkdownAssembler
             "table" => $":::table{{title=\"Table {num}\"}}\n| Feature | Entity A | Entity B |\n| --- | --- | --- |\n| Property | Value A | Value B |\n:::",
             "diagram-explore" => BuildImagePlaceholderDirective("diagram-explore", $"Interactive Diagram {num}", "- Landmark A: Placeholder annotation.", ref requiresPlaceholderImg),
             "reveal" => $":::reveal{{title=\"Step Reveal {num}\"}}\n> Step 1\nPlaceholder reveal step.\n:::",
-            "mcq" => $":::mcq{{{(string.Equals(subtype, "multi", StringComparison.OrdinalIgnoreCase) ? "multi=true" : "")}}}\nMCQ Placeholder {num}: replace with stem.\n- [x] Correct Option\n- [ ] Distractor Option\n:::",
+            "mcq" => string.Equals(subtype, "multi", StringComparison.OrdinalIgnoreCase)
+                ? $":::mcq{{multi=true}}\nMCQ Placeholder {num}: replace with stem.\n- [x] Correct Option\n- [ ] Distractor Option\n:::"
+                : $":::mcq\nMCQ Placeholder {num}: replace with stem.\n- [x] Correct Option\n- [ ] Distractor Option\n:::",
             "flashcard" => $":::flashcard\n:::front\nFlashcard Front {num}\n:::back\nFlashcard Answer {num}\n:::",
             "fill-blank" => $":::fill-blank{{fuzzy=true}}\nPlaceholder term {num}: {{{{answer}}}}.\n:::",
             "assertion-reason" => $":::assertion-reason{{answer=\"both-explain\" scheme=\"{(subtype == "5opt" ? "5opt" : "4opt")}\"}}\nA: Assertion placeholder {num}.\nR: Reason placeholder {num}.\n:::",

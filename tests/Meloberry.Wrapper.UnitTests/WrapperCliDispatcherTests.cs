@@ -272,7 +272,7 @@ public sealed class WrapperCliDispatcherTests : IDisposable
 
             var textOut = cLiveText.StdOut.Trim();
             Assert.False(textOut.StartsWith('{'), $"Expected human summary text, got raw JSON: {textOut}");
-            Assert.Contains("Updated draft metadata", textOut);
+            Assert.Contains("Updated title \"Live Human Output\"", textOut);
 
             var cUiView = new CaptureConsole();
             Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "ui", "view", "organize"], cUiView));

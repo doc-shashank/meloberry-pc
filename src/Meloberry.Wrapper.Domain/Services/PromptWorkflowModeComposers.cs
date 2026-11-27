@@ -66,7 +66,7 @@ internal static class PromptWorkflowModeComposers
 
         sb.AppendLine("## Next Action");
         sb.AppendLine();
-        sb.AppendLine("Click **Finalize & Build WebApp** in Review (or run `.\\mby-pc.bat finalize --json`) to assemble modular Markdown, compile via `mby batch -`, and launch Step 5 Viewer.");
+        sb.AppendLine("Click **Finalize & Build WebApp** in Finalize (or run `.\\mby-pc.bat finalize --json`) to assemble modular Markdown, compile via `mby batch -`, and launch Step 5 Viewer.");
 
         var markdown = sb.ToString().TrimEnd() + Environment.NewLine;
         return new ComposedPrompt(markdown, markdown.Length, AgentsMdComposer.EstimateTokens(markdown));
@@ -100,8 +100,8 @@ internal static class PromptWorkflowModeComposers
         sb.AppendLine("Drive Meloberry PC visually so the user sees every step live in the desktop app:");
         sb.AppendLine("1. **Inspect & Discover**:");
         sb.AppendLine("   - `.\\mby-pc.bat prime --json` | `.\\mby-pc.bat status --json` | `.\\mby-pc.bat draft get --json`");
-        sb.AppendLine("2. **Configure Metadata (Step 2 - Format)**:");
-        sb.AppendLine("   - `.\\mby-pc.bat ui view format --json`");
+        sb.AppendLine("2. **Configure Metadata (Step 2 - Details)**:");
+        sb.AppendLine("   - `.\\mby-pc.bat ui view details --json`");
         sb.AppendLine("   - `.\\mby-pc.bat draft patch --title \"...\" --desc \"...\" --container session|article|quiz --json`");
         sb.AppendLine("3. **Organize Cards & Specs (Step 3 - Organize)**:");
         sb.AppendLine("   - `.\\mby-pc.bat ui view organize --json`");
@@ -201,9 +201,14 @@ internal static class PromptWorkflowModeComposers
                     }
                 }
             }
-            else if (comp.Selections.Count > 0)
+            else if (comp.Selections.Any(s => s.Enabled))
             {
-                total += comp.Selections.Sum(s => Math.Max(1, s.DesiredCount ?? 1));
+                total += comp.Selections.Where(s => s.Enabled).Sum(s => Math.Max(1, s.DesiredCount ?? 1));
+            }
+            else
+            {
+                // Empty component blocks Finalize just like an unfilled spec
+                total++;
             }
         }
 

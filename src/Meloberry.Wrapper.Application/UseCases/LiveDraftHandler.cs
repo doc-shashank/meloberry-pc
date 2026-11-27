@@ -145,17 +145,23 @@ public sealed class LiveDraftHandler(
                 return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Component '{req.TargetId}' not found."));
             }
 
-            if (!string.IsNullOrWhiteSpace(req.Title))
-            {
-                comps[idx] = comps[idx] with { Title = req.Title.Trim() };
-            }
+            var oldTitle = string.IsNullOrWhiteSpace(comps[idx].Title) ? comps[idx].Kind.ToString() : comps[idx].Title.Trim();
+            var newTitle = !string.IsNullOrWhiteSpace(req.Title) ? req.Title.Trim() : oldTitle;
+            comps[idx] = comps[idx] with { Title = newTitle };
 
             var updatedCompDraft = current with { Components = comps };
             return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
                 updatedCompDraft,
-                $"Renamed component {comps[idx].Id}",
+                $"Renamed \"{oldTitle}\" to \"{newTitle}\"",
                 comps[idx].Id));
         }
+
+        var changed = new List<string>();
+        if (req.Title is not null) changed.Add($"title \"{req.Title.Trim()}\"");
+        if (req.Container.HasValue) changed.Add($"container {FormatContainerLabel(req.Container.Value)}");
+        if (req.Description is not null) changed.Add("description");
+        if (req.WorkflowMode.HasValue) changed.Add($"mode {FormatWorkflowModeLabel(req.WorkflowMode.Value)}");
+        var metaSummary = changed.Count > 0 ? $"Updated {string.Join(", ", changed)}" : "Updated project details";
 
         var next = current with
         {
@@ -166,7 +172,7 @@ public sealed class LiveDraftHandler(
             WorkflowMode = req.WorkflowMode ?? current.WorkflowMode,
             AllowPlaceholdersOnFinalize = req.AllowPlaceholdersOnFinalize ?? current.AllowPlaceholdersOnFinalize
         };
-        return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(next, "Updated draft metadata"));
+        return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(next, metaSummary));
     }
 
     private static Result<LiveDraftMutationResult> ApplyAddComponent(PromptDraft current, LiveDraftMutationRequest req)
@@ -196,11 +202,12 @@ public sealed class LiveDraftHandler(
             return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Component '{req.TargetId}' not found."));
         }
 
+        var removedComp = comps[idx];
         comps.RemoveAt(idx);
         return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
             current with { Components = comps },
-            $"Removed component {req.TargetId}",
-            req.TargetId));
+            $"Removed {removedComp.Kind} \"{removedComp.Title}\"",
+            removedComp.Id));
     }
 
     private static Result<LiveDraftMutationResult> ApplyMoveComponent(PromptDraft current, LiveDraftMutationRequest req)
@@ -223,7 +230,7 @@ public sealed class LiveDraftHandler(
         comps.Insert(targetIdx, item);
         return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
             current with { Components = comps },
-            $"Moved component {item.Id} to index {targetIdx}",
+            $"Moved \"{item.Title}\" to position {targetIdx + 1}",
             item.Id));
     }
 
@@ -258,9 +265,10 @@ public sealed class LiveDraftHandler(
 
         var updatedComp = SyncSelectionsFromOrderedItems(comp with { OrderedItems = ordered }, topic, req.Notes);
         comps[compIdx] = updatedComp;
+        var specWord = qty == 1 ? $"{topic} spec" : $"{qty} {topic} specs";
         return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
             current with { Components = comps },
-            $"Added {qty} {topic} spec(s) to {comp.Title}",
+            $"Added {specWord} to \"{comp.Title}\"",
             comp.Id,
             lastSpecId));
     }
@@ -289,9 +297,12 @@ public sealed class LiveDraftHandler(
                 : existing.Subtype;
             ordered[sIdx] = existing with { Subtype = nextSubtype };
             comps[c] = SyncSelectionsFromOrderedItems(comp with { OrderedItems = ordered }, existing.Topic, req.Notes, req.Modes);
+            var updateDetail = req.Subtype is not null
+                ? (string.IsNullOrWhiteSpace(req.Subtype) ? "cleared subtype" : $"subtype -> {req.Subtype.Trim()}")
+                : (req.Notes is not null ? "updated notes" : "updated options");
             return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
                 current with { Components = comps },
-                $"Updated {existing.Topic} spec in {comp.Title}",
+                $"Updated {existing.Topic} ({updateDetail}) in \"{comp.Title}\"",
                 comp.Id,
                 existing.Id));
         }
@@ -426,9 +437,16 @@ public sealed class LiveDraftHandler(
 
             ordered[sIdx] = ordered[sIdx] with { Content = contentSource };
             comps[c] = SyncSelectionsFromOrderedItems(comp with { OrderedItems = ordered }, ordered[sIdx].Topic, req.Notes);
+            var contentSummary = mode switch
+            {
+                SpecContentMode.RawText => $"Filled {ordered[sIdx].Topic} text in \"{comp.Title}\"",
+                SpecContentMode.MarkdownFile => $"Attached {Path.GetFileName(normalizedRelMd)} to {ordered[sIdx].Topic}",
+                SpecContentMode.ImageFile => $"Attached {Path.GetFileName(normalizedRelImg)} to {ordered[sIdx].Topic}",
+                _ => $"Cleared {ordered[sIdx].Topic} content"
+            };
             return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
                 current with { Components = comps },
-                $"Updated {ordered[sIdx].Topic} content ({mode})",
+                contentSummary,
                 comp.Id,
                 ordered[sIdx].Id));
         }
@@ -563,4 +581,20 @@ public sealed class LiveDraftHandler(
             Selections = mergedSelections
         };
     }
+
+    private static string FormatContainerLabel(ContainerKind container) => container switch
+    {
+        ContainerKind.Session => "Session",
+        ContainerKind.StandaloneArticle => "Standalone Article",
+        ContainerKind.StandaloneQuiz => "Standalone Quiz",
+        _ => container.ToString()
+    };
+
+    private static string FormatWorkflowModeLabel(WorkflowMode mode) => mode switch
+    {
+        WorkflowMode.Direct => "Build Directly",
+        WorkflowMode.LiveAgent => "Live Agent",
+        WorkflowMode.ClassicPrompt => "Classic Prompt",
+        _ => mode.ToString()
+    };
 }

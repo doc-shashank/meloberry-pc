@@ -575,43 +575,7 @@ public static class SessionScaffoldGenerator
             return finalSequence;
         }
 
-        var list = new List<OrderedSpecInstance>();
-        foreach (var sel in comp.Selections.Where(s => s.Enabled))
-        {
-            var count = Math.Clamp(sel.DesiredCount ?? 1, 1, 50);
-            if (sel.ModeCounts is { Count: > 0 } && sel.ModeCounts.Values.Any(v => v > 0))
-            {
-                var emitted = 0;
-                foreach (var kv in sel.ModeCounts)
-                {
-                    if (kv.Value <= 0 || string.IsNullOrWhiteSpace(kv.Key))
-                    {
-                        continue;
-                    }
-
-                    for (var c = 0; c < kv.Value && emitted < count; c++)
-                    {
-                        emitted++;
-                        list.Add(new OrderedSpecInstance($"{sel.Topic}_{emitted}", sel.Topic, emitted, kv.Key));
-                    }
-                }
-
-                while (emitted < count)
-                {
-                    emitted++;
-                    list.Add(new OrderedSpecInstance($"{sel.Topic}_{emitted}", sel.Topic, emitted));
-                }
-            }
-            else
-            {
-                for (var i = 1; i <= count; i++)
-                {
-                    list.Add(new OrderedSpecInstance($"{sel.Topic}_{i}", sel.Topic, i));
-                }
-            }
-        }
-
-        return list;
+        return SpecOrderExpander.Expand(comp, useGlobalIndexInId: false);
     }
 
     private static string Slugify(string raw)

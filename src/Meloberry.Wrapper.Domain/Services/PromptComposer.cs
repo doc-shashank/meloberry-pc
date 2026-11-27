@@ -77,7 +77,8 @@ public static class PromptComposer
     /// <summary>Returns effective components, enforcing component scoping and 5-MCQ fallback for empty quizzes.</summary>
     public static IReadOnlyList<PromptComponentPlan> ResolveEffectiveComponents(
         PromptDraft draft,
-        IReadOnlyDictionary<string, SpecTopicItem> catalogByTopic)
+        IReadOnlyDictionary<string, SpecTopicItem> catalogByTopic,
+        bool includeEmptyQuizFallback = true)
     {
         if (draft.Components is { Count: > 0 })
         {
@@ -98,7 +99,7 @@ public static class PromptComposer
                     .Where(s => s.Enabled && (!catalogByTopic.TryGetValue(s.Topic, out var meta) || IsAllowedInComponent(comp.Kind, meta.Category)))
                     .ToList();
 
-                if (comp.Kind == ComponentKind.Quiz && validSelections.Count == 0)
+                if (includeEmptyQuizFallback && comp.Kind == ComponentKind.Quiz && validSelections.Count == 0)
                 {
                     validSelections.Add(DefaultFiveMcqFallback);
                 }
@@ -114,7 +115,7 @@ public static class PromptComposer
 
         // Legacy flat Selections compatibility + StandaloneQuiz 5-MCQ fallback.
         var active = FilterSelectionsForContainer(draft.Container, draft.Selections, catalogByTopic).ToList();
-        if (draft.Container == ContainerKind.StandaloneQuiz && active.Count == 0)
+        if (includeEmptyQuizFallback && draft.Container == ContainerKind.StandaloneQuiz && active.Count == 0)
         {
             active.Add(DefaultFiveMcqFallback);
         }
@@ -154,7 +155,10 @@ public static class PromptComposer
         ArgumentNullException.ThrowIfNull(catalog);
 
         var catalogByTopic = catalog.ToDictionary(s => s.Topic, StringComparer.OrdinalIgnoreCase);
-        var components = ResolveEffectiveComponents(draft, catalogByTopic);
+        var components = ResolveEffectiveComponents(
+            draft,
+            catalogByTopic,
+            includeEmptyQuizFallback: draft.WorkflowMode == WorkflowMode.ClassicPrompt);
         if (draft.WorkflowMode == WorkflowMode.Direct)
         {
             return PromptWorkflowModeComposers.ComposeDirectReadiness(draft, components);

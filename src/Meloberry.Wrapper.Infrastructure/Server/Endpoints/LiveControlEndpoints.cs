@@ -155,13 +155,17 @@ public sealed class LiveControlEndpoints(
                 var fin = res.Value;
                 var viewerUrl = $"{viewerBaseUrl.TrimEnd('/')}{fin.ViewerUrl}";
                 sseHub.MarkRecentlyBroadcastWebApp(fin.WebAppDirectory);
+                var draftRes = await liveDraft.GetDraftAsync(effectiveWs, ct).ConfigureAwait(false);
+                var displayTitle = draftRes.IsSuccess && !string.IsNullOrWhiteSpace(draftRes.Value.Draft.Title)
+                    ? draftRes.Value.Draft.Title.Trim()
+                    : fin.WorkspaceId;
                 if (isAgent)
                 {
                     sseHub.Broadcast("agent-activity", new
                     {
                         id = activityId,
                         state = "done",
-                        message = $"Built {fin.WorkspaceId}",
+                        message = $"Built \"{displayTitle}\"",
                         detail = fin.WebAppDirectory,
                         level = "info",
                         exitCode = 0,
@@ -174,6 +178,7 @@ public sealed class LiveControlEndpoints(
                     slotId = fin.SlotId,
                     url = viewerUrl,
                     workspaceId = fin.WorkspaceId,
+                    title = displayTitle,
                     webAppDirectory = fin.WebAppDirectory,
                     source = isAgent ? "agent" : "ui"
                 });

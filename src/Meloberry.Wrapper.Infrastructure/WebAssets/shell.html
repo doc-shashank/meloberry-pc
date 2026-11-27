@@ -611,34 +611,41 @@
   <div id="specContentModal" class="modal-backdrop hidden">
     <div class="modal-card spec-content-modal-card">
       <div class="modal-head">
-        <div class="row gap-8">
-          <h3 id="specContentModalTitle">Edit Spec Content</h3>
+        <div class="row gap-8 wrap">
+          <div class="row gap-4" id="specModalStepper">
+            <button id="btnSpecModalPrev" class="btn btn-xs btn-ghost" type="button" title="Save &amp; previous spec">&larr;</button>
+            <span id="specModalCounter" class="muted" style="font-size:11.5px;min-width:34px;text-align:center;">1/1</span>
+            <button id="btnSpecModalNext" class="btn btn-xs btn-ghost" type="button" title="Save &amp; next spec">&rarr;</button>
+          </div>
+          <h3 id="specContentModalTitle">Edit Spec</h3>
           <span id="specContentTopicBadge" class="pill pill-accent"></span>
         </div>
         <div class="row gap-6">
+          <button id="btnInsertSpecStarter" class="btn btn-xs btn-ghost" type="button" title="Insert Markdown starter template">+ Starter</button>
           <button id="btnToggleSpecSyntax" class="btn btn-xs btn-ghost hidden" type="button" aria-expanded="false">? Syntax</button>
           <button id="btnCloseSpecContentModal" class="btn btn-xs btn-ghost" type="button">Close</button>
         </div>
       </div>
       <div class="modal-body spec-content-modal-body">
-        <div class="row-between wrap gap-8">
+        <div id="specModalSubtypesRow" class="row gap-6 wrap hidden"></div>
+
+        <div id="specContentModeBar" class="row-between wrap gap-8">
           <div class="segmented segmented-inline" id="specContentModeTabs">
-            <button class="seg-btn active" type="button" data-spec-content-mode="none">None</button>
-            <button id="tabSpecContentImage" class="seg-btn hidden" type="button" data-spec-content-mode="imageFile">Image</button>
-            <button class="seg-btn" type="button" data-spec-content-mode="rawText">Raw Text</button>
-            <button class="seg-btn" type="button" data-spec-content-mode="markdownFile">Markdown File (.md)</button>
+            <button class="seg-btn active" type="button" data-spec-content-mode="rawText">Write Content</button>
+            <button class="seg-btn" type="button" data-spec-content-mode="markdownFile">Link .md File</button>
           </div>
           <span id="specContentModeStatus" class="muted"></span>
         </div>
 
         <pre id="specContentSyntaxHint" class="spec-content-syntax-hint hidden"></pre>
 
-        <div id="specContentImagePane" class="hidden">
+        <div id="specContentImagePane" class="spec-image-attach-box hidden">
           <div class="row gap-8">
-            <input id="specContentImagePath" type="text" class="input" style="flex:1 1 auto;" placeholder="assets/diagram.png (browse or extract below)" readonly />
-            <button id="btnPickSpecImageFile" class="btn btn-h30 btn-primary" type="button">Browse Image...</button>
+            <input id="specContentImagePath" type="text" class="input" style="flex:1 1 auto;" placeholder="Attach workspace image (assets/diagram.png) or extract below..." readonly />
+            <button id="btnPickSpecImageFile" class="btn btn-h30 btn-ghost" type="button">Browse Image...</button>
+            <button id="btnClearSpecImageFile" class="btn btn-h30 btn-ghost hidden" type="button" title="Remove attached image">&times;</button>
           </div>
-          <div id="specContentImageMetaFields" class="form-grid mt-8">
+          <div id="specContentImageMetaFields" class="form-grid mt-8 hidden">
             <label class="field"><span>Caption (optional)</span><input id="specContentImageCaption" type="text" class="input" placeholder="Figure 1: ..." /></label>
             <label class="field"><span>Alt Text (optional)</span><input id="specContentImageAlt" type="text" class="input" placeholder="Short description" /></label>
           </div>
@@ -646,16 +653,10 @@
             <img id="specImageDirectPreview" class="melomg-preview-thumb" alt="Selected image preview" />
             <div class="muted" id="specImageDirectPreviewPath" style="font-family:'Cascadia Code',Consolas,monospace;font-size:11.5px;word-break:break-all;"></div>
           </div>
-          <div id="specImageBodyWrap" class="hidden mt-8">
-            <label class="field">
-              <span>Directive Body / Prompt (optional)</span>
-              <textarea id="specContentImageBody" class="textarea spec-content-raw-input" rows="4" style="min-height:92px;" placeholder="Add question prompt, options, landmarks, or relabel boxes..."></textarea>
-            </label>
-          </div>
         </div>
 
         <div id="specContentRawPane" class="hidden">
-          <textarea id="specContentRawInput" class="textarea spec-content-raw-input" rows="8" placeholder="Write plain text, mby :::directive blocks, or relative asset paths (e.g. assets/fig_1.1.png)..."></textarea>
+          <textarea id="specContentRawInput" class="textarea spec-content-raw-input" rows="8" placeholder="Write content here or click + Starter for a ready-to-edit template..."></textarea>
         </div>
 
         <div id="specContentFilePane" class="hidden">
@@ -711,9 +712,12 @@
           </div>
         </details>
       </div>
-      <div class="modal-foot">
+      <div class="modal-foot spec-content-modal-foot">
         <button id="btnClearSpecContent" class="btn btn-h30 btn-danger-ghost" type="button">Clear Content</button>
-        <button id="btnSaveSpecContent" class="btn btn-h30 btn-primary" type="button">Save &amp; Done</button>
+        <div class="row gap-8">
+          <span class="muted" style="font-size:11px;">Ctrl+Enter to save &amp; next</span>
+          <button id="btnSaveSpecContent" class="btn btn-h30 btn-primary" type="button">Save &amp; Done</button>
+        </div>
       </div>
     </div>
   </div>

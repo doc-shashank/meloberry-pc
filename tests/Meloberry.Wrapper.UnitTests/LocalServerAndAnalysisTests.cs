@@ -480,6 +480,7 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/organizeDrag.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/organizeFlip.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/organize.js"));
+        Assert.True(visited.ContainsKey("/shell/js/views/prompt/specTemplates.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/format.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/review.js"));
         var allJs = string.Join("\n", visited.Values);
@@ -632,10 +633,11 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         using var http = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
 
         var html = await http.GetStringAsync("/");
-        // Phase 3: Dedicated Image tab & pane
-        Assert.Contains("tabSpecContentImage", html);
+        // Unified inline Image Attachment pane (replaced standalone Image tab in beta-4)
+        Assert.DoesNotContain("tabSpecContentImage", html);
         Assert.Contains("specContentImagePane", html);
         Assert.Contains("btnPickSpecImageFile", html);
+        Assert.Contains("btnClearSpecImageFile", html);
         // Phase 4: Mandatory Initialize gate removed; Copy button moved into #setupStagedCard
         Assert.DoesNotContain("id=\"btnInitializeWorkspace\"", html);
         Assert.DoesNotContain("init-footer-card", html);
@@ -851,6 +853,205 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         finally
         {
             await server.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task LiveControlEndpoints_Finalize_BroadcastsDraftTitleInAgentActivityAndWebappBuilt()
+    {
+        var dataDir = Path.Combine(_tempRoot, "fin_title_data");
+        var ws = Path.Combine(_tempRoot, "fin_title_ws");
+        Directory.CreateDirectory(ws);
+        await File.WriteAllTextAsync(Path.Combine(ws, "intro.md"), "# Cardiac Physiology\nBody");
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IAppShutdownCoordinator>(new NoopShutdown());
+        services.AddSingleton<INativeDialogService>(new NoopDialogs());
+        services.AddSingleton<IExternalUrlLauncher>(new NoopLauncher());
+        services.AddWrapperApplication(typeof(LocalHttpWrapperServer).Assembly);
+        services.AddWrapperInfrastructure(dataDir);
+        services.AddSingleton<IMbyCliClient>(new StubTitleBatchClient(ws));
+
+        await using var provider = services.BuildServiceProvider();
+        var paths = provider.GetRequiredService<IWrapperDataPaths>();
+        Directory.CreateDirectory(paths.AppsDirectory);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "mby-cli-2.1.2.exe"), [(byte)'M', (byte)'Z', 1]);
+
+        var settingsStore = provider.GetRequiredService<ISettingsStore>();
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+
+        var draftStore = provider.GetRequiredService<IWorkspaceDraftStore>();
+        await draftStore.SaveAsync(ws, new PromptDraft(
+            Container: ContainerKind.StandaloneArticle,
+            Title: "Cardiac Cycle Mastery",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [new("text", true, 1)],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "a1",
+                    ComponentKind.Article,
+                    "Overview",
+                    [new("text", true, 1)],
+                    [new("s1", "text", 1, null, new SpecContentSource(SpecContentMode.MarkdownFile, null, "intro.md"))])
+            ]));
+
+        var server = provider.GetRequiredService<LocalHttpWrapperServer>();
+        var sseHub = provider.GetRequiredService<SseEventHub>();
+        server.Start();
+        try
+        {
+            using var sseCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var sseClient = new HttpClient { BaseAddress = new Uri(server.BaseUrl), Timeout = Timeout.InfiniteTimeSpan };
+            using var sseResp = await sseClient.GetAsync($"/api/events?token={server.AuthToken}", HttpCompletionOption.ResponseHeadersRead, sseCts.Token);
+            Assert.Equal(HttpStatusCode.OK, sseResp.StatusCode);
+
+            var received = new List<string>();
+            var readerTask = Task.Run(async () =>
+            {
+                using var sr = new StreamReader(await sseResp.Content.ReadAsStreamAsync(sseCts.Token));
+                while (!sseCts.IsCancellationRequested)
+                {
+                    var line = await sr.ReadLineAsync(sseCts.Token);
+                    if (line is null) break;
+                    if (line.Length > 0) received.Add(line);
+                }
+            }, sseCts.Token);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (sseHub.SubscriberCount == 0 && sw.ElapsedMilliseconds < 1500)
+            {
+                await Task.Delay(20);
+            }
+
+            using var apiClient = new HttpClient { BaseAddress = new Uri(server.BaseUrl) };
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/api/live/finalize")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    workspacePath = ws,
+                    allowPlaceholders = false,
+                    verifyStaticOnly = true,
+                    source = "agent"
+                }), Encoding.UTF8, "application/json")
+            };
+            req.Headers.Add("X-Mby-Token", server.AuthToken);
+
+            var finResp = await apiClient.SendAsync(req);
+            var finJson = await finResp.Content.ReadAsStringAsync();
+            Assert.True(finResp.StatusCode == HttpStatusCode.OK, $"Expected 200 OK, got {(int)finResp.StatusCode}: {finJson}");
+
+            await Task.Delay(150);
+            sseCts.Cancel();
+            try { await readerTask; } catch (OperationCanceledException) { }
+
+            var dataJsonLines = received
+                .Where(l => l.StartsWith("data: ", StringComparison.Ordinal))
+                .Select(l => l["data: ".Length..])
+                .ToList();
+
+            var foundAgentBuiltMsg = false;
+            var foundWebAppBuiltTitle = false;
+            foreach (var rawData in dataJsonLines)
+            {
+                using var doc = JsonDocument.Parse(rawData);
+                if (doc.RootElement.TryGetProperty("message", out var msgEl) &&
+                    msgEl.GetString() == "Built \"Cardiac Cycle Mastery\"")
+                {
+                    foundAgentBuiltMsg = true;
+                }
+
+                if (doc.RootElement.TryGetProperty("title", out var titleEl) &&
+                    titleEl.GetString() == "Cardiac Cycle Mastery")
+                {
+                    foundWebAppBuiltTitle = true;
+                }
+            }
+
+            Assert.True(foundAgentBuiltMsg, $"Expected agent-activity message 'Built \"Cardiac Cycle Mastery\"' in SSE stream:\n{string.Join("\n", received)}");
+            Assert.True(foundWebAppBuiltTitle, $"Expected webapp-built title 'Cardiac Cycle Mastery' in SSE stream:\n{string.Join("\n", received)}");
+        }
+        finally
+        {
+            await server.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task ShellHtmlCssAndJs_IncludeBeta4LayoutNotificationAnimationAndSpecEditorUpgrades()
+    {
+        using var http = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
+
+        // Bundled CSS invariants (scroll fix, right-edge scrollbar, Img* warn badge, popover nowrap, notification severity, label wipe, spec editor)
+        var cssResp = await http.GetAsync("/shell/shell.css");
+        Assert.Equal(HttpStatusCode.OK, cssResp.StatusCode);
+        var css = await cssResp.Content.ReadAsStringAsync();
+
+        Assert.Matches(new Regex(@"\.readiness-comp-group\s*\{[^}]*flex:\s*0\s+0\s+auto;", RegexOptions.Singleline), css);
+        Assert.Matches(new Regex(@"@media\s*\(max-height:\s*580px\)\s*\{[^}]*#viewReview\s*\{\s*overflow-y:\s*auto;\s*\}", RegexOptions.Singleline), css);
+        Assert.Contains(".pill-warn", css);
+        Assert.Matches(new Regex(@"\.org-spec-list\s*\{[^}]*margin-right:\s*-11px;", RegexOptions.Singleline), css);
+        Assert.Contains(".spec-content-badge.is-incomplete", css);
+        Assert.Contains(".org-comp-card.kind-quiz .spec-content-badge.is-incomplete", css);
+        Assert.Matches(new Regex(@"\.add-spec-item\s+code\s*\{[^}]*white-space:\s*nowrap;", RegexOptions.Singleline), css);
+        Assert.Contains(".notif-item.kind-err", css);
+        Assert.Contains(".notif-item.kind-warn", css);
+        Assert.Contains(".notif-item.kind-ok", css);
+        Assert.Contains(".notif-item.kind-info", css);
+        Assert.Contains(".notif-kind-dot", css);
+        Assert.Contains(".notif-code-pill", css);
+        Assert.Contains(".notif-sublist", css);
+        Assert.Contains(".label-wipe-out", css);
+        Assert.Contains(".label-wipe-in", css);
+        Assert.Contains("@keyframes labelWipeOut", css);
+        Assert.Contains("@keyframes labelWipeIn", css);
+        Assert.Contains(".spec-image-attach-box", css);
+        Assert.Contains(".org-spec-tile-head-row", css);
+        Assert.Contains(".org-spec-tile-snippet", css);
+
+        // Streamlined #specContentModal HTML markup (2 tabs, stepper, inline subtypes, starter, image clear; no None tab or split body)
+        var html = await http.GetStringAsync("/");
+        Assert.Contains("id=\"specModalStepper\"", html);
+        Assert.Contains("id=\"btnSpecModalPrev\"", html);
+        Assert.Contains("id=\"btnSpecModalNext\"", html);
+        Assert.Contains("id=\"specModalCounter\"", html);
+        Assert.Contains("id=\"btnInsertSpecStarter\"", html);
+        Assert.Contains("id=\"specModalSubtypesRow\"", html);
+        Assert.Contains("id=\"specContentModeBar\"", html);
+        Assert.Contains("id=\"btnClearSpecImageFile\"", html);
+        Assert.Contains("data-spec-content-mode=\"rawText\"", html);
+        Assert.Contains("data-spec-content-mode=\"markdownFile\"", html);
+        Assert.DoesNotContain("data-spec-content-mode=\"none\"", html);
+        Assert.DoesNotContain("id=\"tabSpecContentImage\"", html);
+        Assert.DoesNotContain("id=\"specContentImageBody\"", html);
+
+        // main.js animated draft wiring & dead helper removal in specContentModal.js
+        var mainJs = await http.GetStringAsync("/shell/js/main.js");
+        Assert.Contains("applyAnimatedAgentDraft", mainJs);
+        var modalJs = await http.GetStringAsync("/shell/js/views/prompt/specContentModal.js");
+        Assert.DoesNotContain("injectImageIntoRawText", modalJs);
+    }
+
+    private sealed class StubTitleBatchClient(string ws) : IMbyCliClient
+    {
+        public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+
+        public async Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default)
+        {
+            var webDir = Path.Combine(ws, "cardiac_web");
+            Directory.CreateDirectory(webDir);
+            await File.WriteAllTextAsync(Path.Combine(webDir, "index.html"), "<html><body>ok</body></html>", ct);
+            await File.WriteAllTextAsync(Path.Combine(webDir, "app.js"), "console.log('ok');", ct);
+            return Result<MbyBatchExecutionResult>.Success(new MbyBatchExecutionResult("Session_RawId_999", webDir, 2));
         }
     }
 

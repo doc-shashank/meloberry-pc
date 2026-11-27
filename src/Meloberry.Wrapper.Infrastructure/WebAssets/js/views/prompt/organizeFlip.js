@@ -1,4 +1,5 @@
 const cleanupTimers = new WeakMap();
+const wipeTimers = new WeakMap();
 
 export function capturePositions(containers, itemSelector, excludeEl = null) {
   const containerList = Array.isArray(containers) ? containers.filter(Boolean) : [containers].filter(Boolean);
@@ -14,7 +15,7 @@ export function capturePositions(containers, itemSelector, excludeEl = null) {
 }
 
 export function animateFromPositions(firstRects, durationMs = 190) {
-  if (!firstRects || !firstRects.size) return;
+  if (!firstRects || !firstRects.size) return [];
 
   const moved = [];
   firstRects.forEach((first, el) => {
@@ -32,7 +33,7 @@ export function animateFromPositions(firstRects, durationMs = 190) {
     moved.push(el);
   });
 
-  if (!moved.length) return;
+  if (!moved.length) return [];
 
   void moved[0].offsetWidth;
 
@@ -48,6 +49,8 @@ export function animateFromPositions(firstRects, durationMs = 190) {
       cleanupTimers.set(el, tid);
     });
   });
+
+  return moved;
 }
 
 export function flipReorder(containers, itemSelector, draggedEl, mutateDom, durationMs = 175) {
@@ -57,4 +60,68 @@ export function flipReorder(containers, itemSelector, draggedEl, mutateDom, dura
   const firstRects = capturePositions(containerList, itemSelector, draggedEl);
   mutateDom();
   animateFromPositions(firstRects, durationMs);
+}
+
+export function capturePositionsByKey(container, itemSelector, datasetKey) {
+  const map = new Map();
+  if (!container) return map;
+  container.querySelectorAll(itemSelector).forEach(el => {
+    const key = el.dataset?.[datasetKey];
+    if (key) {
+      map.set(key, el.getBoundingClientRect());
+    }
+  });
+  return map;
+}
+
+export function animateFromKeyedPositions(container, itemSelector, datasetKey, firstRectsByKey, durationMs = 240, skipEl = null) {
+  const movedKeys = new Set();
+  if (!container || !firstRectsByKey || !firstRectsByKey.size) return movedKeys;
+  const matched = new Map();
+  container.querySelectorAll(itemSelector).forEach(el => {
+    if (typeof skipEl === "function" && skipEl(el)) return;
+    const key = el.dataset?.[datasetKey];
+    if (key && firstRectsByKey.has(key)) {
+      matched.set(el, firstRectsByKey.get(key));
+    }
+  });
+  const moved = animateFromPositions(matched, durationMs);
+  moved.forEach(el => {
+    const key = el.dataset?.[datasetKey];
+    if (key) movedKeys.add(key);
+  });
+  return movedKeys;
+}
+
+export function animateLabelWipe(inputEl, prevText, nextText) {
+  if (!inputEl || prevText === nextText) return;
+  if (document.activeElement === inputEl) return;
+
+  const prevTimer = wipeTimers.get(inputEl);
+  if (prevTimer) {
+    clearTimeout(prevTimer);
+    wipeTimers.delete(inputEl);
+  }
+
+  inputEl.value = prevText;
+  inputEl.classList.remove("label-wipe-in", "label-wipe-out");
+  void inputEl.offsetWidth;
+  inputEl.classList.add("label-wipe-out");
+
+  const outTid = setTimeout(() => {
+    if (!inputEl.isConnected || document.activeElement === inputEl) {
+      wipeTimers.delete(inputEl);
+      return;
+    }
+    inputEl.value = nextText;
+    inputEl.classList.remove("label-wipe-out");
+    void inputEl.offsetWidth;
+    inputEl.classList.add("label-wipe-in");
+    const inTid = setTimeout(() => {
+      inputEl.classList.remove("label-wipe-in");
+      wipeTimers.delete(inputEl);
+    }, 260);
+    wipeTimers.set(inputEl, inTid);
+  }, 140);
+  wipeTimers.set(inputEl, outTid);
 }

@@ -330,7 +330,15 @@ public sealed class MarkdownAssemblerAndFinalizeTests : IDisposable
         var res = WorkspaceMarkdownAssembler.Assemble(draft, new Dictionary<string, string>(), allowPlaceholders: false);
         Assert.True(res.IsSuccess);
         var md = res.Value.Files.Values.Single();
-        Assert.Contains("image=\"assets/fig_01.png\"", md);
+        if (topic == "flashcard")
+        {
+            Assert.DoesNotContain(":::flashcard{image=", md);
+            Assert.Contains(":::front\n![](assets/fig_01.png)\n", md);
+        }
+        else
+        {
+            Assert.Contains("image=\"assets/fig_01.png\"", md);
+        }
         Assert.DoesNotContain("imagePath:", md);
         Assert.Contains("assets/fig_01.png", res.Value.ReferencedAssetPaths);
     }
@@ -408,7 +416,8 @@ public sealed class MarkdownAssemblerAndFinalizeTests : IDisposable
         Assert.Contains(":::mcq{multi=true image=\"assets/ecg.png\"}", strictMd);
         Assert.Contains(":::mcq{image=\"assets/custom.png\"}", strictMd);
         Assert.DoesNotContain(":::mcq{image=\"assets/blank_body.png\"}\n:::", strictMd);
-        Assert.Contains(":::flashcard{image=\"assets/valve.png\"}\n:::front\nIdentify structure\n:::back\nMitral valve\n:::", strictMd);
+        Assert.DoesNotContain(":::flashcard{image=", strictMd);
+        Assert.Contains(":::flashcard\n:::front\n![](assets/valve.png)\nIdentify structure\n:::back\nMitral valve\n:::", strictMd);
         Assert.DoesNotContain(":::front{image=", strictMd);
 
         var phRes = WorkspaceMarkdownAssembler.Assemble(draft, new Dictionary<string, string>(), allowPlaceholders: true);
@@ -427,6 +436,55 @@ public sealed class MarkdownAssemblerAndFinalizeTests : IDisposable
 
         var readiness = PromptComposer.Compose(draft with { WorkflowMode = WorkflowMode.Direct }, SpecCatalogDefaults.BuiltInFallbackCatalog);
         Assert.Contains("3 filled, 2 empty", readiness.Markdown);
+    }
+
+    [Fact]
+    public void WorkspaceMarkdownAssembler_FlashcardImageInjectsIntoFront_AndSingleMcqHasNoEmptyBraces()
+    {
+        var draft = new PromptDraft(
+            Container: ContainerKind.StandaloneQuiz,
+            Title: "Valve Flashcards",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections:
+            [
+                new("flashcard", true, 4),
+                new("mcq", true, 3)
+            ],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Valves Quiz",
+                    [new("flashcard", true, 4), new("mcq", true, 3)],
+                    [
+                        new("f1", "flashcard", 1, "diagram", new SpecContentSource(SpecContentMode.ImageFile, ":::front\nIdentify structure\n:::back\nMitral valve", null, "assets/valve.png")),
+                        new("f2", "flashcard", 2, "diagram", new SpecContentSource(SpecContentMode.ImageFile, ":::flashcard\n:::front\nPrefenced front\n:::back\nPrefenced back\n:::", null, "assets/valve 2.png")),
+                        new("f3", "flashcard", 3, "diagram", new SpecContentSource(SpecContentMode.RawText, "imagePath: assets/yaml_valve.png\n:::front\nYAML front\n:::back\nYAML back")),
+                        new("f4", "flashcard", 4, "diagram", new SpecContentSource(SpecContentMode.ImageFile, null, null, "assets/placeholder_valve.png")),
+                        new("m1", "mcq", 1, "single", null),
+                        new("m2", "mcq", 2, "mixed", null),
+                        new("m3", "mcq", 3, "multi", null)
+                    ])
+            ]);
+
+        var res = WorkspaceMarkdownAssembler.Assemble(draft, new Dictionary<string, string>(), allowPlaceholders: true);
+        Assert.True(res.IsSuccess);
+        var md = res.Value.Files.Values.Single();
+
+        Assert.DoesNotContain(":::flashcard{image=", md);
+        Assert.Contains(":::flashcard\n:::front\n![](assets/valve.png)\nIdentify structure\n:::back\nMitral valve\n:::", md);
+        Assert.Contains(":::flashcard\n:::front\n![](<assets/valve 2.png>)\nPrefenced front\n:::back\nPrefenced back\n:::", md);
+        Assert.Contains(":::flashcard\n:::front\n![](assets/yaml_valve.png)\nYAML front\n:::back\nYAML back\n:::", md);
+        Assert.Contains(":::flashcard\n:::front\n![](assets/placeholder_valve.png)\nFlashcard Front 4\n:::back\nFlashcard Answer 4\n:::", md);
+
+        Assert.DoesNotContain(":::mcq{}", md);
+        Assert.Contains(":::mcq\nMCQ Placeholder 1:", md);
+        Assert.Contains(":::mcq\nMCQ Placeholder 2:", md);
+        Assert.Contains(":::mcq{multi=true}\nMCQ Placeholder 3:", md);
     }
 
     public void Dispose()

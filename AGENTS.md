@@ -152,7 +152,8 @@ Wrapper/
 │   │   │   │           ├── review.js
 │   │   │   │           ├── specContentModal.js
 │   │   │   │           ├── specModes.js
-│   │   │   │           └── specPopovers.js
+│   │   │   │           ├── specPopovers.js
+│   │   │   │           └── specTemplates.js
 │   │   │   └── styles/
 │   │   │       ├── base.css
 │   │   │       ├── chrome.css
@@ -296,7 +297,7 @@ Wrapper/
 - `UseCases/ExtractFigureWithMelomgHandler.cs`: Reuses indexed `Doc_*` or runs one-shot `melomg extract --retain-db --offline` to crop PDF figures directly for specs.
 - `UseCases/FinalizeWorkspaceHandler.cs`: Validates organized specs, writes modular Markdown + referenced assets, executes `mby batch -`, and mounts the compiled WebApp.
 - `UseCases/ImportWorkspaceAssetHandler.cs`: Validates and atomically imports external image (`.png/.jpg/.jpeg/.gif/.webp/.bmp/.svg`) or Markdown (`.md/.markdown`) files into `<Workspace>\assets\` or `<Workspace>\notes\` without destructive overwrites.
-- `UseCases/LiveDraftHandler.cs`: Coordinates thread-safe `<Workspace>\.meloberry\pc-draft.json` reads, full saves, structured CLI/UI mutations, and `DraftChanged` events.
+- `UseCases/LiveDraftHandler.cs`: Coordinates thread-safe `<Workspace>\.meloberry\pc-draft.json` reads, full saves, structured CLI/UI mutations with human-first activity summaries (card titles, 1-based positions, friendly labels), and `DraftChanged` events.
 - `UseCases/LoadSpecCatalogHandler.cs`: Loads, caches (by exe mtime), and falls back `mby spec --icons --json` topics/icons plus the virtual `link` helper.
 - `UseCases/ManagedAppsHandler.cs`: Scans `apps\`, resolves `mby`/`melomg` executables, imports local `.exe`s, uninstalls tools, and tracks GitHub tool downloads/updates.
 - `UseCases/ManageLibraryHandler.cs`: Validates and mounts compiled WebApp folders and updates `RecentWebApps` atomically.
@@ -340,7 +341,7 @@ Wrapper/
 - `Server/Endpoints/PromptEndpoints.cs`: HTTP route handler for `/api/specs`, `/api/prompt/*`, and `/api/presets`.
 - `Server/Endpoints/SystemEndpoints.cs`: HTTP route handler for `/api/bootstrap`, `/api/viewer/open`, `/api/self-update/*`, `/api/dialogs/*`, `/api/shell/open-url`, `/api/settings*`, and ViewerPort `/api/analysis`.
 - `Server/Endpoints/WorkspaceEndpoints.cs`: HTTP route handler for `/api/workspace/*`, `/api/workspaces/*`, `/api/melomg/extract-figure`, and `/api/workspace/asset`.
-- `WebAssets/shell.html`: Shell UI HTML host with 5-step Option B workflow (`Setup → Details → Organize → Finalize → Viewer`), zero-mode Step 2 Project Details with collapsible study notes, two-tab Step 4 Finalize Hub, `#specContentModal` with `? Syntax` toggle and collapsible `<details id="specMelomgDetails">`, `<meta name="mby-token">`, and `<script type="module" src="/shell/js/main.js">`.
+- `WebAssets/shell.html`: Shell UI HTML host with 5-step Option B workflow (`Setup → Details → Organize → Finalize → Viewer`), zero-mode Step 2 Project Details with collapsible study notes, two-tab Step 4 Finalize Hub, streamlined `#specContentModal` (Prev/Next stepper, inline subtypes, `+ Starter`, `? Syntax` toggle, 2-tab Write/Link `.md` + inline image attachment strip, collapsible `<details id="specMelomgDetails">`), `<meta name="mby-token">`, and `<script type="module" src="/shell/js/main.js">`.
 - `WebAssets/styles/tokens.css`: Root Berry, Light, and Dark CSS theme custom properties (including `--select-soft` Quiz accent).
 - `WebAssets/styles/paper-theme.css`: Paper theme CSS variables shared between the shell bundle and mounted WebApp fallback injection.
 - `WebAssets/styles/base.css`: Global reset, minimalist scrollbars, typography, `.step-centered-grid`/light cursive `.step-hero` classes, `.sync-wipe-in`, cards, buttons, inputs, chips, dropdowns, and progress bars.
@@ -354,7 +355,7 @@ Wrapper/
 - `WebAssets/js/store.js`: Centralized reactive app state, live draft sync flags, monotonic `live.activitySeq`, `VIEW_ORDER`/`WORKFLOW_STEPS`, pub/sub event bus (`on`/`emit`), formatters, and `withButtonBusy`.
 - `WebAssets/js/icons.js`: Fetches `/shell/icons.json` and resolves UI icons, live CLI spec icons, and generic fallback icons.
 - `WebAssets/js/main.js`: Entry module wiring views, SSE live events (`fschange`, `webapp-built`, `draft-updated`, `view-requested` with `details`/`finalize` aliases, `agent-activity`), and `bootstrap()`.
-- `WebAssets/js/ui/chrome.js`: Titlebar drag/caption controls, 5-step stepper sync, notifications, live agent activity pill, toasts, view switching, theme application, and workspace strip sync.
+- `WebAssets/js/ui/chrome.js`: Titlebar drag/caption controls, 5-step stepper sync, deduplicated severity-styled notifications (with `[Error.Code]` pills & structured missing-spec lists), live agent activity pill (45s stale-running expiry, hover tooltip, idle action-count summary), toasts, view switching, theme application, and workspace strip sync.
 - `WebAssets/js/ui/dropdowns.js`: Declarative dropdown/popover registry with positioning, outside-click dismissal, and Escape handling.
 - `WebAssets/js/ui/modal.js`: Reusable confirmation, `AGENTS.md` inspection, themed text-input prompt modal, and hover path tooltip helpers.
 - `WebAssets/js/ui/nativeDrop.js`: Context-aware external file/folder drag-and-drop router (`window.__onNativeDrop`), clearing stale hover state and materializing preset `orderedItems` on Organize tile drops.
@@ -363,16 +364,17 @@ Wrapper/
 - `WebAssets/js/views/setup.js`: Workspace selection, recent workspaces, compact central tool cards (`app-card-central`), custom app staging, and `mby-pc.bat` shim initialization.
 - `WebAssets/js/views/viewer.js`: WebApp viewer iframe lifecycle, CLI signal auto-loading, theme-override `postMessage` bridge, discovery submenus, build-and-view, and `.mbypkg` export.
 - `WebAssets/js/views/prompt/format.js`: Step 2 (Details) zero-mode container switching, metadata inputs, attachments, and collapsible `#studyNotesDisclosure` wiring.
-- `WebAssets/js/views/prompt/organize.js`: Step 3 (Organize) horizontal portrait Article/Quiz cards, live agent highlights, content status badges (flagging incomplete bodyless image specs), 1-click pencil & double-click modal editing, inline title editing, and Add Component controls.
-- `WebAssets/js/views/prompt/organizeDrag.js`: Pointer-event drag-and-drop controller for horizontal card and vertical/cross-card spec rearrangement.
-- `WebAssets/js/views/prompt/organizeFlip.js`: Live FLIP animation helpers (`capturePositions`, `animateFromPositions`, `flipReorder`) for reordering and deletion transitions.
+- `WebAssets/js/views/prompt/organize.js`: Step 3 (Organize) horizontal portrait Article/Quiz cards, live agent highlights, 1-line tile preview snippets, content status badges (warning-styled incomplete `Img*` badges), 1-click pencil & double-click modal editing, inline title editing, and Add Component controls.
+- `WebAssets/js/views/prompt/organizeDrag.js`: Pointer-event drag-and-drop controller for horizontal card and vertical/cross-card spec rearrangement with double-click debounce preventing inspector popover flicker.
+- `WebAssets/js/views/prompt/organizeFlip.js`: Live FLIP animation helpers (`capturePositions`, `animateFromPositions`, `flipReorder`, keyed `capturePositionsByKey`/`animateFromKeyedPositions`, and `animateLabelWipe` rename transitions) for user and autonomous agent updates.
 - `WebAssets/js/views/prompt/organizePresets.js`: Organize header grouped Preset dropdown (3 Session / 3 Article / 3 Quiz / Custom) and portable workflow/card preset handlers.
-- `WebAssets/js/views/prompt/promptDraft.js`: Shared prompt state, live `/api/live/draft` load/save with SSE echo suppression, preset/spec loaders, draft payload builder, and debounced Markdown preview composer.
+- `WebAssets/js/views/prompt/promptDraft.js`: Shared prompt state, live `/api/live/draft` load/save with SSE echo suppression, `applyAnimatedAgentDraft` keyed FLIP/pop-in/wipe orchestration, preset/spec loaders, draft payload builder, and debounced Markdown preview composer.
 - `WebAssets/js/views/prompt/readyWorkspace.js`: Ready Workspace (`AGENTS.md`) export workflow, subfolder picker, and overwrite confirmation modal.
-- `WebAssets/js/views/prompt/review.js`: Step 4 (Finalize) two-tab Hub (`Build Directly` | `Hand Off to AI`), inline AI sub-toggle (`Live Agent` | `One-Shot Prompt`) remembering last AI style, single-CTA finalize trigger (`source: "ui"`), fresh-prompt copy/save (`ensureFreshComposedPrompt`), Ready Workspace, and Export menu.
-- `WebAssets/js/views/prompt/specContentModal.js`: Expanded per-spec content authoring modal (`None`, `Image`, `Raw Text`, `.md File`) with `? Syntax` toggle, collapsible `melomg` PDF figure extraction (`imageFile` default on `focusMelomg`, single preview pane), and defensive preset materialization.
-- `WebAssets/js/views/prompt/specModes.js`: Pure spec mode-group structure, subtype distribution math, and ordered item synchronization helpers.
-- `WebAssets/js/views/prompt/specPopovers.js`: Anchored `+ Add Spec` picker and Spec Tile Inspector popover (`Spec Content` first, subtype/modifiers next, and collapsible `AI Prompt Instructions` disclosure).
+- `WebAssets/js/views/prompt/review.js`: Step 4 (Finalize) two-tab Hub (`Build Directly` | `Hand Off to AI`), empty-component readiness blocking with `Fix in Organize` action, inline AI sub-toggle (`Live Agent` | `One-Shot Prompt`) remembering last AI style, single-CTA finalize trigger (`source: "ui"`), fresh-prompt copy/save (`ensureFreshComposedPrompt`), Ready Workspace, and Export menu.
+- `WebAssets/js/views/prompt/specContentModal.js`: Streamlined per-spec content authoring modal (`Write Content` | `Link .md File` + unified inline Image Attachment strip preserving body text), Prev/Next card stepper, inline subtype chips, `+ Starter`, Markdown `? Syntax`, keyboard shortcuts (`Ctrl+S` / `Ctrl+Enter`), backdrop dismissal, and collapsible `melomg` PDF figure extraction.
+- `WebAssets/js/views/prompt/specModes.js`: Pure spec mode-group structure, round-robin multi-subtype preset expansion, subtype distribution math, and ordered item synchronization helpers.
+- `WebAssets/js/views/prompt/specPopovers.js`: Clean single-line anchored `+ Add Spec` picker (tooltip-only `displayName`) and Spec Tile Inspector popover (`Spec Content` first, subtype/modifiers next, and collapsible `AI Prompt Instructions` disclosure).
+- `WebAssets/js/views/prompt/specTemplates.js`: Markdown syntax reference hints, starter templates for all 19 spec topics, and 1-line Organize tile preview snippet extractor.
 - `WebAssets/icons/fallback/*`: Embedded 24x24 fallback SVG spec icons (19 core topics) used only when live `mby spec --icons --json` returns no icon for a topic.
 - `WebAssets/icons/ui/*`: Embedded SVG icon assets (27 UI navigation/action/fallback icons; live spec/subtype SVG icons live in `mby-cli`).
 - `Workspace/AgentsMdFileWriter.cs`: Confined atomic reader/writer for `AGENTS.md` inside the Active Workspace root or a validated subfolder.
@@ -396,7 +398,7 @@ Wrapper/
 - `Win32/Win32WindowHost.cs`: Borderless Win32 HWND host with custom titlebar drag, `WM_NCHITTEST` resize edges, dark/light DWM backdrop/titlebar theming, and STA message loop.
 
 ### `tests/`
-- `frontend/frontend-behavior.test.mjs`: Node (`node --test`) behavioral test suite exercising real ES modules (`format.js`, `review.js`, `organize.js`, `specPopovers.js`, `specContentModal.js`, `setup.js`, `nativeDrop.js`) against a lightweight DOM harness.
+- `frontend/frontend-behavior.test.mjs`: Node (`node --test`) behavioral test suite exercising real ES modules (`chrome.js`, `format.js`, `review.js`, `organize.js`, `organizeDrag.js`, `organizeFlip.js`, `promptDraft.js`, `specModes.js`, `specPopovers.js`, `specContentModal.js`, `specTemplates.js`, `setup.js`, `nativeDrop.js`) against a lightweight DOM harness.
 - `Meloberry.Wrapper.ArchitectureTests/Meloberry.Wrapper.ArchitectureTests.csproj`: Architecture test project referencing `Domain`, `Application`, `Infrastructure`, and `Desktop`.
 - `Meloberry.Wrapper.ArchitectureTests/WrapperArchitectureTests.cs`: Enforces strict Clean Architecture layer dependency direction, zero third-party packages in `Domain`, zero banned UI/DB frameworks, and unified version metadata.
 - `Meloberry.Wrapper.UnitTests/Meloberry.Wrapper.UnitTests.csproj`: xUnit unit and integration test project for Domain, Application, and Infrastructure.

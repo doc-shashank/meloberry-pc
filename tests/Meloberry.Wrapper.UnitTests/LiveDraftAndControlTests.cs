@@ -365,6 +365,115 @@ public sealed class LiveDraftAndControlTests : IDisposable
         Assert.True(events[1].WorkflowModeExplicitlyChanged);
     }
 
+    [Fact]
+    public async Task LiveDraftHandler_EmitsHumanFriendlySummaries_WithoutRawIdsOrEnums()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "live_summaries"));
+        var ws = Path.Combine(_tempRoot, "ws_summaries");
+        var mdPath = Path.Combine(ws, "notes", "intro.md");
+        var imgPath = Path.Combine(ws, "assets", "diagram.png");
+        Directory.CreateDirectory(Path.GetDirectoryName(mdPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(imgPath)!);
+        await File.WriteAllTextAsync(mdPath, "# Intro");
+        await File.WriteAllBytesAsync(imgPath, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+        var draftStore = new WorkspaceDraftStore();
+        var handler = new LiveDraftHandler(draftStore, settingsStore);
+
+        var patchMeta = await handler.MutateAsync(ws, new LiveDraftMutationRequest("patch-meta", Title: "Cardiology", Description: "Ch 1"));
+        Assert.True(patchMeta.IsSuccess);
+        Assert.Contains("title \"Cardiology\"", patchMeta.Value.Summary);
+        Assert.Contains("description", patchMeta.Value.Summary);
+
+        var addComp = await handler.MutateAsync(ws, new LiveDraftMutationRequest("add-comp", ComponentKind: ComponentKind.Quiz, Title: "Drill 1"));
+        Assert.True(addComp.IsSuccess);
+        var compId = addComp.Value.TargetComponentId!;
+
+        var renameComp = await handler.MutateAsync(ws, new LiveDraftMutationRequest("patch-meta", TargetId: compId, Title: "Final Quiz"));
+        Assert.True(renameComp.IsSuccess);
+        Assert.Equal("Renamed \"Drill 1\" to \"Final Quiz\"", renameComp.Value.Summary);
+        Assert.DoesNotContain(compId, renameComp.Value.Summary);
+
+        var moveComp = await handler.MutateAsync(ws, new LiveDraftMutationRequest("move-comp", TargetId: compId, Index: 0));
+        Assert.True(moveComp.IsSuccess);
+        Assert.Equal("Moved \"Final Quiz\" to position 1", moveComp.Value.Summary);
+        Assert.DoesNotContain(compId, moveComp.Value.Summary);
+        Assert.DoesNotContain("index 0", moveComp.Value.Summary);
+
+        var addOne = await handler.MutateAsync(ws, new LiveDraftMutationRequest("add-spec", TargetId: compId, Topic: "mcq", Count: 1));
+        Assert.True(addOne.IsSuccess);
+        Assert.Equal("Added mcq spec to \"Final Quiz\"", addOne.Value.Summary);
+        Assert.DoesNotContain("spec(s)", addOne.Value.Summary);
+
+        var addTwo = await handler.MutateAsync(ws, new LiveDraftMutationRequest("add-spec", TargetId: compId, Topic: "flashcard", Count: 2));
+        Assert.True(addTwo.IsSuccess);
+        Assert.Equal("Added 2 flashcard specs to \"Final Quiz\"", addTwo.Value.Summary);
+
+        var specId = addOne.Value.TargetSpecId!;
+        var updateSpec = await handler.MutateAsync(ws, new LiveDraftMutationRequest("update-spec", TargetId: specId, Subtype: "multi"));
+        Assert.True(updateSpec.IsSuccess);
+        Assert.Equal("Updated mcq (subtype -> multi) in \"Final Quiz\"", updateSpec.Value.Summary);
+
+        var setRaw = await handler.MutateAsync(ws, new LiveDraftMutationRequest("set-content", TargetId: specId, ContentMode: SpecContentMode.RawText, RawText: "Stem?\n- [x] A\n- [ ] B"));
+        Assert.True(setRaw.IsSuccess);
+        Assert.Equal("Filled mcq text in \"Final Quiz\"", setRaw.Value.Summary);
+        Assert.DoesNotContain("RawText", setRaw.Value.Summary);
+
+        var setMd = await handler.MutateAsync(ws, new LiveDraftMutationRequest("set-content", TargetId: specId, ContentMode: SpecContentMode.MarkdownFile, MarkdownFilePath: "notes/intro.md"));
+        Assert.True(setMd.IsSuccess);
+        Assert.Equal("Attached intro.md to mcq", setMd.Value.Summary);
+        Assert.DoesNotContain("MarkdownFile", setMd.Value.Summary);
+
+        var setImg = await handler.MutateAsync(ws, new LiveDraftMutationRequest("set-content", TargetId: specId, ContentMode: SpecContentMode.ImageFile, ImagePath: "assets/diagram.png", RawText: "Stem?\n- [x] A\n- [ ] B"));
+        Assert.True(setImg.IsSuccess);
+        Assert.Equal("Attached diagram.png to mcq", setImg.Value.Summary);
+        Assert.DoesNotContain("ImageFile", setImg.Value.Summary);
+
+        var clearContent = await handler.MutateAsync(ws, new LiveDraftMutationRequest("set-content", TargetId: specId, ContentMode: SpecContentMode.None));
+        Assert.True(clearContent.IsSuccess);
+        Assert.Equal("Cleared mcq content", clearContent.Value.Summary);
+        Assert.DoesNotContain("None", clearContent.Value.Summary);
+
+        var rmComp = await handler.MutateAsync(ws, new LiveDraftMutationRequest("rm-comp", TargetId: compId));
+        Assert.True(rmComp.IsSuccess);
+        Assert.Equal("Removed Quiz \"Final Quiz\"", rmComp.Value.Summary);
+        Assert.DoesNotContain(compId, rmComp.Value.Summary);
+    }
+
+    [Fact]
+    public async Task LiveDraftHandler_PatchMeta_FormatsContainerAndWorkflowModeHumanReadably()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "meta_fmt"));
+        var ws = Path.Combine(_tempRoot, "ws_meta_fmt");
+        Directory.CreateDirectory(ws);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+        var handler = new LiveDraftHandler(new WorkspaceDraftStore(), settingsStore);
+
+        var res1 = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            "patch-meta",
+            Container: ContainerKind.StandaloneArticle,
+            WorkflowMode: WorkflowMode.LiveAgent));
+        Assert.True(res1.IsSuccess);
+        Assert.Contains("Standalone Article", res1.Value.Summary);
+        Assert.Contains("Live Agent", res1.Value.Summary);
+        Assert.DoesNotContain("StandaloneArticle", res1.Value.Summary);
+        Assert.DoesNotContain("LiveAgent", res1.Value.Summary);
+
+        var res2 = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            "patch-meta",
+            Container: ContainerKind.StandaloneQuiz,
+            WorkflowMode: WorkflowMode.ClassicPrompt));
+        Assert.True(res2.IsSuccess);
+        Assert.Contains("Standalone Quiz", res2.Value.Summary);
+        Assert.Contains("Classic Prompt", res2.Value.Summary);
+        Assert.DoesNotContain("StandaloneQuiz", res2.Value.Summary);
+        Assert.DoesNotContain("ClassicPrompt", res2.Value.Summary);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

@@ -323,7 +323,7 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
 
         var composed = PromptComposer.Compose(draft, SpecCatalogDefaults.BuiltInFallbackCatalog);
         Assert.Contains("Live GUI Control Protocol", composed.Markdown);
-        Assert.Contains(".\\mby-pc.bat ui view format --json", composed.Markdown);
+        Assert.Contains(".\\mby-pc.bat ui view details --json", composed.Markdown);
         Assert.Contains(".\\mby-pc.bat ui view organize --json", composed.Markdown);
         Assert.Contains("draft comp add", composed.Markdown);
         Assert.Contains("draft spec update", composed.Markdown);

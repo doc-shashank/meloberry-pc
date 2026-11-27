@@ -17,17 +17,66 @@ window.__onWindowState = info => {
   }
 };
 
-export function addNotification(title, detail, kind = "info") {
+export function addNotification(title, detail, kind = "info", meta = null) {
+  const now = Date.now();
+  const normDetail = String(detail || "").trim();
+  const recentDup = state.notifications[0]
+    && state.notifications[0].detail === normDetail
+    && (now - (state.notifications[0].ts || 0)) < 2500;
+  if (recentDup) {
+    if (state.notifications[0].title === "Error" && title && title !== "Error") {
+      state.notifications[0].title = title;
+      if (meta?.code && !state.notifications[0].code) state.notifications[0].code = meta.code;
+      if (Array.isArray(meta?.items) && !state.notifications[0].items) state.notifications[0].items = meta.items;
+      renderNotifications();
+    }
+    return;
+  }
+
   state.notifications.unshift({
-    id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: `${now}_${Math.random().toString(36).slice(2, 6)}`,
+    ts: now,
     title,
-    detail,
+    detail: normDetail,
     kind,
+    code: meta?.code || null,
+    items: Array.isArray(meta?.items) ? meta.items : null,
     unread: true,
     time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
   });
   if (state.notifications.length > 40) state.notifications.pop();
   renderNotifications();
+}
+
+function parseStructuredNotificationDetail(detail, explicitCode, explicitItems) {
+  let text = String(detail || "");
+  let code = explicitCode || null;
+  let items = Array.isArray(explicitItems) ? explicitItems : null;
+
+  const codeMatch = text.match(/\[([A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+)\]/);
+  if (codeMatch) {
+    code = codeMatch[1];
+    text = text.replace(codeMatch[0], "").replace(/\s{2,}/g, " ").trim();
+  }
+
+  if (!items) {
+    const missingMatch = text.match(/^(Cannot finalize:\s*\d+\s*spec\(s\) have no content)\s*\((.+)\)\.\s*(.*)$/i)
+      || text.match(/^(Cannot finalize:\s*\d+\s*spec\(s\) have no content)\s*\((.+)\)\s*$/i);
+    if (missingMatch) {
+      text = `${missingMatch[1]}.${missingMatch[3] ? ` ${missingMatch[3]}` : ""}`.trim();
+      let rawList = missingMatch[2].trim();
+      let extraItem = null;
+      const moreMatch = rawList.match(/\s*\((\+\d+\s+more)\)\s*$/i);
+      if (moreMatch) {
+        extraItem = moreMatch[1];
+        rawList = rawList.slice(0, moreMatch.index).trim();
+      }
+      items = rawList.split(",").map(s => s.trim()).filter(Boolean);
+      if (extraItem) items.push(extraItem);
+    }
+  }
+
+  return { text, code, items };
 }
 
 export function renderNotifications() {
@@ -45,8 +94,20 @@ export function renderNotifications() {
 
   state.notifications.forEach(n => {
     const item = document.createElement("div");
-    item.className = `notif-item ${n.unread ? "unread" : ""}`;
-    item.innerHTML = `<div class="notif-item-top"><span>${escapeHtml(n.title)}</span><span class="muted">${escapeHtml(n.time)}</span></div><div class="muted">${escapeHtml(n.detail)}</div>`;
+    const kindCls = `kind-${n.kind || "info"}`;
+    item.className = `notif-item ${kindCls}${n.unread ? " unread" : ""}`;
+    const parsed = parseStructuredNotificationDetail(n.detail, n.code, n.items);
+    const codeBadge = parsed.code ? `<span class="notif-code-pill">${escapeHtml(parsed.code)}</span>` : "";
+    const listHtml = parsed.items?.length
+      ? `<ul class="notif-sublist">${parsed.items.map(i => `<li>${escapeHtml(i)}</li>`).join("")}</ul>`
+      : "";
+    item.innerHTML = `
+      <div class="notif-item-top">
+        <span class="notif-title-wrap"><span class="notif-kind-dot ${kindCls}" aria-hidden="true"></span><span>${escapeHtml(n.title)}</span>${codeBadge}</span>
+        <span class="muted notif-time">${escapeHtml(n.time)}</span>
+      </div>
+      <div class="notif-detail muted">${escapeHtml(parsed.text)}</div>
+      ${listHtml}`;
     item.onclick = () => {
       n.unread = false;
       renderNotifications();
@@ -89,8 +150,8 @@ export function toast(msg, kind = "info", opts = {}) {
   }
 
   box.appendChild(el);
-  if (kind === "err") {
-    addNotification("Error", msg, "err");
+  if (kind === "err" && opts.notify !== false) {
+    addNotification(opts.notifTitle || "Error", msg, "err");
   }
 }
 
@@ -243,14 +304,18 @@ export function renderAgentActivityPillAndFeed() {
 
   if (pill && textEl) {
     if (!latest) {
+      clearTimeout(state.live.activityTimer);
       pill.classList.add("hidden");
       pill.classList.remove("is-running", "is-error", "idle");
+      pill.title = "Live agent activity — click to view timeline";
     } else {
-      const running = items.find(a => a.state === "running");
-      const active = running || latest;
+      const now = Date.now();
+      const activeRunning = items.find(a => a.state === "running" && (now - (a.ts || now)) < 45000);
+      const active = activeRunning || latest;
       textEl.textContent = active.message;
+      pill.title = active.detail ? `${active.message} \u2014 ${active.detail}` : active.message;
       pill.classList.remove("hidden", "idle", "is-running", "is-error");
-      if (active.state === "running") {
+      if (active.state === "running" && activeRunning) {
         pill.classList.add("is-running");
         clearTimeout(state.live.activityTimer);
       } else {
@@ -258,6 +323,9 @@ export function renderAgentActivityPillAndFeed() {
         clearTimeout(state.live.activityTimer);
         state.live.activityTimer = setTimeout(() => {
           pill.classList.add("idle");
+          if (items.length > 1 && active.state !== "error") {
+            textEl.textContent = `Agent \u00b7 ${items.length} actions`;
+          }
         }, 10000);
       }
     }
@@ -293,15 +361,16 @@ export function renderAgentActivityPillAndFeed() {
 
 export function recordAgentActivity({ id, state: status = "done", message, detail = "", exitCode = null, durationMs = null } = {}) {
   if (!message) return;
-  const key = id || `act_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+  const now = Date.now();
+  const key = id || `act_${now}_${Math.random().toString(36).slice(2, 5)}`;
   const normalizedState = status === "running" || status === "error" ? status : "done";
   const existing = state.live.activities.find(a => a.id === key);
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
   if (existing) {
-    Object.assign(existing, { state: normalizedState, message, detail: detail || existing.detail || "", exitCode, durationMs, time });
+    Object.assign(existing, { state: normalizedState, message, detail: detail || existing.detail || "", exitCode, durationMs, time, ts: now });
   } else {
-    state.live.activities.unshift({ id: key, state: normalizedState, message, detail: detail || "", exitCode, durationMs, time });
+    state.live.activities.unshift({ id: key, state: normalizedState, message, detail: detail || "", exitCode, durationMs, time, ts: now });
     if (state.live.activities.length > 50) state.live.activities.pop();
   }
 

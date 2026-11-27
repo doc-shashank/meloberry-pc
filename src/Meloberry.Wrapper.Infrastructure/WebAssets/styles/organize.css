@@ -193,7 +193,9 @@
   display: flex;
   flex-direction: column;
   gap: 7px;
-  padding: 2px;
+  margin-right: -11px;
+  padding: 2px 11px 2px 2px;
+  scrollbar-gutter: stable;
 }
 
 .org-empty-hint {
@@ -257,10 +259,26 @@
 
 .org-spec-tile-meta {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.org-spec-tile-head-row {
+  display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  flex: 1 1 auto;
+  max-width: 100%;
+}
+.org-spec-tile-snippet {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 .org-spec-tile-label {
   font-size: 12.5px;
@@ -435,6 +453,12 @@
   border-color: color-mix(in srgb, var(--select) 50%, var(--border));
   background: var(--select-soft);
   color: var(--select);
+}
+.spec-content-badge.is-incomplete,
+.org-comp-card.kind-quiz .spec-content-badge.is-incomplete {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+  background: rgba(217, 119, 6, 0.14);
+  color: var(--warn);
 }
 .spec-content-badge:hover { filter: brightness(0.95); }
 

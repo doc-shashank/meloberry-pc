@@ -102,10 +102,7 @@ export function openAddSpecPopover(anchorBtn, comp, onMutated) {
       item.type = "button";
       item.className = `add-spec-item${isExpanded ? " active" : ""}`;
       item.title = spec.displayName ? `${spec.displayName}: ${spec.summary || ""}` : (spec.summary || "");
-      const nameBadge = spec.displayName && spec.displayName.toLowerCase() !== spec.topic.toLowerCase()
-        ? `<small class="muted" style="font-size:11px;">${escapeHtml(spec.displayName)}</small>`
-        : "";
-      item.innerHTML = `<span class="row gap-8"><span class="spec-icon-wrap">${getSpecIcon(spec.topic, null, targetCategory)}</span><code>${escapeHtml(spec.topic)}</code>${nameBadge}</span><span class="muted">${hasSubtypes ? (isExpanded ? "\u25be" : "Subtypes \u25b8") : `+ Add \u00d7${addQtyChoice}`}</span>`;
+      item.innerHTML = `<span class="row gap-8 add-spec-item-left"><span class="spec-icon-wrap">${getSpecIcon(spec.topic, null, targetCategory)}</span><code>${escapeHtml(spec.topic)}</code></span><span class="muted add-spec-item-right">${hasSubtypes ? (isExpanded ? "\u25be" : "Subtypes \u25b8") : `+ Add \u00d7${addQtyChoice}`}</span>`;
       item.onclick = e => {
         e.stopPropagation();
         if (!hasSubtypes) {

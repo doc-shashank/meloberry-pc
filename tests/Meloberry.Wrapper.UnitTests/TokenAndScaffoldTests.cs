@@ -461,6 +461,96 @@ public sealed class TokenAndScaffoldTests : IDisposable
         Assert.Contains("workflowMode: \"direct\"", storeJs);
     }
 
+    [Fact]
+    public void ReadinessAndPrompts_CountEmptyComponents_AndUseDetailsAndFinalizeCopy()
+    {
+        var draft = new PromptDraft(
+            Container: ContainerKind.Session,
+            Title: "Cardio Module",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "a1",
+                    ComponentKind.Article,
+                    "Filled Article",
+                    [new("text", true, 1)],
+                    [new("s1", "text", 1, null, new SpecContentSource(SpecContentMode.RawText, "## Ready"))]),
+                new PromptComponentPlan(
+                    "q1",
+                    ComponentKind.Quiz,
+                    "Empty Quiz",
+                    [],
+                    [])
+            ],
+            WorkflowMode: WorkflowMode.Direct);
+
+        var directPrompt = PromptComposer.Compose(draft, SpecCatalogDefaults.BuiltInFallbackCatalog);
+        Assert.Contains("2 components, 2 specs (1 filled, 1 empty)", directPrompt.Markdown);
+        Assert.Contains("in Finalize", directPrompt.Markdown);
+        Assert.DoesNotContain("in Review", directPrompt.Markdown);
+
+        var livePrompt = PromptComposer.Compose(draft with { WorkflowMode = WorkflowMode.LiveAgent }, SpecCatalogDefaults.BuiltInFallbackCatalog);
+        Assert.Contains("2 components, 2 specs (1 filled, 1 empty)", livePrompt.Markdown);
+        Assert.Contains("Step 2 - Details", livePrompt.Markdown);
+        Assert.Contains("ui view details --json", livePrompt.Markdown);
+        Assert.DoesNotContain("Step 2 - Format", livePrompt.Markdown);
+        Assert.DoesNotContain("ui view format", livePrompt.Markdown);
+
+        var agentsMd = AgentsMdComposer.Compose(new AgentsMdComposeInput(
+            WorkspacePath: @"C:\ws\cardio",
+            WorkspaceMbyFileName: "mby.exe",
+            WorkspaceMelomgFileName: null,
+            ExtraWorkspaceExecutables: [],
+            CopiedFiles: [],
+            CopiedFolders: [],
+            Container: ContainerKind.Session,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SelectedSpecs: [],
+            MelomgSpecsText: null,
+            IncludeLinkBlock: false,
+            UsesWorkspaceShim: true,
+            WorkflowMode: WorkflowMode.LiveAgent));
+        Assert.Contains("Step 2 - Details", agentsMd);
+        Assert.Contains("ui view details --json", agentsMd);
+        Assert.DoesNotContain("Step 2 - Format", agentsMd);
+        Assert.DoesNotContain("ui view format", agentsMd);
+    }
+
+    [Fact]
+    public void SessionScaffoldGenerator_ExpandsMultiModeCalloutsViaSpecOrderExpander_WhenOrderedItemsNull()
+    {
+        var draft = new PromptDraft(
+            Container: ContainerKind.StandaloneArticle,
+            Title: "Callout Modes Test",
+            Description: string.Empty,
+            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
+            SourceText: string.Empty,
+            Selections: [new("callout", true, 2, null, ["pearl", "clinical"])],
+            Attachments: [],
+            Components:
+            [
+                new PromptComponentPlan(
+                    "a1",
+                    ComponentKind.Article,
+                    "Core Concepts",
+                    [new("callout", true, 2, null, ["pearl", "clinical"])],
+                    OrderedItems: null)
+            ]);
+
+        var res = SessionScaffoldGenerator.Generate(draft, SpecCatalogDefaults.BuiltInFallbackCatalog);
+        Assert.True(res.IsSuccess, res.Error?.Description);
+        using var doc = JsonDocument.Parse(res.Value.RawJson);
+        var blocks = doc.RootElement.GetProperty("blocks");
+        Assert.Equal(2, blocks.GetArrayLength());
+        Assert.Equal("pearl", blocks[0].GetProperty("tone").GetString());
+        Assert.Equal("clinical", blocks[1].GetProperty("tone").GetString());
+    }
+
     public void Dispose()
     {
         try
