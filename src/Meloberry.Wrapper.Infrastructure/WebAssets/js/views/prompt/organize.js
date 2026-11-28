@@ -7,7 +7,35 @@ import { animateFromPositions, capturePositions } from "./organizeFlip.js";
 import { attachCardDrag, attachSpecDrag } from "./organizeDrag.js";
 import { buildCardPresetMenuControl, renderPresetMenu, wireOrganizePresetToolbar } from "./organizePresets.js";
 import { openAddSpecPopover, openSpecInspectorPopover, wireSpecPopovers } from "./specPopovers.js";
-import { extractSpecPreviewSnippet } from "./specTemplates.js";
+
+export function extractSpecPreviewSnippet(content) {
+  if (!content) return "";
+  if (content.mode === "markdownFile" && content.markdownFilePath) {
+    const clean = String(content.markdownFilePath).trim();
+    const parts = clean.split(/[\\/]/);
+    return parts[parts.length - 1] || clean;
+  }
+  if (content.mode === "imageFile") {
+    if (content.caption && content.caption.trim()) return content.caption.trim();
+    if (content.imagePath) {
+      const clean = String(content.imagePath).trim();
+      const parts = clean.split(/[\\/]/);
+      return parts[parts.length - 1] || clean;
+    }
+  }
+  const raw = String(content.rawText || "").trim();
+  if (!raw) return "";
+  const lines = raw.split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l && !l.startsWith(":::") && l !== "---");
+  if (!lines.length) return "";
+  const first = lines[0]
+    .replace(/^#+\s*/, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+  return first.length > 64 ? `${first.slice(0, 61)}...` : first;
+}
 
 function transferTopicMetadata(sourceComp, targetComp, topic) {
   const srcSel = (sourceComp.selections || []).find(s => s.topic.toLowerCase() === topic.toLowerCase());

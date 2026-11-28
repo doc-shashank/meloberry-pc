@@ -31,6 +31,53 @@ public sealed record MbyBatchExecutionResult(
     string? OutputDirectory,
     int StepCount);
 
+/// <summary>Result returned by generating a strict camelCase mby session/article/quiz JSON scaffold.</summary>
+public sealed record SessionScaffoldOutput(
+    string RawJson,
+    bool RequiresPlaceholderImage,
+    string SuggestedFileName,
+    IReadOnlyList<string>? Warnings = null);
+
+/// <summary>Parsed outcome from `mby scaffold --json`.</summary>
+public sealed record ScaffoldCliResult(
+    string Format,
+    string Slug,
+    string? RawJson,
+    IReadOnlyDictionary<string, string>? MarkdownFiles,
+    string? WrittenPath,
+    bool RequiresPlaceholderImage,
+    IReadOnlyList<string> PlaceholderSpecsUsed,
+    IReadOnlyList<string> Warnings,
+    string? AppliedTargetId);
+
+/// <summary>Parsed outcome from `mby asset add --json`.</summary>
+public sealed record AssetAddCliResult(
+    string WorkspaceId,
+    string RelativeAssetPath,
+    string FullPath,
+    bool AlreadyExisted);
+
+/// <summary>Parsed outcome from `mby prime --format agents-md --json`.</summary>
+public sealed record PrimeAgentsMdCliResult(
+    string Markdown,
+    int ApproximateTokens,
+    int CharacterCount,
+    IReadOnlyList<string> IncludedTopics,
+    string? WrittenPath = null);
+
+/// <summary>Parsed outcome from `mby analyze --ingest --json`.</summary>
+public sealed record IngestAnalysisCliResult(
+    string JsonPath,
+    string MarkdownPath);
+
+/// <summary>Parsed outcome from `mby clone --json`.</summary>
+public sealed record CloneEntityCliResult(
+    string NewId,
+    string EntityKind,
+    string TargetContainerId,
+    int NewIndex,
+    string? NewRef = null);
+
 /// <summary>Request to extract a figure directly into the Active Workspace `assets/` directory via `melomg`.</summary>
 public sealed record ExtractFigureRequest(
     string? WorkspacePath,
@@ -50,22 +97,6 @@ public sealed record ExtractFigureResult(
     string? Caption,
     int PixelWidth,
     int PixelHeight);
-
-/// <summary>Identifies a spec tile that has no authored content yet during non-placeholder Finalize.</summary>
-public sealed record MissingSpecContentItem(
-    string ComponentId,
-    string ComponentTitle,
-    string SpecId,
-    string Topic);
-
-/// <summary>Result of assembling a `PromptDraft` and attached `.md` files into a modular `mby` Markdown directory.</summary>
-public sealed record AssembledWorkspaceFiles(
-    string Slug,
-    IReadOnlyDictionary<string, string> Files,
-    IReadOnlyList<string> ReferencedAssetPaths,
-    IReadOnlyList<MissingSpecContentItem> MissingContentSpecs,
-    IReadOnlyList<string> PlaceholderSpecsUsed,
-    bool RequiresPlaceholderImage);
 
 /// <summary>Request to compile and mount the current workspace draft via `mby batch -`.</summary>
 public sealed record FinalizeRequest(

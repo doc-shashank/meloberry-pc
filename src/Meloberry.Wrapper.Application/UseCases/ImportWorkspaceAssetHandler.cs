@@ -16,7 +16,9 @@ public sealed record ImportWorkspaceAssetResult(
 /// </summary>
 public sealed class ImportWorkspaceAssetHandler(
     ISettingsStore settingsStore,
-    IAtomicFileWriter atomicWriter)
+    IAtomicFileWriter atomicWriter,
+    IManagedAppsStore? appsStore = null,
+    IMbyCliClient? mbyClient = null)
 {
     internal static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg" };
@@ -93,6 +95,27 @@ public sealed class ImportWorkspaceAssetHandler(
             var relExisting = Path.GetRelativePath(fullWs, fullSource).Replace('\\', '/');
             return Result<ImportWorkspaceAssetResult>.Success(
                 new ImportWorkspaceAssetResult(relExisting, fullSource, Copied: false));
+        }
+
+        if (normalizedKind == "image" && appsStore is not null && mbyClient is not null)
+        {
+            var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
+            var mbyExe = await appsStore.ResolveToolExecutableAsync("mby", fullWs, settings.MbyExecutableOverride, ct).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(mbyExe))
+            {
+                var verRes = await mbyClient.GetVersionInfoAsync(mbyExe, ct).ConfigureAwait(false);
+                if (verRes.IsSuccess && verRes.Value.IsCompatible)
+                {
+                    var addRes = await mbyClient.AddAssetAsync(mbyExe, workspaceAddr: null, targetDir: fullWs, fullSource, fullWs, ct).ConfigureAwait(false);
+                    if (addRes.IsFailure)
+                    {
+                        return Result<ImportWorkspaceAssetResult>.Failure(addRes.Error!);
+                    }
+
+                    return Result<ImportWorkspaceAssetResult>.Success(
+                        new ImportWorkspaceAssetResult(addRes.Value.RelativeAssetPath, addRes.Value.FullPath, Copied: !addRes.Value.AlreadyExisted));
+                }
+            }
         }
 
         var targetSubfolder = normalizedKind == "image" ? "assets" : "notes";

@@ -1,4 +1,5 @@
 using System.Text;
+using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Models;
 
 namespace Meloberry.Wrapper.Domain.Services;
@@ -259,7 +260,6 @@ public static class PromptComposer
         {
             var topicsToQuery = allSelections
                 .Select(s => s.Topic)
-                .Where(t => !string.Equals(t, SpecCatalogDefaults.VirtualLinkTopicName, StringComparison.OrdinalIgnoreCase))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var topicArgs = topicsToQuery.Count > 0 ? string.Join(" ", topicsToQuery) : "session article quiz";
@@ -274,7 +274,7 @@ public static class PromptComposer
             {
                 if (catalogByTopic.TryGetValue(topic, out var spec) && !string.IsNullOrWhiteSpace(spec.CompactSignature))
                 {
-                    var fence = AgentsMdComposer.MakeCodeFence(spec.CompactSignature);
+                    var fence = TokenEstimator.MakeCodeFence(spec.CompactSignature);
                     sb.AppendLine($"- **`{spec.Topic}`** ({spec.Command}):");
                     sb.AppendLine($"{fence}text");
                     sb.AppendLine(spec.CompactSignature.Trim());
@@ -328,7 +328,7 @@ public static class PromptComposer
 
         if (!string.IsNullOrWhiteSpace(draft.SourceText))
         {
-            var notesFence = AgentsMdComposer.MakeCodeFence(draft.SourceText);
+            var notesFence = TokenEstimator.MakeCodeFence(draft.SourceText);
             sb.AppendLine("### Study Notes");
             sb.AppendLine($"{notesFence}text");
             sb.AppendLine(draft.SourceText.Trim());
@@ -347,7 +347,7 @@ public static class PromptComposer
         sb.AppendLine($"3. Verify headless telemetry (`{mbyInvocation} analyze ./dist_web --headless --json`) and export `.mbypkg` if persisting (`{mbyInvocation} pkg export <wsId> android ./out.mbypkg --json`).");
 
         var markdown = sb.ToString().TrimEnd() + Environment.NewLine;
-        return new ComposedPrompt(markdown, markdown.Length, AgentsMdComposer.EstimateTokens(markdown));
+        return new ComposedPrompt(markdown, markdown.Length, TokenEstimator.EstimateTokens(markdown));
     }
 
     /// <summary>Converts composed Markdown prompt to clean readable plain text.</summary>

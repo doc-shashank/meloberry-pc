@@ -6,6 +6,7 @@ import {
   getSpecModeStructure,
   findOrInitSelection,
   handleSecondaryChipToggle,
+  isImageCapableTopic,
   materializeOrderedItems,
   syncSelectionsFromOrderedItems
 } from "./specModes.js";
@@ -207,8 +208,7 @@ export function openSpecInspectorPopover(anchorBtn, comp, inst, onMutated) {
     };
     cBtns.appendChild(editContentBtn);
 
-    const imgTopics = new Set(["image", "diagram-explore", "relabel", "flashcard", "mcq", "spot-error", "numeric", "case"]);
-    if (imgTopics.has(topicLower)) {
+    if (isImageCapableTopic(topicLower)) {
       const figBtn = document.createElement("button");
       figBtn.type = "button";
       figBtn.className = "btn btn-xs btn-ghost";

@@ -372,6 +372,49 @@ public sealed class WrapperCliDispatcherTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task WrapperCliDispatcher_DraftSpecCloneAndMoveTo_MutatesDraftHeadlessly()
+    {
+        var dataDir = Path.Combine(_tempRoot, "cli_clone_move_data");
+        var ws = Path.Combine(_tempRoot, "cli_clone_move_ws");
+        Directory.CreateDirectory(ws);
+
+        var paths = new WrapperDataPaths(dataDir);
+        using var provider = BuildTestServiceProvider(paths);
+        var settingsStore = provider.GetRequiredService<ISettingsStore>();
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+        var dispatcher = provider.GetRequiredService<WrapperCliDispatcher>();
+
+        var c1 = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "comp", "add", "article", "Part A", "--json"], c1));
+        var a1Id = JsonDocument.Parse(c1.StdOut).RootElement.GetProperty("data").GetProperty("targetComponentId").GetString()!;
+
+        var c2 = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "comp", "add", "article", "Part B", "--json"], c2));
+        var a2Id = JsonDocument.Parse(c2.StdOut).RootElement.GetProperty("data").GetProperty("targetComponentId").GetString()!;
+
+        var s1Con = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "spec", "add", a1Id, "text", "--json"], s1Con));
+        var specId = JsonDocument.Parse(s1Con.StdOut).RootElement.GetProperty("data").GetProperty("targetSpecId").GetString()!;
+
+        var cloneCon = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "spec", "clone", specId, "--json"], cloneCon));
+        var clonedId = JsonDocument.Parse(cloneCon.StdOut).RootElement.GetProperty("data").GetProperty("targetSpecId").GetString()!;
+        Assert.NotEqual(specId, clonedId);
+
+        var moveCon = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "spec", "move-to", clonedId, a2Id, "0", "--json"], moveCon));
+        var getCon = new CaptureConsole();
+        Assert.Equal(0, await dispatcher.RunAsync(["--cli", "--workspace", ws, "draft", "get", "--json"], getCon));
+
+        using var doc = JsonDocument.Parse(getCon.StdOut);
+        var comps = doc.RootElement.GetProperty("data").GetProperty("draft").GetProperty("components").EnumerateArray().ToList();
+        var compA = comps.Single(c => c.GetProperty("id").GetString() == a1Id);
+        var compB = comps.Single(c => c.GetProperty("id").GetString() == a2Id);
+        Assert.Single(compA.GetProperty("orderedItems").EnumerateArray());
+        Assert.Equal(clonedId, Assert.Single(compB.GetProperty("orderedItems").EnumerateArray()).GetProperty("id").GetString());
+    }
+
     private static ServiceProvider BuildFullServerProvider(string dataDir)
     {
         var services = new ServiceCollection();

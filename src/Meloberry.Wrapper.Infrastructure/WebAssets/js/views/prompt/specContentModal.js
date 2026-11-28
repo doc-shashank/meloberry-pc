@@ -2,13 +2,9 @@ import { api, fetchAssetBlobUrl } from "../../api.js";
 import { state, emit, withButtonBusy } from "../../store.js";
 import { closeAllDropdowns } from "../../ui/dropdowns.js";
 import { switchView, toast } from "../../ui/chrome.js";
-import { getSpecModeStructure, materializeOrderedItems, syncSelectionsFromOrderedItems } from "./specModes.js";
-import { getMarkdownTemplateForTopic } from "./specTemplates.js";
+import { findSpecMeta, getSpecModeStructure, getSpecTemplateInfo, isImageCapableTopic, materializeOrderedItems, syncSelectionsFromOrderedItems } from "./specModes.js";
 
 export const IMAGE_FILE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
-export const IMAGE_CAPABLE_TOPICS = new Set([
-  "image", "diagram-explore", "relabel", "flashcard", "mcq", "spot-error", "numeric", "case"
-]);
 
 const EMPTY_CONTENT = { mode: "none", rawText: null, markdownFilePath: null, imagePath: null, caption: null, altText: null };
 
@@ -18,10 +14,6 @@ let activeDirectPreviewUrl = null;
 let wired = false;
 
 const $id = id => document.getElementById(id);
-
-function findSpecMeta(topic) {
-  return state.specs.find(s => s.topic.toLowerCase() === (topic || "").toLowerCase()) || null;
-}
 
 function getLiveTarget() {
   if (!modalTarget) return { comp: null, inst: null, index: -1, total: 0 };
@@ -80,7 +72,7 @@ function syncModalTabs(topicOverride = "") {
   const { inst } = getLiveTarget();
   const topic = (topicOverride || inst?.topic || "").toLowerCase();
   const isImageTopic = topic === "image";
-  const isImageCapable = IMAGE_CAPABLE_TOPICS.has(topic);
+  const isImageCapable = isImageCapableTopic(topic);
 
   $id("specContentModeBar")?.classList.toggle("hidden", isImageTopic);
   document.querySelectorAll("#specContentModeTabs .seg-btn").forEach(btn => {
@@ -186,7 +178,7 @@ function populateMelomgSection(topic, subtype, { focusMelomg }) {
   const box = $id("specMelomgDetails");
   if (!box) return;
 
-  const show = IMAGE_CAPABLE_TOPICS.has((topic || "").toLowerCase());
+  const show = isImageCapableTopic(topic);
   box.classList.toggle("hidden", !show);
   if (!show) { box.open = false; return; }
 
@@ -227,7 +219,7 @@ function commitModalToSpec({ close = true } = {}) {
 
   const topicLower = (inst.topic || "").toLowerCase();
   const isImageTopic = topicLower === "image";
-  const isImageCapable = IMAGE_CAPABLE_TOPICS.has(topicLower);
+  const isImageCapable = isImageCapableTopic(topicLower);
   const rawText = $id("specContentRawInput")?.value || "";
   const mdPath = ($id("specContentFilePath")?.value || "").trim();
   const imgPath = ($id("specContentImagePath")?.value || "").trim();
@@ -272,7 +264,7 @@ export function openSpecContentModal(compId, instId, { focusMelomg = false } = {
   modalTarget = { compId, instId };
 
   const spec = findSpecMeta(inst.topic);
-  const tpl = getMarkdownTemplateForTopic(inst.topic);
+  const tpl = getSpecTemplateInfo(inst.topic);
   const titleEl = $id("specContentModalTitle");
   const badgeEl = $id("specContentTopicBadge");
   const syntaxEl = $id("specContentSyntaxHint");
@@ -361,7 +353,7 @@ export function initSpecContentModal() {
   $id("btnInsertSpecStarter")?.addEventListener("click", () => {
     const { inst } = getLiveTarget();
     const rawEl = $id("specContentRawInput");
-    const starter = inst ? getMarkdownTemplateForTopic(inst.topic).starter : "";
+    const starter = inst ? getSpecTemplateInfo(inst.topic).starter : "";
     if (!rawEl || !starter) return;
     draftContentMode = "rawText";
     syncModalTabs(inst.topic);

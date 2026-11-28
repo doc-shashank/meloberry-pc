@@ -38,7 +38,7 @@ public sealed class WrapperCliDispatcher(
           .\mby-pc.bat draft get [--json]
           .\mby-pc.bat draft patch [--title T] [--desc D] [--container session|article|quiz] [--format markdownDirectory|singleMarkdown|json] [--mode direct|live-agent|classic] [--allow-placeholders true|false]
           .\mby-pc.bat draft comp add <article|quiz> [--title T] | rename <compId> --title T | rm <compId> | move <compId> <index>
-          .\mby-pc.bat draft spec add <compId> <topic> [--subtype S] [--qty N] | update <specId> [--subtype S] [--notes N] [--modes a,b] | rm <specId> | move <specId> <index>
+          .\mby-pc.bat draft spec add <compId> <topic> [--subtype S] [--qty N] | update <specId> [--subtype S] [--notes N] [--modes a,b] | clone <specId> | move <specId> <index> | move-to <specId> <targetCompId> [index] | rm <specId>
           .\mby-pc.bat draft spec set-content <specId> [--raw TEXT | --file REL_MD_PATH | --image REL_IMG_PATH [--caption C] [--alt A] | --clear | -]
           .\mby-pc.bat finalize [--allow-placeholders] [--out DIR] [--json]
           .\mby-pc.bat ui view <setup|details|format|organize|finalize|review|viewer> | viewer-open <webDir>
@@ -250,7 +250,8 @@ public sealed class WrapperCliDispatcher(
                 ImagePath: mut.ImagePath,
                 Caption: mut.Caption,
                 AltText: mut.AltText,
-                Modes: mut.Modes);
+                Modes: mut.Modes,
+                TargetContainerId: mut.TargetContainerId);
 
             var (ok, code, body) = await liveGui.SendAsync(HttpMethod.Post, "/api/live/mutate", payload, ct).ConfigureAwait(false);
             if (ok)
@@ -478,6 +479,17 @@ public sealed class WrapperCliDispatcher(
         if (op == "move" && args.Length >= 3 && int.TryParse(args[2], out var idx))
         {
             return new LiveDraftMutationRequest("move-spec", TargetId: args[1], Index: idx);
+        }
+
+        if (op == "clone" && args.Length >= 2)
+        {
+            return new LiveDraftMutationRequest("clone-spec", TargetId: args[1]);
+        }
+
+        if (op == "move-to" && args.Length >= 3)
+        {
+            int? targetIdx = args.Length >= 4 && int.TryParse(args[3], out var parsedIdx) ? parsedIdx : null;
+            return new LiveDraftMutationRequest("move-spec-to", TargetId: args[1], TargetContainerId: args[2], Index: targetIdx);
         }
 
         if (op == "set-content" && args.Length >= 2)

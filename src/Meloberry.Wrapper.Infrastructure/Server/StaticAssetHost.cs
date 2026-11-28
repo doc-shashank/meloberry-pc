@@ -1,15 +1,12 @@
 using System.Net;
 using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 using Meloberry.Wrapper.Application.Abstractions;
 
 namespace Meloberry.Wrapper.Infrastructure.Server;
 
 /// <summary>Serves embedded Shell HTML, bundled CSS, native ES modules, SVG icons, and isolated WebApps.</summary>
-public sealed partial class StaticAssetHost(
+public sealed class StaticAssetHost(
     IWrapperMetadataProvider metadataProvider,
-    ISettingsStore settingsStore,
     IWebAppMountRegistry mountRegistry)
 {
     private static readonly Dictionary<string, string> MimeTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -43,19 +40,13 @@ public sealed partial class StaticAssetHost(
         "WebAssets.styles.overlays.css"
     ];
 
-    [GeneratedRegex(@"<head(\s[^>]*)?>", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex HeadOpenTagRegex();
-
     private static readonly Lazy<IReadOnlyDictionary<string, string>> IconMapLazy = new(BuildEmbeddedIconMap);
     private static readonly Lazy<IReadOnlyDictionary<string, byte[]>> JsModulesLazy = new(BuildEmbeddedJsMap);
-    private static readonly Lazy<string> PaperThemeCssLazy = new(() => ReadEmbeddedText("WebAssets.styles.paper-theme.css").Trim());
     private static readonly Lazy<byte[]> CombinedShellCssBytesLazy = new(() =>
     {
         var bundled = string.Join("\n\n", OrderedStyleSuffixes.Select(suffix => ReadEmbeddedText(suffix).TrimEnd()));
         return Encoding.UTF8.GetBytes($"{bundled}\n");
     });
-
-    public static string PaperThemeFallbackCss => PaperThemeCssLazy.Value;
 
     public static IReadOnlyDictionary<string, string> GetEmbeddedIconMapSnapshot() => IconMapLazy.Value;
 
@@ -146,6 +137,7 @@ public sealed partial class StaticAssetHost(
         bool isHead,
         CancellationToken ct)
     {
+        _ = shellPort;
         var trimmed = path["/viewer/".Length..];
         var slash = trimmed.IndexOf('/');
         if (slash <= 0)
@@ -202,77 +194,10 @@ public sealed partial class StaticAssetHost(
             return;
         }
 
-        if (string.Equals(relPath, "index.html", StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(ext, ".html", StringComparison.OrdinalIgnoreCase))
-        {
-            var html = await File.ReadAllTextAsync(target, Encoding.UTF8, ct).ConfigureAwait(false);
-            var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
-            if (settings.OverrideWebAppTheme && !string.IsNullOrWhiteSpace(settings.ThemeMode))
-            {
-                var earlyScript = BuildViewerEarlyThemeScript(settings.ThemeMode);
-                var headMatch = HeadOpenTagRegex().Match(html);
-                html = headMatch.Success
-                    ? html.Insert(headMatch.Index + headMatch.Length, "\n" + earlyScript)
-                    : earlyScript + html;
-            }
-
-            var bridge = BuildViewerThemeBridgeScript(shellPort);
-            var bodyClose = html.LastIndexOf("</body>", StringComparison.OrdinalIgnoreCase);
-            html = bodyClose >= 0 ? html.Insert(bodyClose, bridge) : html + bridge;
-            var bytes = Encoding.UTF8.GetBytes(html);
-            await resp.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
-            resp.Close();
-            return;
-        }
-
         await using var fs = File.OpenRead(target);
         await fs.CopyToAsync(resp.OutputStream, ct).ConfigureAwait(false);
         resp.Close();
     }
-
-    private static string BuildViewerEarlyThemeScript(string themeMode)
-    {
-        var safeTheme = JsonSerializer.Serialize(themeMode);
-        var paperCss = string.Equals(themeMode, "paper", StringComparison.OrdinalIgnoreCase)
-            ? $"<style id=\"mby-wrapper-theme-fallback\">\n{PaperThemeCssLazy.Value}\n</style>"
-            : string.Empty;
-        return $"{paperCss}<script>(function(){{if(window.__mbyOrigTheme===undefined){{window.__mbyOrigTheme=document.documentElement.getAttribute('data-theme');}}document.documentElement.setAttribute('data-theme',{safeTheme});}})();</script>";
-    }
-
-    private static string BuildViewerThemeBridgeScript(int shellPort) => $$"""
-<script>
-(() => {
-  const allowed127 = "http://127.0.0.1:{{shellPort}}";
-  const allowedLocal = "http://localhost:{{shellPort}}";
-  const origTheme = window.__mbyOrigTheme !== undefined ? window.__mbyOrigTheme : document.documentElement.getAttribute("data-theme");
-  window.addEventListener("message", ev => {
-    if (ev.origin !== allowed127 && ev.origin !== allowedLocal) return;
-    const d = ev.data;
-    if (!d || d.type !== "mby-theme-override") return;
-    const styleId = "mby-wrapper-theme-fallback";
-    let el = document.getElementById(styleId);
-    if (d.override) {
-      if (!el && document.head && d.fallbackCss) {
-        el = document.createElement("style");
-        el.id = styleId;
-        el.textContent = String(d.fallbackCss);
-        document.head.appendChild(el);
-      }
-      if (d.theme) document.documentElement.setAttribute("data-theme", String(d.theme));
-    } else {
-      if (el) el.remove();
-      if (origTheme !== null && origTheme !== "") document.documentElement.setAttribute("data-theme", origTheme);
-      else document.documentElement.removeAttribute("data-theme");
-    }
-    try {
-      if (ev.source) {
-        ev.source.postMessage({ type: "mby-theme-applied", theme: d.override ? (d.theme || null) : origTheme }, ev.origin);
-      }
-    } catch {}
-  });
-})();
-</script>
-""";
 
     private static IReadOnlyDictionary<string, string> BuildEmbeddedIconMap()
     {

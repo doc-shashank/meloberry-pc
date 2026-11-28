@@ -9,7 +9,9 @@ using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Models;
 using Meloberry.Wrapper.Infrastructure;
 using Meloberry.Wrapper.Infrastructure.GitHub;
+using Meloberry.Wrapper.Infrastructure.Persistence;
 using Meloberry.Wrapper.Infrastructure.Server;
+using Meloberry.Wrapper.Infrastructure.Workspace;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -89,7 +91,7 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         var shellAnalysis = await shellHttp.PostAsync("/api/analysis", new StringContent("{}", Encoding.UTF8, "application/json"));
         Assert.Equal(HttpStatusCode.NotFound, shellAnalysis.StatusCode);
 
-        // Authorized bootstrap succeeds and advertises viewerOrigin, paperThemeFallbackCss, and resolvedTools.
+        // Authorized bootstrap succeeds and advertises viewerOrigin, mbyCompatibility, and resolvedTools.
         using var bootReq = new HttpRequestMessage(HttpMethod.Get, "/api/bootstrap");
         bootReq.Headers.Add("X-Mby-Token", _server.AuthToken);
         var bootResp = await shellHttp.SendAsync(bootReq);
@@ -98,7 +100,8 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.Contains(_server.ViewerBaseUrl.TrimEnd('/'), bootJson);
         using (var bootDoc = System.Text.Json.JsonDocument.Parse(bootJson))
         {
-            Assert.Contains("html[data-theme=\"paper\"]", bootDoc.RootElement.GetProperty("paperThemeFallbackCss").GetString() ?? string.Empty);
+            Assert.True(bootDoc.RootElement.TryGetProperty("mbyCompatibility", out _));
+            Assert.False(bootDoc.RootElement.TryGetProperty("paperThemeFallbackCss", out _));
             var tools = bootDoc.RootElement.GetProperty("resolvedTools");
             Assert.True(tools.TryGetProperty("mby", out _));
             Assert.True(tools.TryGetProperty("melomg", out _));
@@ -118,6 +121,7 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         using (var appsDoc = System.Text.Json.JsonDocument.Parse(await appsResp.Content.ReadAsStringAsync()))
         {
             Assert.True(appsDoc.RootElement.TryGetProperty("resolvedTools", out _));
+            Assert.True(appsDoc.RootElement.TryGetProperty("mbyCompatibility", out _));
         }
 
         // Mount dummy WebApp.
@@ -142,10 +146,10 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, (await viewerHttp.GetAsync("/")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await viewerHttp.GetAsync("/api/bootstrap")).StatusCode);
 
-        // Mounted WebApp serves index.html cleanly with theme bridge injected, and ShellPort rejects /viewer/*.
+        // Mounted WebApp serves index.html verbatim (WebApps handle mby-theme-override natively when built with --all-themes), and ShellPort rejects /viewer/*.
         var indexResp = await viewerHttp.GetAsync(viewerUrl);
         Assert.Equal(HttpStatusCode.OK, indexResp.StatusCode);
-        Assert.Contains("mby-theme-override", await indexResp.Content.ReadAsStringAsync());
+        Assert.Equal("<html><body>ok</body></html>", await indexResp.Content.ReadAsStringAsync());
         Assert.Equal(HttpStatusCode.NotFound, (await shellHttp.GetAsync(new Uri(viewerUrl).AbsolutePath)).StatusCode);
 
         // HEAD /viewer/<slotId>/index.html returns 200 OK with empty response body.
@@ -215,7 +219,7 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Server_EnumeratesVisibleSubfolders_AndInjectsEarlyThemeIntoMountedWebAppHead()
+    public async Task Server_EnumeratesVisibleSubfolders_AndServesMountedWebAppHtmlVerbatim()
     {
         using var shellHttp = new HttpClient { BaseAddress = new Uri(_server!.BaseUrl) };
         using var viewerHttp = new HttpClient { BaseAddress = new Uri(_server.ViewerBaseUrl) };
@@ -271,11 +275,8 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         var viewerUrl = openDoc.RootElement.GetProperty("url").GetString()!;
 
         var html = await viewerHttp.GetStringAsync(viewerUrl);
-        var headCloseIdx = html.IndexOf("</head>", StringComparison.OrdinalIgnoreCase);
-        var earlyAttrIdx = html.IndexOf("setAttribute('data-theme',\"paper\")", StringComparison.Ordinal);
-        Assert.True(earlyAttrIdx > 0 && earlyAttrIdx < headCloseIdx, "Expected early theme script inside <head> before </head>.");
-        Assert.Contains("mby-wrapper-theme-fallback", html);
-        Assert.Contains("mby-theme-applied", html);
+        Assert.Equal("<!DOCTYPE html><html><head><title>App</title></head><body>ok</body></html>", html);
+        Assert.DoesNotContain("mby-wrapper-theme-fallback", html);
     }
 
     [Fact]
@@ -433,13 +434,13 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
             lastIdx = idx;
         }
 
-        Assert.Contains("html[data-theme=\"paper\"]", StaticAssetHost.PaperThemeFallbackCss);
         using var bootReq = new HttpRequestMessage(HttpMethod.Get, "/api/bootstrap");
         bootReq.Headers.Add("X-Mby-Token", _server.AuthToken);
         var bootResp = await shellHttp.SendAsync(bootReq);
         Assert.Equal(HttpStatusCode.OK, bootResp.StatusCode);
         using var bootDoc = JsonDocument.Parse(await bootResp.Content.ReadAsStringAsync());
-        Assert.Equal(StaticAssetHost.PaperThemeFallbackCss, bootDoc.RootElement.GetProperty("paperThemeFallbackCss").GetString());
+        Assert.False(bootDoc.RootElement.TryGetProperty("paperThemeFallbackCss", out _));
+        Assert.True(bootDoc.RootElement.TryGetProperty("mbyCompatibility", out _));
 
         var visited = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var queue = new Queue<Uri>();
@@ -480,7 +481,7 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/organizeDrag.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/organizeFlip.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/organize.js"));
-        Assert.True(visited.ContainsKey("/shell/js/views/prompt/specTemplates.js"));
+        Assert.False(visited.ContainsKey("/shell/js/views/prompt/specTemplates.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/format.js"));
         Assert.True(visited.ContainsKey("/shell/js/views/prompt/review.js"));
         var allJs = string.Join("\n", visited.Values);
@@ -1035,15 +1036,117 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
         Assert.DoesNotContain("injectImageIntoRawText", modalJs);
     }
 
-    private sealed class StubTitleBatchClient(string ws) : IMbyCliClient
+    [Fact]
+    public async Task ManageLibraryAndCaptureAnalysis_DelegateToMbyCliWhenCompatible_AndFallBackLocally()
     {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "lib_ingest_data"));
+        Directory.CreateDirectory(paths.AppsDirectory);
+        var ws = Path.Combine(_tempRoot, "lib_ingest_ws");
+        Directory.CreateDirectory(ws);
+        var webDir = Path.Combine(ws, "sample_web");
+        Directory.CreateDirectory(webDir);
+        await File.WriteAllTextAsync(Path.Combine(webDir, "index.html"), "<html></html>");
+        await File.WriteAllTextAsync(Path.Combine(webDir, "app.js"), "console.log(1);");
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+        var appsStore = new ManagedAppsStore(paths);
+        var mountRegistry = new WebAppMountRegistry();
+        var analysisStore = new WebAppAnalysisStore();
+        var initializer = new WorkspaceInitializer(paths, analysisStore, new WorkspaceShimWriter());
+
+        var cli = new StubLibraryAndIngestClient(ws);
+        var libHandler = new ManageLibraryHandler(mountRegistry, analysisStore, initializer, settingsStore, appsStore, cli);
+        var capHandler = new CaptureAnalysisHandler(mountRegistry, analysisStore, appsStore, cli, settingsStore);
+
+        // Without installed mby binary -> local fallback discovery & local analysis save
+        var localApps = await libHandler.DiscoverActiveWorkspaceWebAppsAsync();
+        Assert.Contains(localApps, a => a.Name == "sample_web");
+        var mountRes = await libHandler.OpenWebAppAsync(webDir);
+        Assert.True(mountRes.IsSuccess);
+
+        var localCap = await capHandler.CaptureAsync(mountRes.Value.SlotId, "{\"score\":80}", "# Report");
+        Assert.True(localCap.IsSuccess);
+        Assert.True(File.Exists(localCap.Value));
+        Assert.False(cli.ListWebAppsCalled);
+        Assert.False(cli.IngestCalled);
+
+        // With compatible mby 2.2.0-beta-1 binary -> delegates to ListWebAppsAsync and IngestAnalysisAsync
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "mby-cli-2.2.0-beta-1.exe"), [(byte)'M', (byte)'Z', 1]);
+        var cliApps = await libHandler.DiscoverActiveWorkspaceWebAppsAsync();
+        Assert.True(cli.ListWebAppsCalled);
+        Assert.Contains(cliApps, a => a.Name == "cli_discovered_web");
+
+        var cliCap = await capHandler.CaptureAsync(mountRes.Value.SlotId, "{\"score\":95}", "# Great");
+        Assert.True(cli.IngestCalled);
+        Assert.True(cliCap.IsSuccess);
+        Assert.Equal(Path.Combine(webDir, "reports", "cli_ingested.json"), cliCap.Value);
+    }
+
+    private sealed class StubLibraryAndIngestClient(string ws) : IMbyCliClient
+    {
+        public bool ListWebAppsCalled { get; private set; }
+        public bool IngestCalled { get; private set; }
+
+        public Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default) =>
+            Task.FromResult(Result<MbyCliVersionInfo>.Success(MbyCliCompatibility.Evaluate("2.2.0-beta-1", MbyCliCompatibility.RequiredCapabilities)));
         public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(string exePath, string directory, CancellationToken ct = default)
+        {
+            ListWebAppsCalled = true;
+            return Task.FromResult(Result<IReadOnlyList<DiscoveredWebApp>>.Success(
+                [new DiscoveredWebApp("cli_discovered_web", Path.Combine(ws, "cli_discovered_web"), 2)]));
+        }
         public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplyAtAsync(string exePath, string targetAddr, string specPath, int insertAt, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<ScaffoldCliResult>> ScaffoldAsync(string exePath, string blueprintJson, string format, string? outputPath, bool apply, bool allowPlaceholders, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<AssetAddCliResult>> AddAssetAsync(string exePath, string? workspaceAddr, string? targetDir, string sourceFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> PatchWithMarkdownAsync(string exePath, string targetAddr, string markdownFragment, string? subtype, string? imagePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<PrimeAgentsMdCliResult>> PrimeAgentsMdAsync(string exePath, IReadOnlyList<string> topics, string container, string authoringFormat, string cliPrefix, string? workspacePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IngestAnalysisCliResult>> IngestAnalysisAsync(string exePath, string webAppDir, string payloadJson, CancellationToken ct = default)
+        {
+            IngestCalled = true;
+            return Task.FromResult(Result<IngestAnalysisCliResult>.Success(
+                new IngestAnalysisCliResult(Path.Combine(webAppDir, "reports", "cli_ingested.json"), Path.Combine(webAppDir, "reports", "cli_ingested.md"))));
+        }
+        public Task<Result<string>> MoveEntityAsync(string exePath, string addr, string targetCompAddr, int? index, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ReorderContainerAsync(string exePath, string containerAddr, IReadOnlyList<string> orderedIds, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<CloneEntityCliResult>> CloneEntityAsync(string exePath, string addr, string? targetCompAddr, int? insertAt, string? newRef, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    private sealed class StubTitleBatchClient(string ws) : IMbyCliClient
+    {
+        public Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default) =>
+            Task.FromResult(Result<MbyCliVersionInfo>.Success(MbyCliCompatibility.Evaluate("2.2.0-beta-1", MbyCliCompatibility.RequiredCapabilities)));
+        public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(string exePath, string directory, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, bool includeAllThemes, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplyAtAsync(string exePath, string targetAddr, string specPath, int insertAt, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<ScaffoldCliResult>> ScaffoldAsync(string exePath, string blueprintJson, string format, string? outputPath, bool apply, bool allowPlaceholders, string? workingDir, CancellationToken ct = default)
+        {
+            var dir = outputPath ?? Path.Combine(ws, ".meloberry", "build-src", "session");
+            Directory.CreateDirectory(dir);
+            return Task.FromResult(Result<ScaffoldCliResult>.Success(new ScaffoldCliResult(format, "session", null, new Dictionary<string, string>(), dir, false, [], [], null)));
+        }
+        public Task<Result<AssetAddCliResult>> AddAssetAsync(string exePath, string? workspaceAddr, string? targetDir, string sourceFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> PatchWithMarkdownAsync(string exePath, string targetAddr, string markdownFragment, string? subtype, string? imagePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<PrimeAgentsMdCliResult>> PrimeAgentsMdAsync(string exePath, IReadOnlyList<string> topics, string container, string authoringFormat, string cliPrefix, string? workspacePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IngestAnalysisCliResult>> IngestAnalysisAsync(string exePath, string webAppDir, string payloadJson, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> MoveEntityAsync(string exePath, string addr, string targetCompAddr, int? index, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ReorderContainerAsync(string exePath, string containerAddr, IReadOnlyList<string> orderedIds, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<CloneEntityCliResult>> CloneEntityAsync(string exePath, string addr, string? targetCompAddr, int? insertAt, string? newRef, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
 
         public async Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default)
         {
@@ -1057,13 +1160,31 @@ public sealed partial class LocalServerAndAnalysisTests : IAsyncLifetime
 
     private sealed class StubSignalEmittingBatchClient(string ws) : IMbyCliClient
     {
+        public Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default) =>
+            Task.FromResult(Result<MbyCliVersionInfo>.Success(MbyCliCompatibility.Evaluate("2.2.0-beta-1", MbyCliCompatibility.RequiredCapabilities)));
         public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(string exePath, string directory, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, bool includeAllThemes, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplyAtAsync(string exePath, string targetAddr, string specPath, int insertAt, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<ScaffoldCliResult>> ScaffoldAsync(string exePath, string blueprintJson, string format, string? outputPath, bool apply, bool allowPlaceholders, string? workingDir, CancellationToken ct = default)
+        {
+            var dir = outputPath ?? Path.Combine(ws, ".meloberry", "build-src", "session");
+            Directory.CreateDirectory(dir);
+            return Task.FromResult(Result<ScaffoldCliResult>.Success(new ScaffoldCliResult(format, "session", null, new Dictionary<string, string>(), dir, false, [], [], null)));
+        }
+        public Task<Result<AssetAddCliResult>> AddAssetAsync(string exePath, string? workspaceAddr, string? targetDir, string sourceFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> PatchWithMarkdownAsync(string exePath, string targetAddr, string markdownFragment, string? subtype, string? imagePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<PrimeAgentsMdCliResult>> PrimeAgentsMdAsync(string exePath, IReadOnlyList<string> topics, string container, string authoringFormat, string cliPrefix, string? workspacePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IngestAnalysisCliResult>> IngestAnalysisAsync(string exePath, string webAppDir, string payloadJson, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> MoveEntityAsync(string exePath, string addr, string targetCompAddr, int? index, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ReorderContainerAsync(string exePath, string containerAddr, IReadOnlyList<string> orderedIds, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<CloneEntityCliResult>> CloneEntityAsync(string exePath, string addr, string? targetCompAddr, int? insertAt, string? newRef, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
 
         public async Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default)
         {

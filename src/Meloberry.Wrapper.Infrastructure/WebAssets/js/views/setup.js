@@ -9,6 +9,7 @@ import {
   toast,
   pruneSelectedAppNames,
   syncWorkspaceChrome,
+  renderIncompatibleMbyBanner,
   renderOutdatedBanner,
   updateChromeOffset
 } from "../ui/chrome.js";
@@ -117,7 +118,11 @@ export async function refreshApps(render = true) {
     if (res.data.resolvedTools) {
       state.resolvedTools = res.data.resolvedTools;
     }
+    if ("mbyCompatibility" in res.data) {
+      state.mbyCompatibility = res.data.mbyCompatibility ?? null;
+    }
     pruneSelectedAppNames();
+    renderIncompatibleMbyBanner();
     if (render) {
       renderAppsCart();
       emit("prompt:availability-changed");

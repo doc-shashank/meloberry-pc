@@ -8,6 +8,7 @@ using Meloberry.Wrapper.Domain.Services;
 using Meloberry.Wrapper.Infrastructure;
 using Meloberry.Wrapper.Infrastructure.Persistence;
 using Meloberry.Wrapper.Infrastructure.Server;
+using Meloberry.Wrapper.Infrastructure.Workspace;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -25,14 +26,14 @@ public sealed class TokenAndScaffoldTests : IDisposable
     [Fact]
     public void EstimateTokens_FollowsBpeStructureAndDistinguishesDensity()
     {
-        Assert.Equal(0, AgentsMdComposer.EstimateTokens(""));
-        Assert.Equal(0, AgentsMdComposer.EstimateTokens(" "));
+        Assert.Equal(0, TokenEstimator.EstimateTokens(""));
+        Assert.Equal(0, TokenEstimator.EstimateTokens(" "));
 
         var shortText = "Hello world";
         var richJson = """{"container":"session","components":[{"kind":"article","blocks":[{"kind":"table","headers":["A","B"]}]}]}""";
 
-        var shortCount = AgentsMdComposer.EstimateTokens(shortText);
-        var jsonCount = AgentsMdComposer.EstimateTokens(richJson);
+        var shortCount = TokenEstimator.EstimateTokens(shortText);
+        var jsonCount = TokenEstimator.EstimateTokens(richJson);
 
         Assert.InRange(shortCount, 2, 4);
         Assert.True(jsonCount > shortCount * 5, $"Expected JSON token count ({jsonCount}) to be > 5x short text ({shortCount}).");
@@ -74,8 +75,85 @@ public sealed class TokenAndScaffoldTests : IDisposable
     }
 
     [Fact]
-    public void SessionScaffoldGenerator_RejectsMissingQty_AndHonorsOrganizationOrderAndFallback()
+    public void MbyCliCompatibility_EvaluatesMinimumFloorPrereleasesAndCapabilities()
     {
+        var tooOld = MbyCliCompatibility.Evaluate("2.1.6", MbyCliCompatibility.RequiredCapabilities);
+        Assert.False(tooOld.IsCompatible);
+        Assert.Contains("2.2.0", tooOld.IncompatibilityReason);
+
+        var beta1 = MbyCliCompatibility.Evaluate("2.2.0-beta-1", MbyCliCompatibility.RequiredCapabilities);
+        Assert.True(beta1.IsCompatible, beta1.IncompatibilityReason);
+
+        var missingCap = MbyCliCompatibility.Evaluate("2.2.0", ["spec.modeGroups"]);
+        Assert.False(missingCap.IsCompatible);
+        Assert.Contains("build.allThemes", missingCap.IncompatibilityReason);
+
+        var unparseable = MbyCliCompatibility.Evaluate("legacy", MbyCliCompatibility.RequiredCapabilities);
+        Assert.False(unparseable.IsCompatible);
+    }
+
+    [Fact]
+    public void SpecOrderExpander_ExpandsUsingCatalogModeGroupsAndOrderedItems()
+    {
+        IReadOnlyList<SpecTopicItem> catalog =
+        [
+            new(
+                "callout",
+                "content",
+                "block",
+                "Callout",
+                ":::callout",
+                "article",
+                ModeGroups: [new SpecModeGroup("tone", "Tone", true, [new("pearl", "Pearl"), new("clinical", "Clinical"), new("warning", "Warning")])]),
+            new(
+                "assertion-reason",
+                "content",
+                "question",
+                "Assertion-Reason",
+                ":::assertion-reason",
+                "quiz",
+                ModeGroups:
+                [
+                    new SpecModeGroup("scheme", "Scheme", false, [new("4opt", "4-Option"), new("5opt", "5-Option")]),
+                    new SpecModeGroup("answer", "Answers", true, [new("both-true", "Both True"), new("both-false", "Both False")])
+                ])
+        ];
+
+        var calloutComp = new PromptComponentPlan(
+            "a1",
+            ComponentKind.Article,
+            "Core Concepts",
+            [new("callout", true, 2, null, ["pearl", "clinical"])],
+            OrderedItems: null);
+
+        var expandedCallouts = SpecOrderExpander.Expand(calloutComp, specs: catalog);
+        Assert.Equal(2, expandedCallouts.Count);
+        Assert.Equal("pearl", expandedCallouts[0].Subtype);
+        Assert.Equal("clinical", expandedCallouts[1].Subtype);
+
+        var arComp = new PromptComponentPlan(
+            "q1",
+            ComponentKind.Quiz,
+            "Check",
+            [new("assertion-reason", true, 1, Modes: ["5opt"])]);
+
+        var expandedAr = Assert.Single(SpecOrderExpander.Expand(arComp, specs: catalog));
+        Assert.Equal("assertion-reason", expandedAr.Topic);
+        Assert.Equal("5opt", expandedAr.Subtype);
+    }
+
+    [Fact]
+    public async Task SessionTemplateHandler_RejectsIncompatibleMbyCliAndMissingQty()
+    {
+        var dataDir = Path.Combine(_tempRoot, "sess_compat_data");
+        var paths = new WrapperDataPaths(dataDir);
+        Directory.CreateDirectory(paths.AppsDirectory);
+        await File.WriteAllBytesAsync(Path.Combine(paths.AppsDirectory, "mby-cli-2.1.6.exe"), [(byte)'M', (byte)'Z', 1]);
+        var settingsStore = new JsonSettingsStore(paths);
+        var appsStore = new ManagedAppsStore(paths);
+        var managedApps = new ManagedAppsHandler(appsStore, new StubToolDownloader(), settingsStore, new StubVersionMbyClient("2.1.6", []));
+        var handler = new SessionTemplateHandler(managedApps, new StubVersionMbyClient("2.1.6", []), settingsStore);
+
         var missingQtyDraft = new PromptDraft(
             Container: ContainerKind.Session,
             Title: "Broken Draft",
@@ -84,186 +162,17 @@ public sealed class TokenAndScaffoldTests : IDisposable
             SourceText: "",
             Selections: [],
             Attachments: [],
-            Components:
-            [
-                new("a1", ComponentKind.Article, "Intro", [new("text", true, null)])
-            ]);
+            Components: [new("a1", ComponentKind.Article, "Intro", [new("text", true, null)])]);
 
-        var failed = SessionScaffoldGenerator.Generate(missingQtyDraft, []);
-        Assert.True(failed.IsFailure);
-        Assert.Contains("Qty", failed.Error!.Description, StringComparison.OrdinalIgnoreCase);
+        var incompatRes = await handler.BuildRawJsonAsync(missingQtyDraft);
+        Assert.True(incompatRes.IsFailure);
+        Assert.Equal("Cli.Incompatible", incompatRes.Error!.Code);
 
-        var quizFallbackDraft = new PromptDraft(
-            Container: ContainerKind.StandaloneQuiz,
-            Title: "Empty Quiz",
-            Description: "",
-            AuthoringFormat: AuthoringFormat.Json,
-            SourceText: "",
-            Selections: [],
-            Attachments: []);
-
-        var quizResult = SessionScaffoldGenerator.Generate(quizFallbackDraft, []);
-        Assert.True(quizResult.IsSuccess);
-        using var quizDoc = JsonDocument.Parse(quizResult.Value.RawJson);
-        Assert.Equal("quiz", quizDoc.RootElement.GetProperty("kind").GetString());
-        Assert.Equal(5, quizDoc.RootElement.GetProperty("questions").GetArrayLength());
-
-        var sessionDraft = new PromptDraft(
-            Container: ContainerKind.Session,
-            Title: "Organized Session",
-            Description: "Structured sequence",
-            AuthoringFormat: AuthoringFormat.Json,
-            SourceText: "",
-            Selections: [],
-            Attachments: [],
-            Components:
-            [
-                new(
-                    "a1",
-                    ComponentKind.Article,
-                    "Part 1",
-                    [
-                        new("text", true, 1),
-                        new("table", true, 1, null, ["stickyFirstCol", "hideableCols"]),
-                        new("callout", true, 1, null, ["warning"])
-                    ],
-                    OrderedItems:
-                    [
-                        new("i1", "table", 1),
-                        new("i2", "text", 1),
-                        new("i3", "callout", 1)
-                    ]),
-                new(
-                    "q1",
-                    ComponentKind.Quiz,
-                    "Check",
-                    [new("assertion-reason", true, 2)],
-                    OrderedItems: [new("q1_1", "assertion-reason", 1)])
-            ]);
-
-        var sessionResult = SessionScaffoldGenerator.Generate(sessionDraft, []);
-        Assert.True(sessionResult.IsSuccess);
-        Assert.NotNull(sessionResult.Value.Warnings);
-        Assert.Contains(sessionResult.Value.Warnings!, w => w.Contains("assertion-reason", StringComparison.OrdinalIgnoreCase));
-        using var sessionDoc = JsonDocument.Parse(sessionResult.Value.RawJson);
-        var comps = sessionDoc.RootElement.GetProperty("components");
-        Assert.Equal(2, comps.GetArrayLength());
-        var blocks = comps[0].GetProperty("blocks");
-        Assert.Equal(3, blocks.GetArrayLength());
-        Assert.Equal("table", blocks[0].GetProperty("kind").GetString());
-        Assert.Equal("text", blocks[1].GetProperty("kind").GetString());
-        Assert.Equal("callout", blocks[2].GetProperty("kind").GetString());
-        Assert.Equal("warning", blocks[2].GetProperty("tone").GetString());
-        var arQuestions = comps[1].GetProperty("questions");
-        Assert.Equal(2, arQuestions.GetArrayLength());
-        Assert.Equal("assertion-reason", arQuestions[0].GetProperty("type").GetString());
-        Assert.Equal("assertion-reason", arQuestions[1].GetProperty("type").GetString());
-    }
-
-    [Fact]
-    public void SessionScaffoldGenerator_SupportsMixedMcqAndFlashcard_AndReconcilesTrimAndAppend()
-    {
-        var mixedDraft = new PromptDraft(
-            Container: ContainerKind.StandaloneQuiz,
-            Title: "Mixed Drill",
-            Description: "",
-            AuthoringFormat: AuthoringFormat.Json,
-            SourceText: "",
-            Selections: [],
-            Attachments: [],
-            Components:
-            [
-                new(
-                    "q1",
-                    ComponentKind.Quiz,
-                    "Mixed Quiz",
-                    [
-                        new("mcq", true, 3, Modes: ["mixed"]),
-                        new("flashcard", true, 2, Modes: ["mixed"])
-                    ],
-                    OrderedItems:
-                    [
-                        new("m1", "mcq", 1),
-                        new("m2", "mcq", 2),
-                        new("m3", "mcq", 3),
-                        new("m4", "mcq", 4),
-                        new("f1", "flashcard", 1)
-                    ])
-            ]);
-
-        var res = SessionScaffoldGenerator.Generate(mixedDraft, SpecCatalogDefaults.BuiltInFallbackCatalog);
-        Assert.True(res.IsSuccess);
-        Assert.True(res.Value.RequiresPlaceholderImage);
-        Assert.NotNull(res.Value.Warnings);
-        Assert.Contains(res.Value.Warnings!, w => w.Contains("added 1 'flashcard'", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(res.Value.Warnings!, w => w.Contains("trimmed 1 'mcq'", StringComparison.OrdinalIgnoreCase));
-
-        using var doc = JsonDocument.Parse(res.Value.RawJson);
-        var questions = doc.RootElement.GetProperty("questions");
-        Assert.Equal(5, questions.GetArrayLength());
-
-        Assert.False(questions[0].GetProperty("isMultiCorrect").GetBoolean());
-        Assert.True(questions[1].GetProperty("isMultiCorrect").GetBoolean());
-        Assert.False(questions[2].GetProperty("isMultiCorrect").GetBoolean());
-
-        Assert.False(questions[3].GetProperty("front").TryGetProperty("imagePath", out _));
-        Assert.True(questions[4].GetProperty("front").TryGetProperty("imagePath", out _));
-    }
-
-    [Fact]
-    public void SessionScaffoldGenerator_SupportsBothFalseAssertionReason_FiltersOrderedItems_AndLinksAllCards()
-    {
-        var arGroups = SpecCatalogDefaults.GetModeGroupsForTopic("assertion-reason");
-        Assert.Equal(2, arGroups.Count);
-        Assert.Contains(arGroups, g => g.MultiSelect && g.Options.Any(o => o.Key == "both-false"));
-
-        var draft = new PromptDraft(
-            Container: ContainerKind.Session,
-            Title: "Scaffold Edge Cases",
-            Description: "",
-            AuthoringFormat: AuthoringFormat.Json,
-            SourceText: "",
-            Selections: [],
-            Attachments: [],
-            Components:
-            [
-                new(
-                    "a1",
-                    ComponentKind.Article,
-                    "Article",
-                    [
-                        new("text", true, 1),
-                        new("link", true, 2)
-                    ],
-                    OrderedItems:
-                    [
-                        new("stale_img", "image", 1),
-                        new("t1", "text", 1),
-                        new("l1", "link", 1),
-                        new("l2", "link", 2)
-                    ]),
-                new(
-                    "q1",
-                    ComponentKind.Quiz,
-                    "Quiz",
-                    [new("assertion-reason", true, 1, Modes: ["both-false"])])
-            ]);
-
-        var res = SessionScaffoldGenerator.Generate(draft, SpecCatalogDefaults.BuiltInFallbackCatalog);
-        Assert.True(res.IsSuccess);
-        using var doc = JsonDocument.Parse(res.Value.RawJson);
-        var comps = doc.RootElement.GetProperty("components");
-        var article = comps[0];
-        var blocks = article.GetProperty("blocks");
-        Assert.Single(blocks.EnumerateArray());
-        var textBody = blocks[0].GetProperty("text").GetString()!;
-        Assert.Contains("mby://card/card-1", textBody);
-        Assert.Contains("mby://card/card-2", textBody);
-        Assert.Equal(2, article.GetProperty("links").GetArrayLength());
-
-        var ar = comps[1].GetProperty("questions")[0];
-        Assert.Equal("5opt", ar.GetProperty("scheme").GetString());
-        Assert.Equal("both-false", ar.GetProperty("answer").GetString());
+        var okApps = new ManagedAppsHandler(appsStore, new StubToolDownloader(), settingsStore, new StubVersionMbyClient("2.2.0-beta-1", MbyCliCompatibility.RequiredCapabilities));
+        var okHandler = new SessionTemplateHandler(okApps, new StubVersionMbyClient("2.2.0-beta-1", MbyCliCompatibility.RequiredCapabilities), settingsStore);
+        var qtyFail = await okHandler.BuildRawJsonAsync(missingQtyDraft);
+        Assert.True(qtyFail.IsFailure);
+        Assert.Contains("Qty", qtyFail.Error!.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -277,7 +186,7 @@ public sealed class TokenAndScaffoldTests : IDisposable
 
         var wsDir = Path.Combine(_tempRoot, "ws");
         Directory.CreateDirectory(wsDir);
-        File.Copy(liveMby, Path.Combine(wsDir, "mby-cli-2.0.0.exe"), overwrite: true);
+        File.Copy(liveMby, Path.Combine(wsDir, Path.GetFileName(liveMby)), overwrite: true);
 
         var services = new ServiceCollection();
         services.AddSingleton<IAppShutdownCoordinator>(new NoopShutdown());
@@ -501,54 +410,53 @@ public sealed class TokenAndScaffoldTests : IDisposable
         Assert.DoesNotContain("Step 2 - Format", livePrompt.Markdown);
         Assert.DoesNotContain("ui view format", livePrompt.Markdown);
 
-        var agentsMd = AgentsMdComposer.Compose(new AgentsMdComposeInput(
-            WorkspacePath: @"C:\ws\cardio",
-            WorkspaceMbyFileName: "mby.exe",
-            WorkspaceMelomgFileName: null,
-            ExtraWorkspaceExecutables: [],
-            CopiedFiles: [],
-            CopiedFolders: [],
-            Container: ContainerKind.Session,
-            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
-            SelectedSpecs: [],
-            MelomgSpecsText: null,
-            IncludeLinkBlock: false,
-            UsesWorkspaceShim: true,
-            WorkflowMode: WorkflowMode.LiveAgent));
+        var agentsMd = WrapperAgentsAppendixComposer.CombineWithBaseAgentsMd(
+            "# mby CLI AGENTS.md\n\nBase guide.\n",
+            new WrapperAgentsAppendixInput(
+                WorkspacePath: @"C:\ws\cardio",
+                WorkspaceMelomgFileName: null,
+                ExtraWorkspaceExecutables: [],
+                CopiedFiles: [],
+                CopiedFolders: [],
+                MelomgSpecsText: null,
+                ExternalAttachments: null,
+                UsesWorkspaceShim: true,
+                WorkflowMode: WorkflowMode.LiveAgent));
         Assert.Contains("Step 2 - Details", agentsMd);
         Assert.Contains("ui view details --json", agentsMd);
         Assert.DoesNotContain("Step 2 - Format", agentsMd);
         Assert.DoesNotContain("ui view format", agentsMd);
     }
 
-    [Fact]
-    public void SessionScaffoldGenerator_ExpandsMultiModeCalloutsViaSpecOrderExpander_WhenOrderedItemsNull()
+    private sealed class StubToolDownloader : IGitHubToolDownloader
     {
-        var draft = new PromptDraft(
-            Container: ContainerKind.StandaloneArticle,
-            Title: "Callout Modes Test",
-            Description: string.Empty,
-            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
-            SourceText: string.Empty,
-            Selections: [new("callout", true, 2, null, ["pearl", "clinical"])],
-            Attachments: [],
-            Components:
-            [
-                new PromptComponentPlan(
-                    "a1",
-                    ComponentKind.Article,
-                    "Core Concepts",
-                    [new("callout", true, 2, null, ["pearl", "clinical"])],
-                    OrderedItems: null)
-            ]);
+        public Task<Result<ToolReleaseCandidate>> CheckLatestToolAsync(string toolKey, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> DownloadToTempFileAsync(ToolReleaseCandidate candidate, Action<DownloadProgressSnapshot> progressCallback, CancellationToken ct = default) => throw new NotSupportedException();
+    }
 
-        var res = SessionScaffoldGenerator.Generate(draft, SpecCatalogDefaults.BuiltInFallbackCatalog);
-        Assert.True(res.IsSuccess, res.Error?.Description);
-        using var doc = JsonDocument.Parse(res.Value.RawJson);
-        var blocks = doc.RootElement.GetProperty("blocks");
-        Assert.Equal(2, blocks.GetArrayLength());
-        Assert.Equal("pearl", blocks[0].GetProperty("tone").GetString());
-        Assert.Equal("clinical", blocks[1].GetProperty("tone").GetString());
+    private sealed class StubVersionMbyClient(string version, IReadOnlyList<string> capabilities) : IMbyCliClient
+    {
+        public Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default) =>
+            Task.FromResult(Result<MbyCliVersionInfo>.Success(MbyCliCompatibility.Evaluate(version, capabilities)));
+        public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(string exePath, string directory, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, bool includeAllThemes, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplyAtAsync(string exePath, string targetAddr, string specPath, int insertAt, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<ScaffoldCliResult>> ScaffoldAsync(string exePath, string blueprintJson, string format, string? outputPath, bool apply, bool allowPlaceholders, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<AssetAddCliResult>> AddAssetAsync(string exePath, string? workspaceAddr, string? targetDir, string sourceFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> PatchWithMarkdownAsync(string exePath, string targetAddr, string markdownFragment, string? subtype, string? imagePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<PrimeAgentsMdCliResult>> PrimeAgentsMdAsync(string exePath, IReadOnlyList<string> topics, string container, string authoringFormat, string cliPrefix, string? workspacePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IngestAnalysisCliResult>> IngestAnalysisAsync(string exePath, string webAppDir, string payloadJson, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> MoveEntityAsync(string exePath, string addr, string targetCompAddr, int? index, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ReorderContainerAsync(string exePath, string containerAddr, IReadOnlyList<string> orderedIds, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<CloneEntityCliResult>> CloneEntityAsync(string exePath, string addr, string? targetCompAddr, int? insertAt, string? newRef, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
     }
 
     public void Dispose()

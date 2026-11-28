@@ -351,14 +351,28 @@ public sealed class SettingsAndCliTests : IDisposable
     private sealed class StubBuildCliClient : IMbyCliClient
     {
         public string? CapturedOutputDir { get; private set; }
+        public Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default) =>
+            Task.FromResult(Result<MbyCliVersionInfo>.Success(MbyCliCompatibility.Evaluate("2.2.0-beta-1", MbyCliCompatibility.RequiredCapabilities)));
         public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(string exePath, string directory, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplyAtAsync(string exePath, string targetAddr, string specPath, int insertAt, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<ScaffoldCliResult>> ScaffoldAsync(string exePath, string blueprintJson, string format, string? outputPath, bool apply, bool allowPlaceholders, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<AssetAddCliResult>> AddAssetAsync(string exePath, string? workspaceAddr, string? targetDir, string sourceFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> PatchWithMarkdownAsync(string exePath, string targetAddr, string markdownFragment, string? subtype, string? imagePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<PrimeAgentsMdCliResult>> PrimeAgentsMdAsync(string exePath, IReadOnlyList<string> topics, string container, string authoringFormat, string cliPrefix, string? workspacePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IngestAnalysisCliResult>> IngestAnalysisAsync(string exePath, string webAppDir, string payloadJson, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> MoveEntityAsync(string exePath, string addr, string targetCompAddr, int? index, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ReorderContainerAsync(string exePath, string containerAddr, IReadOnlyList<string> orderedIds, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<CloneEntityCliResult>> CloneEntityAsync(string exePath, string addr, string? targetCompAddr, int? insertAt, string? newRef, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
-        public async Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default)
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) =>
+            BuildWorkspaceAsync(exePath, workspaceId, outputDir, workingDir, includeAllThemes: true, ct);
+        public async Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, bool includeAllThemes, CancellationToken ct = default)
         {
             CapturedOutputDir = outputDir;
             Directory.CreateDirectory(outputDir);
@@ -409,7 +423,7 @@ public sealed class SettingsAndCliTests : IDisposable
         Assert.True(live.IsLiveCli);
         Assert.Equal(fakeExe, live.ActiveMbyPath);
         Assert.Contains(live.Specs, s => s.Topic == "mcq" && s.DisplayName == "Multiple Choice");
-        Assert.Contains(live.Specs, s => s.Topic == SpecCatalogDefaults.VirtualLinkTopicName);
+        Assert.Contains(live.Specs, s => s.Topic == "link");
         Assert.True(live.SpecIcons.ContainsKey("mcq"));
         Assert.StartsWith("<svg", live.SpecIcons["mcq"], StringComparison.OrdinalIgnoreCase);
     }
@@ -440,7 +454,7 @@ public sealed class SettingsAndCliTests : IDisposable
             }
             """;
 
-        var parsed = ProcessMbyCliClient.ParseSpecCatalogPayload(jsonWithIcons, 0);
+        var parsed = MbyCliResponseParsers.ParseSpecCatalogPayload(jsonWithIcons, 0);
         Assert.True(parsed.IsSuccess);
         Assert.Single(parsed.Value.Specs);
         Assert.Equal("Multiple Choice", parsed.Value.Specs[0].DisplayName);
@@ -464,7 +478,7 @@ public sealed class SettingsAndCliTests : IDisposable
               }
             }
             """;
-        var parsedLegacy = ProcessMbyCliClient.ParseSpecCatalogPayload(jsonWithoutIcons, 0);
+        var parsedLegacy = MbyCliResponseParsers.ParseSpecCatalogPayload(jsonWithoutIcons, 0);
         Assert.True(parsedLegacy.IsSuccess);
         Assert.Empty(parsedLegacy.Value.SpecIcons);
     }
@@ -480,22 +494,42 @@ public sealed class SettingsAndCliTests : IDisposable
 
     private sealed class StubSpecCliClient : IMbyCliClient
     {
+        public Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default) =>
+            Task.FromResult(Result<MbyCliVersionInfo>.Success(MbyCliCompatibility.Evaluate("2.2.0-beta-1", MbyCliCompatibility.RequiredCapabilities)));
         public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) =>
             throw new NotSupportedException();
 
-        public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default) =>
-            Task.FromResult(Result<SpecCatalogResult>.Success(new SpecCatalogResult(
-                [new SpecTopicItem("mcq", "content", "question", "MCQ", "{ type:\"mcq\" }", "quiz", false, SpecCatalogDefaults.GetModeGroupsForTopic("mcq"), "Multiple Choice")],
+        public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default)
+        {
+            var mcqGroups = SpecCatalogDefaults.BuiltInFallbackCatalog.First(s => s.Topic == "mcq").ModeGroups;
+            var linkSpec = SpecCatalogDefaults.BuiltInFallbackCatalog.First(s => s.Topic == "link");
+            return Task.FromResult(Result<SpecCatalogResult>.Success(new SpecCatalogResult(
+                [
+                    new SpecTopicItem("mcq", "content", "question", "MCQ", "{ type:\"mcq\" }", "quiz", false, mcqGroups, "Multiple Choice", SupportsImage: true),
+                    linkSpec
+                ],
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["mcq"] = "<svg viewBox=\"0 0 24 24\"></svg>"
                 })));
+        }
 
         public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(string exePath, string directory, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, bool includeAllThemes, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplyAtAsync(string exePath, string targetAddr, string specPath, int insertAt, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<ScaffoldCliResult>> ScaffoldAsync(string exePath, string blueprintJson, string format, string? outputPath, bool apply, bool allowPlaceholders, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<AssetAddCliResult>> AddAssetAsync(string exePath, string? workspaceAddr, string? targetDir, string sourceFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> PatchWithMarkdownAsync(string exePath, string targetAddr, string markdownFragment, string? subtype, string? imagePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<PrimeAgentsMdCliResult>> PrimeAgentsMdAsync(string exePath, IReadOnlyList<string> topics, string container, string authoringFormat, string cliPrefix, string? workspacePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IngestAnalysisCliResult>> IngestAnalysisAsync(string exePath, string webAppDir, string payloadJson, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> MoveEntityAsync(string exePath, string addr, string targetCompAddr, int? index, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ReorderContainerAsync(string exePath, string containerAddr, IReadOnlyList<string> orderedIds, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<CloneEntityCliResult>> CloneEntityAsync(string exePath, string addr, string? targetCompAddr, int? insertAt, string? newRef, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
     }
 
@@ -520,7 +554,7 @@ public sealed class SettingsAndCliTests : IDisposable
             }
             """;
 
-        var parsed = ProcessMbyCliClient.ParseSpecCatalogPayload(jsonWithVariedIcons, 0);
+        var parsed = MbyCliResponseParsers.ParseSpecCatalogPayload(jsonWithVariedIcons, 0);
         Assert.True(parsed.IsSuccess, parsed.Error?.Description);
         Assert.True(parsed.Value.IconsSupported);
         Assert.Contains("<rect/>", parsed.Value.SpecIcons["mcq"]);
@@ -538,7 +572,7 @@ public sealed class SettingsAndCliTests : IDisposable
               }
             }
             """;
-        var parsedNoIcons = ProcessMbyCliClient.ParseSpecCatalogPayload(jsonWithoutIcons, 0);
+        var parsedNoIcons = MbyCliResponseParsers.ParseSpecCatalogPayload(jsonWithoutIcons, 0);
         Assert.True(parsedNoIcons.IsSuccess, parsedNoIcons.Error?.Description);
         Assert.Empty(parsedNoIcons.Value.SpecIcons);
         Assert.False(parsedNoIcons.Value.IconsSupported);
@@ -623,10 +657,13 @@ public sealed class SettingsAndCliTests : IDisposable
     private sealed class ToggleIconsMbyCliClient : IMbyCliClient
     {
         public bool ReturnIcons { get; set; }
+        public Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default) =>
+            Task.FromResult(Result<MbyCliVersionInfo>.Success(MbyCliCompatibility.Evaluate("2.2.0-beta-1", MbyCliCompatibility.RequiredCapabilities)));
         public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default)
         {
-            IReadOnlyList<SpecTopicItem> specs = [new("mcq", "content", "question", "MCQ", "{ type:\"mcq\" }", "quiz", false, SpecCatalogDefaults.GetModeGroupsForTopic("mcq"), "Multiple Choice")];
+            var mcqGroups = SpecCatalogDefaults.BuiltInFallbackCatalog.First(s => s.Topic == "mcq").ModeGroups;
+            IReadOnlyList<SpecTopicItem> specs = [new("mcq", "content", "question", "MCQ", "{ type:\"mcq\" }", "quiz", false, mcqGroups, "Multiple Choice", SupportsImage: true)];
             var icons = ReturnIcons
                 ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["mcq"] = "<svg viewBox=\"0 0 24 24\"><rect/></svg>" }
                 : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -634,10 +671,106 @@ public sealed class SettingsAndCliTests : IDisposable
         }
         public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(string exePath, string directory, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, bool includeAllThemes, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplyAtAsync(string exePath, string targetAddr, string specPath, int insertAt, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<ScaffoldCliResult>> ScaffoldAsync(string exePath, string blueprintJson, string format, string? outputPath, bool apply, bool allowPlaceholders, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<AssetAddCliResult>> AddAssetAsync(string exePath, string? workspaceAddr, string? targetDir, string sourceFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> PatchWithMarkdownAsync(string exePath, string targetAddr, string markdownFragment, string? subtype, string? imagePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<PrimeAgentsMdCliResult>> PrimeAgentsMdAsync(string exePath, IReadOnlyList<string> topics, string container, string authoringFormat, string cliPrefix, string? workspacePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IngestAnalysisCliResult>> IngestAnalysisAsync(string exePath, string webAppDir, string payloadJson, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> MoveEntityAsync(string exePath, string addr, string targetCompAddr, int? index, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ReorderContainerAsync(string exePath, string containerAddr, IReadOnlyList<string> orderedIds, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<CloneEntityCliResult>> CloneEntityAsync(string exePath, string addr, string? targetCompAddr, int? insertAt, string? newRef, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public void MbyCliResponseParsers_ParsesPart1EnvelopePayloads_ForVersionSpecsScaffoldAssetsWebAppsIngestAndClone()
+    {
+        var ver = MbyCliResponseParsers.ParseVersionInfoPayload(
+            """{"success":true,"data":{"version":"2.2.0-beta-1","capabilities":["spec.modeGroups","scaffold.cli","asset.cli","prime.agentsMd","build.allThemes"]}}""",
+            0);
+        Assert.True(ver.IsSuccess);
+        Assert.Equal("2.2.0-beta-1", ver.Value.Version);
+        Assert.True(ver.Value.IsCompatible);
+        Assert.Contains("build.allThemes", ver.Value.Capabilities);
+
+        var specJson = """
+            {
+              "success": true,
+              "data": {
+                "schemas": [
+                  {
+                    "topic": "mcq",
+                    "displayName": "Multiple Choice",
+                    "scope": "content",
+                    "category": "question",
+                    "summary": "MCQ",
+                    "compactSignature": ":::mcq",
+                    "command": "quiz",
+                    "supportsImage": true,
+                    "markdownHint": "Use :::mcq",
+                    "markdownStarter": ":::mcq\nStem\n- [x] A\n:::",
+                    "modeGroups": [
+                      { "fieldName": "variant", "label": "Selection", "multiSelect": false, "options": [{ "key": "single", "label": "Single", "iconKey": "mcq" }] }
+                    ]
+                  }
+                ],
+                "icons": { "mcq": "<svg viewBox=\"0 0 24 24\"></svg>" }
+              }
+            }
+            """;
+        var specs = MbyCliResponseParsers.ParseSpecCatalogPayload(specJson, 0);
+        Assert.True(specs.IsSuccess);
+        var mcq = Assert.Single(specs.Value.Specs);
+        Assert.True(mcq.SupportsImage);
+        Assert.Equal("Use :::mcq", mcq.MarkdownHint);
+        Assert.Contains("- [x] A", mcq.MarkdownStarter);
+        Assert.Equal("mcq", mcq.ModeGroups![0].Options[0].IconKey);
+
+        var scafMissingErr = MbyCliResponseParsers.TryParseScaffoldMissingContentError(
+            """{"success":false,"error":{"code":"Scaffold.MissingContent","message":"1 spec lacks content","data":[{"componentTitle":"Quiz 1","topic":"mcq"}]}}""",
+            string.Empty);
+        Assert.NotNull(scafMissingErr);
+        Assert.Contains("Quiz 1:mcq", scafMissingErr!.Description);
+
+        var scafOk = MbyCliResponseParsers.ParseScaffoldPayload(
+            """{"success":true,"data":{"format":"md","slug":"cardio","writtenPath":"C:\\ws\\.meloberry\\build-src\\cardio","markdownFiles":{"_session.md":"# Cardio"},"requiresPlaceholderImage":false,"placeholderSpecsUsed":[],"warnings":["warn1"]}}""",
+            0);
+        Assert.True(scafOk.IsSuccess);
+        Assert.Equal("cardio", scafOk.Value.Slug);
+        Assert.True(scafOk.Value.MarkdownFiles!.ContainsKey("_session.md"));
+
+        var assetOk = MbyCliResponseParsers.ParseAssetAddPayload(
+            """{"success":true,"data":{"workspaceId":"ws_1","relativeAssetPath":"assets/ecg.png","fullPath":"C:\\ws\\assets\\ecg.png","alreadyExisted":true}}""",
+            0);
+        Assert.True(assetOk.IsSuccess);
+        Assert.Equal("assets/ecg.png", assetOk.Value.RelativeAssetPath);
+        Assert.True(assetOk.Value.AlreadyExisted);
+
+        var webApps = MbyCliResponseParsers.ParseDiscoveredWebAppsPayload(
+            """{"success":true,"data":[{"name":"cardio_web","path":"C:\\ws\\cardio_web","reportCount":3}]}""",
+            0);
+        Assert.True(webApps.IsSuccess);
+        Assert.Single(webApps.Value);
+        Assert.Equal("cardio_web", webApps.Value[0].Name);
+
+        var ingest = MbyCliResponseParsers.ParseIngestAnalysisPayload(
+            """{"success":true,"data":{"jsonPath":"C:\\ws\\analysis\\attempt-1.json","markdownPath":"C:\\ws\\analysis\\attempt-1.md"}}""",
+            0);
+        Assert.True(ingest.IsSuccess);
+        Assert.EndsWith("attempt-1.json", ingest.Value.JsonPath);
+
+        var cloned = MbyCliResponseParsers.ParseClonePayload(
+            """{"success":true,"data":{"newId":"blk_copy","entityKind":"block","targetContainerId":"art_1","newIndex":2,"newRef":"blk_2"}}""",
+            0);
+        Assert.True(cloned.IsSuccess);
+        Assert.Equal("blk_copy", cloned.Value.NewId);
+        Assert.Equal(2, cloned.Value.NewIndex);
     }
 
     public void Dispose()

@@ -2,10 +2,10 @@ export const VIEW_ORDER = { setup: 0, format: 1, organize: 2, review: 3, viewer:
 export const WORKFLOW_STEPS = ["setup", "format", "organize", "review", "viewer"];
 
 export const state = {
-  metadata: { version: "1.2.0", productName: "Meloberry PC", selfUpdateRepoOwner: "doc-shashank", selfUpdateRepoName: "meloberry-pc" },
+  metadata: { version: "", productName: "Meloberry PC", selfUpdateRepoOwner: "doc-shashank", selfUpdateRepoName: "meloberry-pc" },
   icons: {},
   cliSpecIcons: {},
-  paperThemeFallbackCss: "",
+  mbyCompatibility: null,
   appsDirectory: "",
   viewerOrigin: "",
   settings: { themeMode: "berry", overrideWebAppTheme: true, recentWebApps: [] },

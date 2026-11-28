@@ -72,14 +72,77 @@ public sealed record SpecCatalogResult(
 /// <summary>Executes `mby` CLI commands out-of-process with MBY_AGENT=1.</summary>
 public interface IMbyCliClient
 {
+    Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default);
     Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default);
     Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default);
     Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default);
     Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default);
+    Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(string exePath, string directory, CancellationToken ct = default);
     Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default);
+    Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, bool includeAllThemes, CancellationToken ct = default) =>
+        BuildWorkspaceAsync(exePath, workspaceId, outputDir, workingDir, ct);
     Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default);
     Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default);
+    Task<Result<string>> ApplyAtAsync(string exePath, string targetAddr, string specPath, int insertAt, string? workingDir, CancellationToken ct = default);
     Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default);
+    Task<Result<ScaffoldCliResult>> ScaffoldAsync(
+        string exePath,
+        string blueprintJson,
+        string format,
+        string? outputPath,
+        bool apply,
+        bool allowPlaceholders,
+        string? workingDir,
+        CancellationToken ct = default);
+    Task<Result<AssetAddCliResult>> AddAssetAsync(
+        string exePath,
+        string? workspaceAddr,
+        string? targetDir,
+        string sourceFilePath,
+        string? workingDir,
+        CancellationToken ct = default);
+    Task<Result<string>> PatchWithMarkdownAsync(
+        string exePath,
+        string targetAddr,
+        string markdownFragment,
+        string? subtype,
+        string? imagePath,
+        string? workingDir,
+        CancellationToken ct = default);
+    Task<Result<PrimeAgentsMdCliResult>> PrimeAgentsMdAsync(
+        string exePath,
+        IReadOnlyList<string> topics,
+        string container,
+        string authoringFormat,
+        string cliPrefix,
+        string? workspacePath,
+        CancellationToken ct = default);
+    Task<Result<IngestAnalysisCliResult>> IngestAnalysisAsync(
+        string exePath,
+        string webAppDir,
+        string payloadJson,
+        CancellationToken ct = default);
+    Task<Result<string>> MoveEntityAsync(
+        string exePath,
+        string addr,
+        string targetCompAddr,
+        int? index,
+        string? workingDir,
+        CancellationToken ct = default);
+    Task<Result<string>> ReorderContainerAsync(
+        string exePath,
+        string containerAddr,
+        IReadOnlyList<string> orderedIds,
+        string? workingDir,
+        CancellationToken ct = default);
+    Task<Result<CloneEntityCliResult>> CloneEntityAsync(
+        string exePath,
+        string addr,
+        string? targetCompAddr,
+        int? insertAt,
+        string? newRef,
+        string? workingDir,
+        CancellationToken ct = default);
 }
 
 /// <summary>Executes `melomg` CLI commands out-of-process with MBY_AGENT=1.</summary>
@@ -279,7 +342,8 @@ public sealed record LiveDraftMutationRequest(
     string? ImagePath = null,
     string? Caption = null,
     string? AltText = null,
-    IReadOnlyList<string>? Modes = null);
+    IReadOnlyList<string>? Modes = null,
+    string? TargetContainerId = null);
 
 /// <summary>Result returned by `LiveDraftHandler.MutateAsync`.</summary>
 public sealed record LiveDraftMutationResult(

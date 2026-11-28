@@ -159,10 +159,12 @@ export function updateChromeOffset() {
   const viewport = document.querySelector(".views-viewport");
   const strip = document.getElementById("workspaceStrip");
   const outdatedBar = document.getElementById("outdatedToolsBar");
+  const incompatBar = document.getElementById("incompatibleMbyBar");
   if (!viewport || !strip) return;
   const stripH = strip.offsetHeight || 42;
   const outdatedH = outdatedBar && !outdatedBar.classList.contains("hidden") ? outdatedBar.offsetHeight : 0;
-  viewport.style.setProperty("--chrome-offset", `${stripH + outdatedH}px`);
+  const incompatH = incompatBar && !incompatBar.classList.contains("hidden") ? incompatBar.offsetHeight : 0;
+  viewport.style.setProperty("--chrome-offset", `${stripH + outdatedH + incompatH}px`);
 }
 
 export function switchView(viewName) {
@@ -291,6 +293,23 @@ export function renderOutdatedBanner() {
     .map(t => `${t.workspaceRelativePath} (v${t.workspaceVersion} -> apps\\ v${t.latestAppVersion})`)
     .join(" | ");
   text.innerHTML = `<strong>Older workspace CLI detected:</strong> ${escapeHtml(summary)}`;
+  bar.classList.remove("hidden");
+  updateChromeOffset();
+}
+
+export function renderIncompatibleMbyBanner() {
+  const bar = document.getElementById("incompatibleMbyBar");
+  const text = document.getElementById("incompatibleMbyText");
+  if (!bar || !text) return;
+  const compat = state.mbyCompatibility;
+  if (!compat || compat.isCompatible !== false) {
+    bar.classList.add("hidden");
+    updateChromeOffset();
+    return;
+  }
+
+  text.textContent = compat.bannerMessage
+    || `Installed Meloberry CLI (${compat.installedVersion || "missing"}) is older than required v${compat.minimumVersion || "2.2.0"}. Update mby-cli to continue.`;
   bar.classList.remove("hidden");
   updateChromeOffset();
 }
@@ -444,4 +463,21 @@ export function wireChromeControls() {
     const folder = lastSep > 0 ? fullAgentsPath.slice(0, lastSep) : (state.settings.activeWorkspace?.workspacePath || "");
     api("POST", "/api/workspace/open-folder", { path: folder });
   };
+
+  document.getElementById("btnUpgradeMbyNow")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btnUpgradeMbyNow");
+    if (btn) btn.disabled = true;
+    try {
+      const res = await api("POST", "/api/apps/download", { tool: "mby" });
+      if (!res.ok) {
+        toast(res.data?.error?.description || "Failed to update mby-cli.", "err");
+        return;
+      }
+      toast("mby-cli updated. Refreshing workspace compatibility...", "ok");
+      emit("apps:refresh", true);
+      emit("specs:reload", true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
 }

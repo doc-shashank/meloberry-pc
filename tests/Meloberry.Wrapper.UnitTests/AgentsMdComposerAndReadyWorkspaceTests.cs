@@ -1,4 +1,6 @@
+using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Application.UseCases;
+using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Models;
 using Meloberry.Wrapper.Domain.Services;
 using Meloberry.Wrapper.Infrastructure.Cli;
@@ -66,7 +68,7 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
         Assert.True(first.IsSuccess);
         Assert.False(first.Value.OverwroteExisting);
         var exportedText = await File.ReadAllTextAsync(first.Value.OutputPath);
-        Assert.Contains("Active Workspace Contract", exportedText);
+        Assert.Contains("Meloberry Workspace Contract", exportedText);
         Assert.Contains("### `link` (block)", exportedText);
         Assert.Contains("**External Reference Files**", exportedText);
         Assert.Contains(externalAttachment, exportedText);
@@ -166,26 +168,22 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
     }
 
     [Fact]
-    public void AgentsMdAndPromptComposer_HandleAbsoluteCliPaths_MultilineNotes_AndBacktickFences()
+    public void WrapperAgentsAppendixComposer_HandlesAbsoluteMelomgPaths_AndBacktickFences()
     {
-        var agentsMd = AgentsMdComposer.Compose(new AgentsMdComposeInput(
-            WorkspacePath: @"C:\ws",
-            Container: ContainerKind.Session,
-            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
-            WorkspaceMbyFileName: @"C:\Users\Alice\AppData\Local\Meloberry\apps\mby-cli-2.0.0.exe",
-            WorkspaceMelomgFileName: @"C:\Tools With Spaces\meloberry-melomg-2.1.0.exe",
-            ExtraWorkspaceExecutables: [],
-            CopiedFiles: ["ch2.pdf"],
-            CopiedFolders: [],
-            SelectedSpecs: [],
-            MelomgSpecsText: "Uses ```triple``` backticks",
-            IncludeLinkBlock: false));
+        var agentsMd = WrapperAgentsAppendixComposer.CombineWithBaseAgentsMd(
+            "# mby Base Guide\n",
+            new WrapperAgentsAppendixInput(
+                WorkspacePath: @"C:\ws",
+                CopiedFiles: ["ch2.pdf"],
+                CopiedFolders: [],
+                ExternalAttachments: null,
+                MelomgSpecsText: "Uses ```triple``` backticks",
+                WorkspaceMelomgFileName: @"C:\Tools With Spaces\meloberry-melomg-2.1.0.exe",
+                ExtraWorkspaceExecutables: []));
 
         Assert.DoesNotContain(@".\C:\", agentsMd);
-        Assert.Contains(@"C:\Users\Alice\AppData\Local\Meloberry\apps\mby-cli-2.0.0.exe", agentsMd);
-        Assert.Contains("& \"C:\\Tools With Spaces\\meloberry-melomg-2.1.0.exe\"", agentsMd);
+        Assert.Contains(@"& ""C:\Tools With Spaces\meloberry-melomg-2.1.0.exe""", agentsMd);
         Assert.Contains("````text", agentsMd);
-        Assert.DoesNotContain("``Study Session", agentsMd);
 
         var prompt = PromptComposer.Compose(new PromptDraft(
             Container: ContainerKind.StandaloneArticle,
@@ -205,7 +203,7 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
     }
 
     [Fact]
-    public async Task ReadyWorkspaceHandler_ExcludesMissingStagedPaths_AndHonorsExplicitToolOverrides()
+    public async Task ReadyWorkspaceHandler_ExcludesMissingStagedPaths_HonorsOverrides_AndRejectsIncompatibleCli()
     {
         var dataDir = Path.Combine(_tempRoot, "data_prec");
         var paths = new WrapperDataPaths(dataDir);
@@ -243,12 +241,12 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
             MelomgExecutableOverride: overrideMelomg));
 
         var appsStore = new ManagedAppsStore(paths);
-        var mbyClient = new ProcessMbyCliClient();
-        var specLoader = new LoadSpecCatalogHandler(appsStore, mbyClient, settingsStore);
+        var stubCli = new StubPrimeMbyCliClient();
+        var specLoader = new LoadSpecCatalogHandler(appsStore, stubCli, settingsStore);
         var handler = new ReadyWorkspaceHandler(
             new AgentsMdFileWriter(),
             appsStore,
-            mbyClient,
+            stubCli,
             new ProcessMelomgCliClient(),
             settingsStore,
             specLoader);
@@ -266,7 +264,9 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
             WorkingDirectory: workspace);
 
         var res = await handler.ReadyWorkspaceAsync(new ReadyWorkspaceRequest(draft, OverwriteConfirmed: false));
-        Assert.True(res.IsSuccess);
+        Assert.True(res.IsSuccess, res.Error?.Description);
+        Assert.Equal(overrideMby, stubCli.CapturedExePath);
+        Assert.Equal(overrideMby, stubCli.CapturedCliPrefix);
 
         var agentsText = await File.ReadAllTextAsync(res.Value.OutputPath);
         Assert.Contains("./present.txt", agentsText);
@@ -275,40 +275,45 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
         Assert.DoesNotContain("./deleted_in_ws.pdf", agentsText);
         Assert.DoesNotContain("./MissingFigs/", agentsText);
         Assert.DoesNotContain("./NonExistentCopiedFolder/", agentsText);
-
-        Assert.Contains(overrideMby, agentsText);
-        Assert.DoesNotContain(@".\mby-cli-1.0.0.exe", agentsText);
         Assert.Contains(overrideMelomg, agentsText);
+
+        var oldCli = new StubPrimeMbyCliClient { ReportedVersion = "2.1.6" };
+        var oldHandler = new ReadyWorkspaceHandler(
+            new AgentsMdFileWriter(),
+            appsStore,
+            oldCli,
+            new ProcessMelomgCliClient(),
+            settingsStore,
+            new LoadSpecCatalogHandler(appsStore, oldCli, settingsStore));
+        var oldRes = await oldHandler.ReadyWorkspaceAsync(new ReadyWorkspaceRequest(draft, OverwriteConfirmed: true));
+        Assert.True(oldRes.IsFailure);
+        Assert.Equal("Cli.Incompatible", oldRes.Error!.Code);
     }
 
     [Fact]
-    public void AgentsMdComposer_WithWorkspaceShim_EmitsMbyPcBatCommandsAndLiveControlHints()
+    public void WrapperAgentsAppendixComposer_WithWorkspaceShim_EmitsMbyPcBatCommandsAndLiveControlHints()
     {
-        var markdown = AgentsMdComposer.Compose(new AgentsMdComposeInput(
-            WorkspacePath: @"C:\ws\shim",
-            Container: ContainerKind.Session,
-            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
-            WorkspaceMbyFileName: @".\mby-pc.bat mby",
-            WorkspaceMelomgFileName: @".\mby-pc.bat melomg",
-            ExtraWorkspaceExecutables: [],
-            CopiedFiles: ["lecture.pdf"],
-            CopiedFolders: [],
-            SelectedSpecs: [],
-            MelomgSpecsText: "extract all --quality high",
-            IncludeLinkBlock: false,
-            ExternalAttachments: null,
-            UsesWorkspaceShim: true));
+        var agentsMd = WrapperAgentsAppendixComposer.CombineWithBaseAgentsMd(
+            "# mby Base Guide\n",
+            new WrapperAgentsAppendixInput(
+                WorkspacePath: @"C:\ws\shim",
+                CopiedFiles: ["lecture.pdf"],
+                CopiedFolders: [],
+                ExternalAttachments: null,
+                MelomgSpecsText: "extract all --quality high",
+                WorkspaceMelomgFileName: @".\mby-pc.bat melomg",
+                ExtraWorkspaceExecutables: [],
+                UsesWorkspaceShim: true));
 
-        Assert.Contains(".\\mby-pc.bat mby", markdown);
-        Assert.Contains(".\\mby-pc.bat melomg", markdown);
-        Assert.DoesNotContain(@".\.\mby-pc.bat", markdown);
-        Assert.Contains(".\\mby-pc.bat status --json", markdown);
-        Assert.Contains(".\\mby-pc.bat draft get --json", markdown);
-        Assert.Contains(".\\mby-pc.bat finalize --json", markdown);
+        Assert.Contains(".\\mby-pc.bat melomg", agentsMd);
+        Assert.DoesNotContain(@".\.\mby-pc.bat", agentsMd);
+        Assert.Contains(".\\mby-pc.bat status --json", agentsMd);
+        Assert.Contains(".\\mby-pc.bat draft get --json", agentsMd);
+        Assert.Contains(".\\mby-pc.bat finalize --json", agentsMd);
     }
 
     [Fact]
-    public void LiveAgentPromptAndAgentsMd_EmitStepByStepGuiControlProtocol()
+    public void LiveAgentPromptAndAppendix_EmitStepByStepGuiControlProtocol()
     {
         var draft = new PromptDraft(
             Container: ContainerKind.Session,
@@ -330,26 +335,66 @@ public sealed class AgentsMdComposerAndReadyWorkspaceTests : IDisposable
         Assert.Contains("--image", composed.Markdown);
         Assert.Contains(".\\mby-pc.bat finalize --json", composed.Markdown);
 
-        var agentsInput = new AgentsMdComposeInput(
-            WorkspacePath: @"C:\Study\Renal",
-            Container: ContainerKind.Session,
-            AuthoringFormat: AuthoringFormat.MarkdownDirectory,
-            WorkspaceMbyFileName: "mby.exe",
-            WorkspaceMelomgFileName: "melomg.exe",
-            ExtraWorkspaceExecutables: [],
-            CopiedFiles: [],
-            CopiedFolders: [],
-            SelectedSpecs: [],
-            MelomgSpecsText: null,
-            IncludeLinkBlock: false,
-            UsesWorkspaceShim: true,
-            WorkflowMode: WorkflowMode.LiveAgent);
-
-        var agentsMd = AgentsMdComposer.Compose(agentsInput);
+        var agentsMd = WrapperAgentsAppendixComposer.CombineWithBaseAgentsMd(
+            "# mby Base Guide\n",
+            new WrapperAgentsAppendixInput(
+                WorkspacePath: @"C:\Study\Renal",
+                CopiedFiles: [],
+                CopiedFolders: [],
+                ExternalAttachments: null,
+                MelomgSpecsText: null,
+                WorkspaceMelomgFileName: "melomg.exe",
+                ExtraWorkspaceExecutables: [],
+                UsesWorkspaceShim: true,
+                WorkflowMode: WorkflowMode.LiveAgent));
         Assert.Contains("Live GUI Control Protocol", agentsMd);
         Assert.Contains(".\\mby-pc.bat ui view", agentsMd);
         Assert.Contains(".\\mby-pc.bat finalize --json", agentsMd);
         Assert.Contains("Prefer `draft` + `finalize`", agentsMd);
+    }
+
+    private sealed class StubPrimeMbyCliClient : IMbyCliClient
+    {
+        public string ReportedVersion { get; init; } = "2.2.0-beta-1";
+        public string? CapturedExePath { get; private set; }
+        public string? CapturedCliPrefix { get; private set; }
+
+        public Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default) =>
+            Task.FromResult(Result<MbyCliVersionInfo>.Success(MbyCliCompatibility.Evaluate(ReportedVersion, MbyCliCompatibility.RequiredCapabilities)));
+        public Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<SpecCatalogResult>> GetSpecCatalogWithIconsAsync(string exePath, string? workingDir, CancellationToken ct = default) =>
+            Task.FromResult(Result<SpecCatalogResult>.Success(new SpecCatalogResult(SpecCatalogDefaults.BuiltInFallbackCatalog, new Dictionary<string, string>(), true)));
+        public Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(string exePath, string? workingDir, IReadOnlyList<string> topics, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WorkspaceSummary>>> ListWorkspacesAsync(string exePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(string exePath, string directory, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> BuildWorkspaceAsync(string exePath, string workspaceId, string outputDir, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ExportPackageAsync(string exePath, string workspaceId, string target, string outputPath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplySpecJsonAsync(string exePath, string specFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ApplyAtAsync(string exePath, string targetAddr, string specPath, int insertAt, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<MbyBatchExecutionResult>> RunBatchAsync(string exePath, string batchJson, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<ScaffoldCliResult>> ScaffoldAsync(string exePath, string blueprintJson, string format, string? outputPath, bool apply, bool allowPlaceholders, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<AssetAddCliResult>> AddAssetAsync(string exePath, string? workspaceAddr, string? targetDir, string sourceFilePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> PatchWithMarkdownAsync(string exePath, string targetAddr, string markdownFragment, string? subtype, string? imagePath, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+
+        public Task<Result<PrimeAgentsMdCliResult>> PrimeAgentsMdAsync(
+            string exePath,
+            IReadOnlyList<string> topics,
+            string container,
+            string authoringFormat,
+            string cliPrefix,
+            string? workspacePath,
+            CancellationToken ct = default)
+        {
+            CapturedExePath = exePath;
+            CapturedCliPrefix = cliPrefix;
+            var md = $"# mby Base Guide\n\nCLI: `{cliPrefix}`\n";
+            return Task.FromResult(Result<PrimeAgentsMdCliResult>.Success(new PrimeAgentsMdCliResult(md, 10, md.Length, topics)));
+        }
+
+        public Task<Result<IngestAnalysisCliResult>> IngestAnalysisAsync(string exePath, string webAppDir, string payloadJson, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> MoveEntityAsync(string exePath, string addr, string targetCompAddr, int? index, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> ReorderContainerAsync(string exePath, string containerAddr, IReadOnlyList<string> orderedIds, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<CloneEntityCliResult>> CloneEntityAsync(string exePath, string addr, string? targetCompAddr, int? insertAt, string? newRef, string? workingDir, CancellationToken ct = default) => throw new NotSupportedException();
     }
 
     public void Dispose()

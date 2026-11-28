@@ -7,6 +7,7 @@ import {
   addNotification,
   applyTheme,
   recordAgentActivity,
+  renderIncompatibleMbyBanner,
   renderOutdatedBanner,
   switchView,
   syncWorkspaceChrome,
@@ -73,6 +74,7 @@ function startRealtimeEvents() {
     if (info.scope === "apps") {
       await refreshApps(false);
       renderAppsCart();
+      renderIncompatibleMbyBanner();
       refreshPromptOptionsAvailability();
       await loadSpecs(true);
       if (info.changeKind === "deleted" && isExe) {
@@ -195,7 +197,7 @@ async function bootstrap() {
 
   const d = res.data;
   state.metadata = d.metadata || state.metadata;
-  state.paperThemeFallbackCss = d.paperThemeFallbackCss || "";
+  state.mbyCompatibility = d.mbyCompatibility || null;
   state.appsDirectory = d.appsDirectory || "";
   state.viewerOrigin = d.viewerOrigin || "";
   state.settings = d.settings || {};
@@ -215,6 +217,7 @@ async function bootstrap() {
   syncOverrideThemeUi();
   loadWorkspaceDraftState();
   renderOutdatedBanner();
+  renderIncompatibleMbyBanner();
   await loadPresets();
   await loadSpecs(false);
   if (state.settings.activeWorkspace?.workspacePath) {

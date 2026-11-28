@@ -10,7 +10,9 @@ public sealed class ManageLibraryHandler(
     IWebAppMountRegistry mountRegistry,
     IWebAppAnalysisStore analysisStore,
     IWorkspaceInitializer workspaceInitializer,
-    ISettingsStore settingsStore)
+    ISettingsStore settingsStore,
+    IManagedAppsStore? appsStore = null,
+    IMbyCliClient? mbyClient = null)
 {
     public async Task<Result<(string SlotId, string Url, WebAppLibraryEntry Entry)>> OpenWebAppAsync(string folderPath, CancellationToken ct = default)
     {
@@ -64,6 +66,23 @@ public sealed class ManageLibraryHandler(
         if (string.IsNullOrWhiteSpace(wsPath) || !Directory.Exists(wsPath))
         {
             return [];
+        }
+
+        if (appsStore is not null && mbyClient is not null)
+        {
+            var mbyExe = await appsStore.ResolveToolExecutableAsync("mby", wsPath, settings.MbyExecutableOverride, ct).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(mbyExe))
+            {
+                var verRes = await mbyClient.GetVersionInfoAsync(mbyExe, ct).ConfigureAwait(false);
+                if (verRes.IsSuccess && verRes.Value.IsCompatible)
+                {
+                    var cliRes = await mbyClient.ListWebAppsAsync(mbyExe, wsPath, ct).ConfigureAwait(false);
+                    if (cliRes.IsSuccess)
+                    {
+                        return cliRes.Value;
+                    }
+                }
+            }
         }
 
         return await workspaceInitializer.DiscoverWebAppsAsync(wsPath, ct).ConfigureAwait(false);

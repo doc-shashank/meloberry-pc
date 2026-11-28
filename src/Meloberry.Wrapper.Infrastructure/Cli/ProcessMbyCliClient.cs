@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json;
 using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
@@ -7,8 +9,43 @@ using Meloberry.Wrapper.Domain.Models;
 namespace Meloberry.Wrapper.Infrastructure.Cli;
 
 /// <summary>Out-of-process runner for `mby` CLI.</summary>
-public sealed class ProcessMbyCliClient : IMbyCliClient
+public sealed partial class ProcessMbyCliClient : IMbyCliClient
 {
+    private readonly ConcurrentDictionary<string, (DateTime MtimeUtc, MbyCliVersionInfo Info)> _versionCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public async Task<Result<MbyCliVersionInfo>> GetVersionInfoAsync(string exePath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(exePath))
+        {
+            return Result<MbyCliVersionInfo>.Failure(WrapperErrors.CliNotFound("mby"));
+        }
+
+        var fullPath = Path.GetFullPath(exePath);
+        DateTime mtime = File.Exists(fullPath) ? File.GetLastWriteTimeUtc(fullPath) : DateTime.MinValue;
+        if (mtime != DateTime.MinValue &&
+            _versionCache.TryGetValue(fullPath, out var cached) &&
+            cached.MtimeUtc == mtime)
+        {
+            return Result<MbyCliVersionInfo>.Success(cached.Info);
+        }
+
+        var res = await CliProcessRunner.RunAsync(fullPath, ["version", "--json"], null, ct).ConfigureAwait(false);
+        if (res.ExitCode != 0)
+        {
+            return Result<MbyCliVersionInfo>.Failure(
+                WrapperErrors.CliExecutionFailed("mby", res.ExitCode, CliProcessRunner.ExtractErrorMessage(res.StdOut, res.StdErr)));
+        }
+
+        var parsed = MbyCliResponseParsers.ParseVersionInfoPayload(res.StdOut, res.ExitCode);
+        if (parsed.IsSuccess && mtime != DateTime.MinValue)
+        {
+            _versionCache[fullPath] = (mtime, parsed.Value);
+        }
+
+        return parsed;
+    }
+
     public async Task<Result<IReadOnlyList<SpecTopicItem>>> GetSpecCatalogAsync(
         string exePath,
         string? workingDir,
@@ -25,14 +62,23 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
         string? workingDir,
         CancellationToken ct = default)
     {
-        var res = await CliProcessRunner.RunAsync(exePath, ["spec", "--icons", "--json"], workingDir, ct).ConfigureAwait(false);
+        var res = await CliProcessRunner.RunAsync(exePath, ["spec", "--icons", "--templates", "--json"], workingDir, ct).ConfigureAwait(false);
         if (res.ExitCode != 0)
         {
             var errMsg = CliProcessRunner.ExtractErrorMessage(res.StdOut, res.StdErr);
-            if (errMsg.Contains("--icons", StringComparison.OrdinalIgnoreCase) ||
+            if (errMsg.Contains("--templates", StringComparison.OrdinalIgnoreCase) ||
                 errMsg.Contains("UnsupportedOption", StringComparison.OrdinalIgnoreCase))
             {
-                res = await CliProcessRunner.RunAsync(exePath, ["spec", "--json"], workingDir, ct).ConfigureAwait(false);
+                res = await CliProcessRunner.RunAsync(exePath, ["spec", "--icons", "--json"], workingDir, ct).ConfigureAwait(false);
+                if (res.ExitCode != 0)
+                {
+                    errMsg = CliProcessRunner.ExtractErrorMessage(res.StdOut, res.StdErr);
+                    if (errMsg.Contains("--icons", StringComparison.OrdinalIgnoreCase) ||
+                        errMsg.Contains("UnsupportedOption", StringComparison.OrdinalIgnoreCase))
+                    {
+                        res = await CliProcessRunner.RunAsync(exePath, ["spec", "--json"], workingDir, ct).ConfigureAwait(false);
+                    }
+                }
             }
         }
 
@@ -42,93 +88,7 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
                 WrapperErrors.CliExecutionFailed("mby", res.ExitCode, CliProcessRunner.ExtractErrorMessage(res.StdOut, res.StdErr)));
         }
 
-        return ParseSpecCatalogPayload(res.StdOut, res.ExitCode);
-    }
-
-    public static Result<SpecCatalogResult> ParseSpecCatalogPayload(string stdOut, int exitCode)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(stdOut);
-            var data = doc.RootElement.GetProperty("data");
-            var schemas = data.GetProperty("schemas");
-            var items = new List<SpecTopicItem>();
-            var schemaIcons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var el in schemas.EnumerateArray())
-            {
-                var topic = GetString(el, "topic");
-                items.Add(new SpecTopicItem(
-                    Topic: topic,
-                    Scope: GetString(el, "scope", "content"),
-                    Category: GetString(el, "category", "other"),
-                    Summary: GetString(el, "summary"),
-                    CompactSignature: GetString(el, "compactSignature"),
-                    Command: GetString(el, "command"),
-                    IsVirtual: false,
-                    ModeGroups: SpecCatalogDefaults.GetModeGroupsForTopic(topic),
-                    DisplayName: GetNullableString(el, "displayName")));
-
-                if (el.TryGetProperty("icon", out var schemaIconEl) && schemaIconEl.ValueKind == JsonValueKind.String)
-                {
-                    var iconSvg = schemaIconEl.GetString();
-                    var normTopic = NormalizeIconKey(topic);
-                    if (!string.IsNullOrWhiteSpace(normTopic) && IsInlineSvg(iconSvg))
-                    {
-                        schemaIcons.TryAdd(normTopic, iconSvg!.Trim());
-                    }
-                }
-            }
-
-            var icons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (data.TryGetProperty("icons", out var iconsEl) && iconsEl.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var prop in iconsEl.EnumerateObject())
-                {
-                    if (prop.Value.ValueKind == JsonValueKind.String)
-                    {
-                        var svg = prop.Value.GetString();
-                        var normKey = NormalizeIconKey(prop.Name);
-                        if (!string.IsNullOrWhiteSpace(normKey) && IsInlineSvg(svg))
-                        {
-                            icons[normKey] = svg!.Trim();
-                        }
-                    }
-                }
-            }
-
-            foreach (var kv in schemaIcons)
-            {
-                icons.TryAdd(kv.Key, kv.Value);
-            }
-
-            var iconsSupported = icons.Count > 0;
-            return Result<SpecCatalogResult>.Success(new SpecCatalogResult(items, icons, iconsSupported));
-
-            static string NormalizeIconKey(string raw)
-            {
-                var k = raw.Trim().Trim('/');
-                if (k.StartsWith("specs/", StringComparison.OrdinalIgnoreCase))
-                {
-                    k = k["specs/".Length..];
-                }
-
-                if (k.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
-                {
-                    k = k[..^4];
-                }
-
-                return k.Trim();
-            }
-
-            static bool IsInlineSvg(string? value) =>
-                !string.IsNullOrWhiteSpace(value) &&
-                value.TrimStart().StartsWith("<svg", StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception ex)
-        {
-            return Result<SpecCatalogResult>.Failure(
-                WrapperErrors.CliExecutionFailed("mby", exitCode, $"Failed to parse `mby spec --json`: {ex.Message}"));
-        }
+        return MbyCliResponseParsers.ParseSpecCatalogPayload(res.StdOut, res.ExitCode);
     }
 
     public async Task<Result<IReadOnlyList<AgentsMdSpecDetail>>> GetSpecDetailsAsync(
@@ -166,15 +126,15 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
                             : null;
 
                         fields.Add(new AgentsMdSpecField(
-                            Name: GetString(f, "name"),
-                            Type: GetString(f, "type"),
+                            Name: MbyCliResponseParsers.GetString(f, "name"),
+                            Type: MbyCliResponseParsers.GetString(f, "type"),
                             Required: f.TryGetProperty("required", out var req) && req.ValueKind == JsonValueKind.True,
-                            Description: GetString(f, "description"),
+                            Description: MbyCliResponseParsers.GetString(f, "description"),
                             AllowedValues: allowed,
-                            MaxLength: GetNullableInt(f, "maxLength"),
-                            Pattern: GetNullableString(f, "pattern"),
-                            MinValue: GetNullableInt(f, "minValue"),
-                            MaxValue: GetNullableInt(f, "maxValue")));
+                            MaxLength: MbyCliResponseParsers.GetNullableInt(f, "maxLength"),
+                            Pattern: MbyCliResponseParsers.GetNullableString(f, "pattern"),
+                            MinValue: MbyCliResponseParsers.GetNullableInt(f, "minValue"),
+                            MaxValue: MbyCliResponseParsers.GetNullableInt(f, "maxValue")));
                     }
                 }
 
@@ -185,12 +145,12 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
                 }
 
                 list.Add(new AgentsMdSpecDetail(
-                    Topic: GetString(el, "topic"),
-                    Scope: GetString(el, "scope", "content"),
-                    Category: GetString(el, "category", "other"),
-                    Summary: GetString(el, "summary"),
-                    CompactSignature: GetString(el, "compactSignature"),
-                    Command: GetString(el, "command"),
+                    Topic: MbyCliResponseParsers.GetString(el, "topic"),
+                    Scope: MbyCliResponseParsers.GetString(el, "scope", "content"),
+                    Category: MbyCliResponseParsers.GetString(el, "category", "other"),
+                    Summary: MbyCliResponseParsers.GetString(el, "summary"),
+                    CompactSignature: MbyCliResponseParsers.GetString(el, "compactSignature"),
+                    Command: MbyCliResponseParsers.GetString(el, "command"),
                     DisallowUnmappedProperties: el.TryGetProperty("disallowUnmappedProperties", out var dup) && dup.ValueKind == JsonValueKind.True,
                     Fields: fields,
                     ExampleJson: exampleJson));
@@ -227,10 +187,10 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
                 foreach (var el in data.EnumerateArray())
                 {
                     list.Add(new WorkspaceSummary(
-                        Id: GetString(el, "id"),
-                        Kind: GetString(el, "kind"),
-                        SubType: GetString(el, "subType"),
-                        StorageDirectory: GetString(el, "storageDirectory"),
+                        Id: MbyCliResponseParsers.GetString(el, "id"),
+                        Kind: MbyCliResponseParsers.GetString(el, "kind"),
+                        SubType: MbyCliResponseParsers.GetString(el, "subType"),
+                        StorageDirectory: MbyCliResponseParsers.GetString(el, "storageDirectory"),
                         ItemCount: el.TryGetProperty("itemCount", out var ic) && ic.TryGetInt32(out var count) ? count : 0));
                 }
             }
@@ -244,14 +204,45 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
         }
     }
 
+    public async Task<Result<IReadOnlyList<DiscoveredWebApp>>> ListWebAppsAsync(
+        string exePath,
+        string directory,
+        CancellationToken ct = default)
+    {
+        var res = await CliProcessRunner.RunAsync(exePath, ["ls", directory, "--web", "--json"], directory, ct).ConfigureAwait(false);
+        if (res.ExitCode != 0)
+        {
+            return Result<IReadOnlyList<DiscoveredWebApp>>.Failure(
+                WrapperErrors.CliExecutionFailed("mby", res.ExitCode, CliProcessRunner.ExtractErrorMessage(res.StdOut, res.StdErr)));
+        }
+
+        return MbyCliResponseParsers.ParseDiscoveredWebAppsPayload(res.StdOut, res.ExitCode);
+    }
+
+    public Task<Result<string>> BuildWorkspaceAsync(
+        string exePath,
+        string workspaceId,
+        string outputDir,
+        string? workingDir,
+        CancellationToken ct = default) =>
+        BuildWorkspaceAsync(exePath, workspaceId, outputDir, workingDir, includeAllThemes: true, ct);
+
     public async Task<Result<string>> BuildWorkspaceAsync(
         string exePath,
         string workspaceId,
         string outputDir,
         string? workingDir,
+        bool includeAllThemes,
         CancellationToken ct = default)
     {
-        var res = await CliProcessRunner.RunAsync(exePath, ["build", workspaceId, "-o", outputDir, "--json"], workingDir, ct).ConfigureAwait(false);
+        var args = new List<string> { "build", workspaceId, "-o", outputDir };
+        if (includeAllThemes)
+        {
+            args.Add("--all-themes");
+        }
+        args.Add("--json");
+
+        var res = await CliProcessRunner.RunAsync(exePath, args, workingDir, ct).ConfigureAwait(false);
         if (res.ExitCode != 0)
         {
             return Result<string>.Failure(
@@ -262,7 +253,7 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
         {
             using var doc = JsonDocument.Parse(res.StdOut);
             var data = doc.RootElement.GetProperty("data");
-            var outDir = GetNullableString(data, "outputDirectory") ?? outputDir;
+            var outDir = MbyCliResponseParsers.GetNullableString(data, "outputDirectory") ?? outputDir;
             var resolved = !Path.IsPathRooted(outDir) && !string.IsNullOrWhiteSpace(workingDir)
                 ? Path.GetFullPath(outDir, workingDir)
                 : Path.GetFullPath(outDir);
@@ -303,7 +294,9 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
         {
             using var doc = JsonDocument.Parse(res.StdOut);
             var data = doc.RootElement.GetProperty("data");
-            var pkgPath = GetNullableString(data, "packagePath") ?? GetNullableString(data, "outputPath") ?? outputPath;
+            var pkgPath = MbyCliResponseParsers.GetNullableString(data, "packagePath")
+                ?? MbyCliResponseParsers.GetNullableString(data, "outputPath")
+                ?? outputPath;
             return Result<string>.Success(pkgPath);
         }
         catch
@@ -312,36 +305,12 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
         }
     }
 
-    public async Task<Result<string>> ApplySpecJsonAsync(
+    public Task<Result<string>> ApplySpecJsonAsync(
         string exePath,
         string specFilePath,
         string? workingDir,
-        CancellationToken ct = default)
-    {
-        var res = await CliProcessRunner.RunAsync(exePath, ["apply", specFilePath, "--json"], workingDir, ct).ConfigureAwait(false);
-        if (res.ExitCode != 0)
-        {
-            return Result<string>.Failure(
-                WrapperErrors.CliExecutionFailed("mby", res.ExitCode, CliProcessRunner.ExtractErrorMessage(res.StdOut, res.StdErr)));
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(res.StdOut);
-            var data = doc.RootElement.GetProperty("data");
-            var id = GetNullableString(data, "targetId")
-                ?? GetNullableString(data, "id")
-                ?? GetNullableString(data, "workspaceId")
-                ?? GetNullableString(data, "sessionId")
-                ?? GetNullableString(data, "setId")
-                ?? string.Empty;
-            return Result<string>.Success(id);
-        }
-        catch
-        {
-            return Result<string>.Success(string.Empty);
-        }
-    }
+        CancellationToken ct = default) =>
+        RunApplyCoreAsync(exePath, ["apply", specFilePath, "--json"], workingDir, ct);
 
     public async Task<Result<MbyBatchExecutionResult>> RunBatchAsync(
         string exePath,
@@ -363,49 +332,6 @@ public sealed class ProcessMbyCliClient : IMbyCliClient
                 WrapperErrors.CliExecutionFailed("mby", res.ExitCode, CliProcessRunner.ExtractErrorMessage(res.StdOut, res.StdErr)));
         }
 
-        try
-        {
-            using var doc = JsonDocument.Parse(res.StdOut);
-            var data = doc.RootElement.GetProperty("data");
-            var stepCount = data.TryGetProperty("stepCount", out var sc) && sc.TryGetInt32(out var count) ? count : 0;
-            string? workspaceId = null;
-            string? outputDir = null;
-
-            if (data.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var step in steps.EnumerateArray())
-                {
-                    if (!step.TryGetProperty("data", out var stepData) || stepData.ValueKind != JsonValueKind.Object)
-                    {
-                        continue;
-                    }
-
-                    workspaceId ??= GetNullableString(stepData, "targetId") ?? GetNullableString(stepData, "workspaceId");
-                    var outCandidate = GetNullableString(stepData, "outputDirectory");
-                    if (!string.IsNullOrWhiteSpace(outCandidate))
-                    {
-                        outputDir = !Path.IsPathRooted(outCandidate) && !string.IsNullOrWhiteSpace(workingDir)
-                            ? Path.GetFullPath(outCandidate, workingDir)
-                            : Path.GetFullPath(outCandidate);
-                    }
-                }
-            }
-
-            return Result<MbyBatchExecutionResult>.Success(new MbyBatchExecutionResult(workspaceId, outputDir, stepCount));
-        }
-        catch (Exception ex)
-        {
-            return Result<MbyBatchExecutionResult>.Failure(
-                WrapperErrors.CliExecutionFailed("mby", res.ExitCode, $"Failed to parse `mby batch --json`: {ex.Message}"));
-        }
+        return MbyCliResponseParsers.ParseBatchPayload(res.StdOut, res.ExitCode, workingDir);
     }
-
-    private static string GetString(JsonElement el, string prop, string fallback = "") =>
-        el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? fallback : fallback;
-
-    private static string? GetNullableString(JsonElement el, string prop) =>
-        el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-
-    private static int? GetNullableInt(JsonElement el, string prop) =>
-        el.TryGetProperty(prop, out var v) && v.TryGetInt32(out var val) ? val : null;
 }

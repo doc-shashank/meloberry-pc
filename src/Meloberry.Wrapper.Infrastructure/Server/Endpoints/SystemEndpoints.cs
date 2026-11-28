@@ -41,6 +41,7 @@ public sealed partial class SystemEndpoints(
                 var settings = await settingsStore.LoadAsync(ct).ConfigureAwait(false);
                 var apps = await managedApps.ListAppsAsync(ct).ConfigureAwait(false);
                 var resolvedTools = await managedApps.ResolveToolsAsync(settings.ActiveWorkspace?.WorkspacePath, ct).ConfigureAwait(false);
+                var mbyCompatibility = await managedApps.GetMbyCompatibilityAsync(settings.ActiveWorkspace?.WorkspacePath, ct).ConfigureAwait(false);
                 var meta = metadataProvider.GetMetadata();
                 AgentsMdStatus? agentsStatus = null;
                 IReadOnlyList<OutdatedWorkspaceTool> outdatedTools = [];
@@ -64,7 +65,7 @@ public sealed partial class SystemEndpoints(
                     settings,
                     apps,
                     resolvedTools,
-                    paperThemeFallbackCss = StaticAssetHost.PaperThemeFallbackCss,
+                    mbyCompatibility,
                     agentsMdStatus = agentsStatus,
                     outdatedTools,
                     ecosystemRepos = EcosystemCatalog.Repositories,

@@ -41,7 +41,8 @@ Wrapper/
 │   │   ├── Common/
 │   │   │   ├── PathNormalization.cs
 │   │   │   ├── Result.cs
-│   │   │   └── SemverComparer.cs
+│   │   │   ├── SemverComparer.cs
+│   │   │   └── TokenEstimator.cs
 │   │   ├── Errors/
 │   │   │   └── WrapperErrors.cs
 │   │   ├── Models/
@@ -54,13 +55,11 @@ Wrapper/
 │   │   │   ├── SpecModels.cs
 │   │   │   └── WorkspaceModels.cs
 │   │   └── Services/
-│   │       ├── AgentsMdComposer.cs
 │   │       ├── MelomgFigureQueryNormalizer.cs
 │   │       ├── PromptComposer.cs
 │   │       ├── PromptWorkflowModeComposers.cs
-│   │       ├── SessionScaffoldGenerator.cs
 │   │       ├── SpecOrderExpander.cs
-│   │       └── WorkspaceMarkdownAssembler.cs
+│   │       └── WrapperAgentsAppendixComposer.cs
 │   ├── Meloberry.Wrapper.Application/
 │   │   ├── DependencyInjection.cs
 │   │   ├── Meloberry.Wrapper.Application.csproj
@@ -92,6 +91,8 @@ Wrapper/
 │   │   ├── Cli/
 │   │   │   ├── CliProcessRunner.cs
 │   │   │   ├── LiveGuiIpcClient.cs
+│   │   │   ├── MbyCliResponseParsers.cs
+│   │   │   ├── ProcessMbyCliClient.Authoring.cs
 │   │   │   ├── ProcessMbyCliClient.cs
 │   │   │   ├── ProcessMelomgCliClient.cs
 │   │   │   ├── ToolProxyRunner.cs
@@ -152,8 +153,7 @@ Wrapper/
 │   │   │   │           ├── review.js
 │   │   │   │           ├── specContentModal.js
 │   │   │   │           ├── specModes.js
-│   │   │   │           ├── specPopovers.js
-│   │   │   │           └── specTemplates.js
+│   │   │   │           └── specPopovers.js
 │   │   │   └── styles/
 │   │   │       ├── base.css
 │   │   │       ├── chrome.css
@@ -219,7 +219,7 @@ Wrapper/
 ### Root & Installer
 - `.gitignore`: Excludes `.NET` build/publish artifacts (`bin/`, `obj/`, `/app/`, `installer/Output/`), binaries, WebView2 runtime state, and local IDE files.
 - `AGENTS.md`: Workspace guide defining repository structure, per-file summaries, Clean Architecture summaries, and mandatory agent directives.
-- `Directory.Build.props`: Single source of truth for version (`1.2.0`), product metadata, self-update repo coordinates, nullable/implicit usings, and `TreatWarningsAsErrors`.
+- `Directory.Build.props`: Single source of truth for version (`1.2.0-beta-5`), product metadata, self-update repo coordinates, nullable/implicit usings, and `TreatWarningsAsErrors`.
 - `Meloberry.Wrapper.sln`: Visual Studio solution uniting all four `src/` projects and both `tests/` projects.
 - `installer/build-installer.ps1`: Publishes the single-file Win64 desktop executable and compiles the Inno Setup installer using the version from `Directory.Build.props`.
 - `installer/mby-pc.iss`: Inno Setup script packaging `mby-pc-<version>.exe` into `mby-pc-setup-<version>.exe`.
@@ -271,22 +271,21 @@ Wrapper/
 - `Common/PathNormalization.cs`: Safe directory path normalization, equality, and descendant containment helpers preventing trailing-slash mismatches.
 - `Common/Result.cs`: `ErrorType` enum, `Error` record, and non-throwing `Result` / `Result<T>` outcome primitives.
 - `Common/SemverComparer.cs`: Zero-dependency SemVer 2.0.0 extractor and comparator supporting prerelease precedence.
-- `Errors/WrapperErrors.cs`: Central catalog of typed domain error factories across CLI, workspace, update, and security concerns.
-- `Models/AgentsMdModels.cs`: Domain records for `mby spec` schemas (`AgentsMdSpecField`, `AgentsMdSpecDetail`) and `AGENTS.md` render status/results.
+- `Common/TokenEstimator.cs`: BPE-aware token estimator (`EstimateTokens`) and safe fenced code-block helper (`MakeCodeFence`).
+- `Errors/WrapperErrors.cs`: Central catalog of typed domain error factories across CLI (`Cli.Incompatible`, `Cli.NotFound`, `Cli.ExecutionFailed`), workspace, update, and security concerns.
+- `Models/AgentsMdModels.cs`: Domain records for `mby spec` schemas (`AgentsMdSpecField`, `AgentsMdSpecDetail`), `WrapperAgentsAppendixInput`, and `AGENTS.md` render status/results.
 - `Models/CliSignalModels.cs`: Domain record and `key=value` parser (`MbyCliSignal`, `MbyCliSignalParser`) for `.mby-signal.txt` CLI events.
-- `Models/EcosystemModels.cs`: Official sibling Meloberry GitHub repository catalog and allowlist URL validation (`EcosystemCatalog`).
-- `Models/FinalizeModels.cs`: Domain contracts for spec content wrapping, `FinalizeRequest`, and `FinalizeResult`.
+- `Models/EcosystemModels.cs`: Official sibling Meloberry GitHub repository catalog, allowlist URL validation (`EcosystemCatalog`), and `mby-cli` compatibility floor (`MbyCliCompatibility`, `>= 2.2.0-0` + required capabilities).
+- `Models/FinalizeModels.cs`: Domain contracts for CLI delegation results (`ScaffoldCliResult`, `AssetAddCliResult`, `PrimeAgentsMdCliResult`, `IngestAnalysisCliResult`, `CloneEntityCliResult`), `SessionScaffoldOutput`, `FinalizeRequest`, and `FinalizeResult`.
 - `Models/LibraryAndSettingsModels.cs`: Persisted `WrapperSettings`, `WindowPlacementState`, `WebAppLibraryEntry`, `WorkspaceSummary`, and `AppUpdateCheckResult` models.
 - `Models/PromptModels.cs`: Prompt Studio draft, workflow modes (`Direct`, `LiveAgent`, `ClassicPrompt`), per-spec authoring content (`SpecContentSource`), component organization, shopping-list selection, preset, and built-in preset models.
-- `Models/SpecModels.cs`: Spec topic metadata, mode groups/options, display names, and built-in fallback catalog (`SpecCatalogDefaults`).
+- `Models/SpecModels.cs`: Spec topic metadata (including CLI-driven `SupportsImage`, `MarkdownHint`, `MarkdownStarter`, and mode `IconKey`), mode groups/options, display names, and built-in fallback catalog (`SpecCatalogDefaults`).
 - `Models/WorkspaceModels.cs`: Managed app entries, staged copy plans/conflicts/results, workspace reset plans, and outdated-tool detection models.
-- `Services/AgentsMdComposer.cs`: Deterministic renderer for lean, spec-targeted `AGENTS.md` files (with `.\mby-pc.bat` shim support) and BPE-aware token estimation.
 - `Services/MelomgFigureQueryNormalizer.cs`: Normalizes natural-language figure queries (e.g., `"Figure 1.1"`, `"Fig. 1.1a"`) into concise `melomg` selectors.
 - `Services/PromptComposer.cs`: Pure Markdown prompt composer and `ToPlainText` converter driving Prompt Studio preview and exports.
 - `Services/PromptWorkflowModeComposers.cs`: Deterministic renderers for `Direct` (Build Readiness) and `LiveAgent` (`.\mby-pc.bat` contract) workflow modes.
-- `Services/SessionScaffoldGenerator.cs`: Generates strict camelCase `mby` JSON session/article/quiz scaffolds with mode/ordering validation and reconciliation.
-- `Services/SpecOrderExpander.cs`: Single source of truth for expanding component `Selections` into `OrderedSpecInstance` lists while preserving primary subtype quotas (`ModeCounts`) and active primary `Modes`.
-- `Services/WorkspaceMarkdownAssembler.cs`: Assembles modular `mby` Markdown directories from organized specs and `.md`/raw/image contents with uniform smart-wrapping, angle-bracketed paths, YAML `imagePath:` promotion, and placeholder guards.
+- `Services/SpecOrderExpander.cs`: Single source of truth for expanding component `Selections` into `OrderedSpecInstance` lists using CLI/fallback `ModeGroups` metadata.
+- `Services/WrapperAgentsAppendixComposer.cs`: Renders Wrapper-specific `AGENTS.md` appendix sections (staged files/folders, `.\mby-pc.bat` control protocol, and `melomg` guidance) merged onto `mby prime --format agents-md`.
 
 ### `src/Meloberry.Wrapper.Application`
 - `Meloberry.Wrapper.Application.csproj`: `net10.0` Application layer project referencing only `Domain` and `Microsoft.Extensions.DependencyInjection.Abstractions`.
@@ -317,7 +316,9 @@ Wrapper/
 - `DependencyInjection.cs`: Registers all Infrastructure stores, CLI/GitHub clients, file watchers, server endpoints, hubs, CLI dispatcher, and `LocalHttpWrapperServer`.
 - `Cli/CliProcessRunner.cs`: Shared out-of-process runner setting `MBY_AGENT=1`, optional `stdin`, UTF-8 streams, timeouts, and structured JSON error parsing.
 - `Cli/LiveGuiIpcClient.cs`: Reads `runtime-ipc.json`, verifies active GUI PID, and relays `--cli` mutations/queries to loopback `/api/live/*`.
-- `Cli/ProcessMbyCliClient.cs`: Invokes `mby spec --icons --json` (with legacy retry), `mby ls`, `mby build`, `mby pkg export`, `mby apply`, and `mby batch -`.
+- `Cli/MbyCliResponseParsers.cs`: Pure JSON `--json` envelope parsers for `mby` `version`, `spec`, `scaffold`, `asset add`, `prime`, `ls --web`, `analyze --ingest`, `clone`, and `batch`.
+- `Cli/ProcessMbyCliClient.Authoring.cs`: Partial extension of `ProcessMbyCliClient` delegating `apply --at`, `scaffold`, `asset add`, `patch --md`, `prime --format agents-md`, `analyze --ingest`, and `clone`/`move`/`reorder`.
+- `Cli/ProcessMbyCliClient.cs`: Out-of-process runner for `mby` `version --json` (cached by mtime), `spec --icons --templates --json`, `ls`, `build --all-themes`, `pkg export`, `apply`, and `batch -`.
 - `Cli/ProcessMelomgCliClient.cs`: Invokes `melomg spec`, `melomg ls`, and `melomg extract` to inspect PDFs and extract figures.
 - `Cli/ToolProxyRunner.cs`: Proxies `mby` and `melomg` from `apps\`, forwards live GUI activity, and auto-loads Viewer on `mby build`.
 - `Cli/WrapperCliAbstractions.cs`: `IWrapperConsole` and `SystemWrapperConsole` abstractions keeping headless/piped CLI mode testable.
@@ -334,7 +335,7 @@ Wrapper/
 - `Server/LocalHttpWrapperServer.cs`: Pure BCL dual-port `HttpListener` host (`ShellPort` + `ViewerPort`) with retryable port binding, Host/token guards, live SSE broadcasts, and request dispatch.
 - `Server/RuntimeIpcRegistry.cs`: Writes and PID-validates `%LOCALAPPDATA%\Meloberry\runtime-ipc.json` for CLI-to-GUI coordination.
 - `Server/SseEventHub.cs`: Bounded `Channel<byte[]>` SSE client registry with 15s keep-alive pings and concurrent broadcasts.
-- `Server/StaticAssetHost.cs`: In-memory embedded asset host serving `shell.html`, bundled `/shell/shell.css`, `/shell/js/*` ES modules, fallback UI SVG icons, and WebApp theme-bridge HTML injection.
+- `Server/StaticAssetHost.cs`: In-memory embedded asset host serving `shell.html`, bundled `/shell/shell.css`, `/shell/js/*` ES modules, fallback UI SVG icons, and verbatim mounted WebApp static files.
 - `Server/WebAppMountRegistry.cs`: Thread-safe registry mapping compiled WebApp folders to `/viewer/<slotId>/` slots.
 - `Server/Endpoints/AppsEndpoints.cs`: HTTP route handler for `/api/apps/*`.
 - `Server/Endpoints/LiveControlEndpoints.cs`: HTTP route handler for `/api/live/{draft,mutate,finalize,status,ui}`.
@@ -364,7 +365,7 @@ Wrapper/
 - `WebAssets/js/views/setup.js`: Workspace selection, recent workspaces, compact central tool cards (`app-card-central`), custom app staging, and `mby-pc.bat` shim initialization.
 - `WebAssets/js/views/viewer.js`: WebApp viewer iframe lifecycle, CLI signal auto-loading, theme-override `postMessage` bridge, discovery submenus, build-and-view, and `.mbypkg` export.
 - `WebAssets/js/views/prompt/format.js`: Step 2 (Details) zero-mode container switching, metadata inputs, attachments, and collapsible `#studyNotesDisclosure` wiring.
-- `WebAssets/js/views/prompt/organize.js`: Step 3 (Organize) horizontal portrait Article/Quiz cards, live agent highlights, 1-line tile preview snippets, content status badges (warning-styled incomplete `Img*` badges), 1-click pencil & double-click modal editing, inline title editing, and Add Component controls.
+- `WebAssets/js/views/prompt/organize.js`: Step 3 (Organize) horizontal portrait Article/Quiz cards, live agent highlights, 1-line tile preview snippet extractor, content status badges (warning-styled incomplete `Img*` badges), 1-click pencil & double-click modal editing, inline title editing, and Add Component controls.
 - `WebAssets/js/views/prompt/organizeDrag.js`: Pointer-event drag-and-drop controller for horizontal card and vertical/cross-card spec rearrangement with double-click debounce preventing inspector popover flicker.
 - `WebAssets/js/views/prompt/organizeFlip.js`: Live FLIP animation helpers (`capturePositions`, `animateFromPositions`, `flipReorder`, keyed `capturePositionsByKey`/`animateFromKeyedPositions`, and `animateLabelWipe` rename transitions) for user and autonomous agent updates.
 - `WebAssets/js/views/prompt/organizePresets.js`: Organize header grouped Preset dropdown (3 Session / 3 Article / 3 Quiz / Custom) and portable workflow/card preset handlers.
@@ -372,9 +373,8 @@ Wrapper/
 - `WebAssets/js/views/prompt/readyWorkspace.js`: Ready Workspace (`AGENTS.md`) export workflow, subfolder picker, and overwrite confirmation modal.
 - `WebAssets/js/views/prompt/review.js`: Step 4 (Finalize) two-tab Hub (`Build Directly` | `Hand Off to AI`), empty-component readiness blocking with `Fix in Organize` action, inline AI sub-toggle (`Live Agent` | `One-Shot Prompt`) remembering last AI style, single-CTA finalize trigger (`source: "ui"`), fresh-prompt copy/save (`ensureFreshComposedPrompt`), Ready Workspace, and Export menu.
 - `WebAssets/js/views/prompt/specContentModal.js`: Streamlined per-spec content authoring modal (`Write Content` | `Link .md File` + unified inline Image Attachment strip preserving body text), Prev/Next card stepper, inline subtype chips, `+ Starter`, Markdown `? Syntax`, keyboard shortcuts (`Ctrl+S` / `Ctrl+Enter`), backdrop dismissal, and collapsible `melomg` PDF figure extraction.
-- `WebAssets/js/views/prompt/specModes.js`: Pure spec mode-group structure, round-robin multi-subtype preset expansion, subtype distribution math, and ordered item synchronization helpers.
+- `WebAssets/js/views/prompt/specModes.js`: Pure spec mode-group structure, CLI-driven starter/hint/image capability helpers, round-robin multi-subtype preset expansion, subtype distribution math, and ordered item synchronization helpers.
 - `WebAssets/js/views/prompt/specPopovers.js`: Clean single-line anchored `+ Add Spec` picker (tooltip-only `displayName`) and Spec Tile Inspector popover (`Spec Content` first, subtype/modifiers next, and collapsible `AI Prompt Instructions` disclosure).
-- `WebAssets/js/views/prompt/specTemplates.js`: Markdown syntax reference hints, starter templates for all 19 spec topics, and 1-line Organize tile preview snippet extractor.
 - `WebAssets/icons/fallback/*`: Embedded 24x24 fallback SVG spec icons (19 core topics) used only when live `mby spec --icons --json` returns no icon for a topic.
 - `WebAssets/icons/ui/*`: Embedded SVG icon assets (27 UI navigation/action/fallback icons; live spec/subtype SVG icons live in `mby-cli`).
 - `Workspace/AgentsMdFileWriter.cs`: Confined atomic reader/writer for `AGENTS.md` inside the Active Workspace root or a validated subfolder.
@@ -398,21 +398,21 @@ Wrapper/
 - `Win32/Win32WindowHost.cs`: Borderless Win32 HWND host with custom titlebar drag, `WM_NCHITTEST` resize edges, dark/light DWM backdrop/titlebar theming, and STA message loop.
 
 ### `tests/`
-- `frontend/frontend-behavior.test.mjs`: Node (`node --test`) behavioral test suite exercising real ES modules (`chrome.js`, `format.js`, `review.js`, `organize.js`, `organizeDrag.js`, `organizeFlip.js`, `promptDraft.js`, `specModes.js`, `specPopovers.js`, `specContentModal.js`, `specTemplates.js`, `setup.js`, `nativeDrop.js`) against a lightweight DOM harness.
+- `frontend/frontend-behavior.test.mjs`: Node (`node --test`) behavioral test suite exercising real ES modules (`chrome.js`, `format.js`, `review.js`, `organize.js`, `organizeDrag.js`, `organizeFlip.js`, `promptDraft.js`, `specModes.js`, `specPopovers.js`, `specContentModal.js`, `setup.js`, `nativeDrop.js`) against a lightweight DOM harness.
 - `Meloberry.Wrapper.ArchitectureTests/Meloberry.Wrapper.ArchitectureTests.csproj`: Architecture test project referencing `Domain`, `Application`, `Infrastructure`, and `Desktop`.
 - `Meloberry.Wrapper.ArchitectureTests/WrapperArchitectureTests.cs`: Enforces strict Clean Architecture layer dependency direction, zero third-party packages in `Domain`, zero banned UI/DB frameworks, and unified version metadata.
 - `Meloberry.Wrapper.UnitTests/Meloberry.Wrapper.UnitTests.csproj`: xUnit unit and integration test project for Domain, Application, and Infrastructure.
-- `Meloberry.Wrapper.UnitTests/AgentsMdComposerAndReadyWorkspaceTests.cs`: Verifies `AgentsMdComposer`, `PromptComposer`, and `ReadyWorkspaceHandler` overwrite/missing-path/override/shim behavior.
+- `Meloberry.Wrapper.UnitTests/AgentsMdComposerAndReadyWorkspaceTests.cs`: Verifies `WrapperAgentsAppendixComposer`, `PromptComposer`, and `ReadyWorkspaceHandler` compatibility gating, overwrite/missing-path/override/shim behavior.
 - `Meloberry.Wrapper.UnitTests/GitHubDownloadAndSelfUpdateTests.cs`: Verifies GitHub host allowlisting, SemVer release asset selection, PE/SHA-256 verification, and self-update installer cleanup.
-- `Meloberry.Wrapper.UnitTests/LiveDraftAndControlTests.cs`: Verifies `WorkspaceDraftStore`, `RuntimeIpcRegistry`, and `LiveDraftHandler` live mutations and security confinement.
-- `Meloberry.Wrapper.UnitTests/LocalServerAndAnalysisTests.cs`: Verifies dual-port origin isolation, `/api/analysis` guards, CSS bundling, `<meta name="mby-token">`, ES module import graph integrity, `HttpEnvelope`, `SseEventHub`, and DI resolution.
+- `Meloberry.Wrapper.UnitTests/LiveDraftAndControlTests.cs`: Verifies `WorkspaceDraftStore`, `RuntimeIpcRegistry`, and `LiveDraftHandler` live mutations (including `clone-spec` and `move-spec-to`) and security confinement.
+- `Meloberry.Wrapper.UnitTests/LocalServerAndAnalysisTests.cs`: Verifies dual-port origin isolation, CLI-delegated WebApp discovery/analysis ingest with local fallbacks, CSS bundling, `<meta name="mby-token">`, ES module import graph integrity, `HttpEnvelope`, `SseEventHub`, and DI resolution.
 - `Meloberry.Wrapper.UnitTests/ManagedAppsStoreTests.cs`: Verifies PE metadata import detection, safe upgrades, uninstall behavior, and `ResolveToolExecutableAsync` precedence.
-- `Meloberry.Wrapper.UnitTests/MarkdownAssemblerAndFinalizeTests.cs`: Verifies `WorkspaceMarkdownAssembler` uniform smart-wrap rules and `FinalizeWorkspaceHandler` `mby batch -` execution.
+- `Meloberry.Wrapper.UnitTests/MarkdownAssemblerAndFinalizeTests.cs`: Verifies `FinalizeWorkspaceHandler` (`mby scaffold` + `mby batch - --all-themes`) and `ImportWorkspaceAssetHandler` (`mby asset add` delegation).
 - `Meloberry.Wrapper.UnitTests/MelomgGuiExtractionTests.cs`: Verifies `MelomgFigureQueryNormalizer` and `ExtractFigureWithMelomgHandler` `Doc_*` reuse and one-shot extraction.
-- `Meloberry.Wrapper.UnitTests/SettingsAndCliTests.cs`: Verifies `JsonSettingsStore` concurrency (`UpdateAsync`), workspace isolation, custom presets, live CLI spec/icon parsing, and fallback catalogs.
+- `Meloberry.Wrapper.UnitTests/SettingsAndCliTests.cs`: Verifies `JsonSettingsStore` concurrency (`UpdateAsync`), workspace isolation, custom presets, live CLI spec/icon/JSON envelope parsing (`MbyCliResponseParsers`), and fallback catalogs.
 - `Meloberry.Wrapper.UnitTests/TestDoubles.cs`: Shared `NoopShutdown`, `NoopDialogs`, and `NoopLauncher` test doubles.
 - `Meloberry.Wrapper.UnitTests/TestRepoPaths.cs`: Locates sibling `mby` and `melomg` binaries in the parent workspace for optional live CLI tests.
-- `Meloberry.Wrapper.UnitTests/TokenAndScaffoldTests.cs`: Verifies token estimation, `SemverComparer`, `SpecCatalogDefaults`, 3-way `PromptComposer` modes, `SessionScaffoldGenerator`, and live `mby apply`.
+- `Meloberry.Wrapper.UnitTests/TokenAndScaffoldTests.cs`: Verifies `TokenEstimator`, `SemverComparer`, `MbyCliCompatibility`, `SpecOrderExpander`, 3-way `PromptComposer` modes, and `SessionTemplateHandler` (`mby scaffold --apply`).
 - `Meloberry.Wrapper.UnitTests/WorkspaceFileWatcherTests.cs`: Verifies real-time `apps\`/`workspace` file change events and suppression scopes.
 - `Meloberry.Wrapper.UnitTests/WorkspaceInitializerTests.cs`: Verifies `WorkspaceShimWriter` (`mby-pc.bat` active-workspace lifecycle), workspace copy planning, conflict policies, intra-batch collision detection, `AtomicFileOps`, and `FileIdentity`.
 - `Meloberry.Wrapper.UnitTests/WorkspaceMaintenanceTests.cs`: Verifies recursive executable/artifact resets, `UndoReadyWorkspace`, and outdated-tool updates.

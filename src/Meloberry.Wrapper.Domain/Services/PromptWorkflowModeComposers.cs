@@ -1,4 +1,5 @@
 using System.Text;
+using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Models;
 
 namespace Meloberry.Wrapper.Domain.Services;
@@ -69,7 +70,7 @@ internal static class PromptWorkflowModeComposers
         sb.AppendLine("Click **Finalize & Build WebApp** in Finalize (or run `.\\mby-pc.bat finalize --json`) to assemble modular Markdown, compile via `mby batch -`, and launch Step 5 Viewer.");
 
         var markdown = sb.ToString().TrimEnd() + Environment.NewLine;
-        return new ComposedPrompt(markdown, markdown.Length, AgentsMdComposer.EstimateTokens(markdown));
+        return new ComposedPrompt(markdown, markdown.Length, TokenEstimator.EstimateTokens(markdown));
     }
 
     public static ComposedPrompt ComposeLiveAgentPrompt(
@@ -171,7 +172,7 @@ internal static class PromptWorkflowModeComposers
 
             if (!string.IsNullOrWhiteSpace(draft.SourceText))
             {
-                var fence = AgentsMdComposer.MakeCodeFence(draft.SourceText);
+                var fence = TokenEstimator.MakeCodeFence(draft.SourceText);
                 sb.AppendLine();
                 sb.AppendLine("### Notes");
                 sb.AppendLine($"{fence}text");
@@ -181,7 +182,7 @@ internal static class PromptWorkflowModeComposers
         }
 
         var markdown = sb.ToString().TrimEnd() + Environment.NewLine;
-        return new ComposedPrompt(markdown, markdown.Length, AgentsMdComposer.EstimateTokens(markdown));
+        return new ComposedPrompt(markdown, markdown.Length, TokenEstimator.EstimateTokens(markdown));
     }
 
     private static (int Total, int Filled, int Empty) CountSpecReadiness(IReadOnlyList<PromptComponentPlan> components)

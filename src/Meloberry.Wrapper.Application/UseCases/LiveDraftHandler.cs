@@ -84,6 +84,8 @@ public sealed class LiveDraftHandler(
             "update-spec" => ApplyUpdateSpec(current, request),
             "rm-spec" => ApplyRemoveSpec(current, request),
             "move-spec" => ApplyMoveSpec(current, request),
+            "clone-spec" => ApplyCloneSpec(current, request),
+            "move-spec-to" => ApplyMoveSpecTo(current, request),
             "set-content" => ApplySetContent(fullWs, current, request),
             _ => Result<LiveDraftMutationResult>.Failure(
                 WrapperErrors.InvalidPromptDraft($"Unsupported live draft operation '{request.Op}'."))
@@ -372,6 +374,105 @@ public sealed class LiveDraftHandler(
         }
 
         return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Spec '{req.TargetId}' not found."));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyCloneSpec(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.TargetId))
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("Target spec ID is required for clone-spec."));
+        }
+
+        var comps = (current.Components ?? []).ToList();
+        for (var c = 0; c < comps.Count; c++)
+        {
+            var comp = EnsureOrderedItems(comps[c]);
+            var ordered = (comp.OrderedItems ?? []).ToList();
+            var sIdx = ordered.FindIndex(s => string.Equals(s.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+            if (sIdx < 0)
+            {
+                continue;
+            }
+
+            var orig = ordered[sIdx];
+            var cloneId = $"{comp.Id}_{orig.Topic}_{Guid.NewGuid().ToString("N")[..6]}";
+            var clonedContent = orig.Content is null ? null : orig.Content with { };
+            var clone = orig with { Id = cloneId, Content = clonedContent };
+            ordered.Insert(sIdx + 1, clone);
+            comps[c] = SyncSelectionsFromOrderedItems(comp with { OrderedItems = ordered }, orig.Topic, null);
+            return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+                current with { Components = comps },
+                $"Cloned {orig.Topic} in \"{comp.Title}\"",
+                comp.Id,
+                cloneId));
+        }
+
+        return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Spec '{req.TargetId}' not found."));
+    }
+
+    private static Result<LiveDraftMutationResult> ApplyMoveSpecTo(PromptDraft current, LiveDraftMutationRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.TargetId) || string.IsNullOrWhiteSpace(req.TargetContainerId))
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft("TargetId and TargetContainerId are required for move-spec-to."));
+        }
+
+        var comps = (current.Components ?? []).ToList();
+        var dstIdx = comps.FindIndex(c => string.Equals(c.Id, req.TargetContainerId, StringComparison.OrdinalIgnoreCase));
+        if (dstIdx < 0)
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Target component '{req.TargetContainerId}' not found."));
+        }
+
+        var srcIdx = -1;
+        var sIdx = -1;
+        for (var c = 0; c < comps.Count; c++)
+        {
+            var comp = EnsureOrderedItems(comps[c]);
+            comps[c] = comp;
+            var idx = (comp.OrderedItems ?? []).ToList().FindIndex(s => string.Equals(s.Id, req.TargetId, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0)
+            {
+                srcIdx = c;
+                sIdx = idx;
+                break;
+            }
+        }
+
+        if (srcIdx < 0)
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft($"Spec '{req.TargetId}' not found."));
+        }
+
+        if (srcIdx == dstIdx)
+        {
+            return ApplyMoveSpec(current with { Components = comps }, req with { Index = req.Index ?? ((comps[dstIdx].OrderedItems?.Count ?? 1) - 1) });
+        }
+
+        var srcComp = comps[srcIdx];
+        var dstComp = EnsureOrderedItems(comps[dstIdx]);
+        if (srcComp.Kind != dstComp.Kind)
+        {
+            return Result<LiveDraftMutationResult>.Failure(WrapperErrors.InvalidPromptDraft(
+                $"Cannot move {srcComp.Kind} spec into {dstComp.Kind} component \"{dstComp.Title}\"."));
+        }
+
+        var srcOrdered = (srcComp.OrderedItems ?? []).ToList();
+        var item = srcOrdered[sIdx];
+        srcOrdered.RemoveAt(sIdx);
+
+        var dstOrdered = (dstComp.OrderedItems ?? []).ToList();
+        var targetPos = Math.Clamp(req.Index ?? dstOrdered.Count, 0, dstOrdered.Count);
+        dstOrdered.Insert(targetPos, item);
+
+        comps[srcIdx] = SyncSelectionsFromOrderedItems(srcComp with { OrderedItems = srcOrdered }, item.Topic, null);
+        comps[dstIdx] = SyncSelectionsFromOrderedItems(dstComp with { OrderedItems = dstOrdered }, item.Topic, null);
+
+        return Result<LiveDraftMutationResult>.Success(new LiveDraftMutationResult(
+            current with { Components = comps },
+            $"Moved {item.Topic} to \"{dstComp.Title}\" at position {targetPos + 1}",
+            dstComp.Id,
+            item.Id));
     }
 
     private static Result<LiveDraftMutationResult> ApplySetContent(string fullWs, PromptDraft current, LiveDraftMutationRequest req)

@@ -13,7 +13,8 @@ public sealed record ResolvedToolPaths(string? Mby, string? Melomg);
 public sealed class ManagedAppsHandler(
     IManagedAppsStore appsStore,
     IGitHubToolDownloader downloader,
-    ISettingsStore settingsStore)
+    ISettingsStore settingsStore,
+    IMbyCliClient? mbyClient = null)
 {
     private readonly ConcurrentDictionary<string, DownloadProgressSnapshot> _progress = new(StringComparer.OrdinalIgnoreCase);
 
@@ -136,5 +137,54 @@ public sealed class ManagedAppsHandler(
         var mby = await appsStore.ResolveToolExecutableAsync("mby", wsPath, settings.MbyExecutableOverride, ct).ConfigureAwait(false);
         var melomg = await appsStore.ResolveToolExecutableAsync("melomg", wsPath, settings.MelomgExecutableOverride, ct).ConfigureAwait(false);
         return new ResolvedToolPaths(mby, melomg);
+    }
+
+    public async Task<MbyCliVersionInfo?> GetMbyCompatibilityAsync(string? workspacePathOverride = null, CancellationToken ct = default)
+    {
+        var mby = await ResolveExecutableAsync("mby", workspacePathOverride, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(mby) || mbyClient is null)
+        {
+            return null;
+        }
+
+        var res = await mbyClient.GetVersionInfoAsync(mby, ct).ConfigureAwait(false);
+        return res.IsSuccess
+            ? res.Value
+            : new MbyCliVersionInfo(
+                Version: string.Empty,
+                Capabilities: [],
+                IsCompatible: false,
+                IncompatibilityReason: $"Failed to query `mby version --json`: {res.Error!.Description}");
+    }
+
+    public async Task<Result<string>> EnsureCompatibleMbyAsync(string? workspacePathOverride = null, CancellationToken ct = default)
+    {
+        var mby = await ResolveExecutableAsync("mby", workspacePathOverride, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(mby))
+        {
+            return Result<string>.Failure(WrapperErrors.CliNotFound("mby"));
+        }
+
+        if (mbyClient is not null)
+        {
+            var res = await mbyClient.GetVersionInfoAsync(mby, ct).ConfigureAwait(false);
+            if (res.IsFailure)
+            {
+                return Result<string>.Failure(WrapperErrors.CliIncompatible(
+                    "unknown",
+                    MbyCliCompatibility.MinimumDisplayVersion,
+                    res.Error!.Description));
+            }
+
+            if (!res.Value.IsCompatible)
+            {
+                return Result<string>.Failure(WrapperErrors.CliIncompatible(
+                    res.Value.Version,
+                    MbyCliCompatibility.MinimumDisplayVersion,
+                    res.Value.IncompatibilityReason ?? string.Empty));
+            }
+        }
+
+        return Result<string>.Success(mby);
     }
 }

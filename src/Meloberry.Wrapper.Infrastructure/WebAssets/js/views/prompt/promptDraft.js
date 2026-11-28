@@ -273,7 +273,7 @@ export function applyAnimatedAgentDraft(nextDraft, payload = {}) {
   if (payload?.op === "add-comp" && payload.targetCompId) {
     state.lastAddedOrgId = payload.targetCompId;
   }
-  if (payload?.op === "add-spec" && payload.targetSpecId) {
+  if ((payload?.op === "add-spec" || payload?.op === "clone-spec") && payload.targetSpecId) {
     state.lastAddedSpecOrgId = payload.targetSpecId;
   }
 
@@ -351,7 +351,8 @@ export function getPromptOptionsEligibility() {
   const hasMissingQty = enabledSpecs.some(s => !s.desiredCount || s.desiredCount <= 0);
   const hasActiveWorkspace = !!(state.settings.activeWorkspace && state.settings.activeWorkspace.workspacePath);
   const hasMbyInstalled = !!state.resolvedTools?.mby;
-  return { hasAnyActiveSpec, hasMissingQty, hasActiveWorkspace, hasMbyInstalled };
+  const isMbyIncompatible = state.mbyCompatibility?.isCompatible === false;
+  return { hasAnyActiveSpec, hasMissingQty, hasActiveWorkspace, hasMbyInstalled, isMbyIncompatible };
 }
 
 export function refreshPromptOptionsAvailability() {
@@ -360,16 +361,19 @@ export function refreshPromptOptionsAvailability() {
   const genBtn = document.getElementById("optGenerateTemplate");
   if (!rawBtn || !genBtn) return;
 
-  rawBtn.disabled = !e.hasAnyActiveSpec || e.hasMissingQty;
+  rawBtn.disabled = !e.hasAnyActiveSpec || e.hasMissingQty || e.isMbyIncompatible;
   rawBtn.title = !e.hasAnyActiveSpec
     ? "Add at least one active spec first."
-    : (e.hasMissingQty ? "Fill Qty on every active spec first." : "");
+    : (e.hasMissingQty
+      ? "Fill Qty on every active spec first."
+      : (e.isMbyIncompatible ? `Update mby-cli to v${state.mbyCompatibility?.minimumVersion || "2.2.0"}+ first.` : ""));
 
   const genReasons = [];
   if (!e.hasAnyActiveSpec) genReasons.push("add at least one active spec");
   else if (e.hasMissingQty) genReasons.push("fill Qty on every active spec");
   if (!e.hasActiveWorkspace) genReasons.push("select an Active Workspace");
   if (!e.hasMbyInstalled) genReasons.push("install Meloberry CLI (mby)");
+  else if (e.isMbyIncompatible) genReasons.push(`update mby-cli to v${state.mbyCompatibility?.minimumVersion || "2.2.0"}+`);
 
   genBtn.disabled = genReasons.length > 0;
   genBtn.title = genReasons.length > 0 ? `Requires: ${genReasons.join(", ")}.` : "";

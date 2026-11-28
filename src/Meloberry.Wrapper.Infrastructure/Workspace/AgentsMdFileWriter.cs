@@ -2,7 +2,6 @@ using Meloberry.Wrapper.Application.Abstractions;
 using Meloberry.Wrapper.Domain.Common;
 using Meloberry.Wrapper.Domain.Errors;
 using Meloberry.Wrapper.Domain.Models;
-using Meloberry.Wrapper.Domain.Services;
 using Meloberry.Wrapper.Infrastructure.Common;
 
 namespace Meloberry.Wrapper.Infrastructure.Workspace;
@@ -42,7 +41,7 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
             {
                 preview = await File.ReadAllTextAsync(agentsMdPath, ct).ConfigureAwait(false);
                 charCount = preview.Length;
-                approxTokens = AgentsMdComposer.EstimateTokens(preview);
+                approxTokens = TokenEstimator.EstimateTokens(preview);
             }
             else
             {
@@ -113,7 +112,7 @@ public sealed class AgentsMdFileWriter : IAgentsMdFileWriter
                 SizeBytes: info.Length,
                 LastModifiedUtc: new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero),
                 Preview: preview,
-                ApproximateTokens: AgentsMdComposer.EstimateTokens(content),
+                ApproximateTokens: TokenEstimator.EstimateTokens(content),
                 CharacterCount: content.Length));
         }
         catch (OperationCanceledException)

@@ -72,13 +72,7 @@ public sealed class LoadSpecCatalogHandler(
                 return (SpecCatalogDefaults.BuiltInFallbackCatalog, new Dictionary<string, string>(), false, mbyPath, false);
             }
 
-            var merged = result.Value.Specs.ToList();
-            if (!merged.Any(s => string.Equals(s.Topic, SpecCatalogDefaults.VirtualLinkTopicName, StringComparison.OrdinalIgnoreCase)))
-            {
-                merged.Add(SpecCatalogDefaults.VirtualLinkTopic);
-            }
-
-            IReadOnlyList<SpecTopicItem> snapshot = merged.AsReadOnly();
+            IReadOnlyList<SpecTopicItem> snapshot = result.Value.Specs.ToList().AsReadOnly();
             var icons = result.Value.SpecIcons;
             var hasCliIcons = result.Value.IconsSupported || icons.Count > 0;
             _cache = new SpecCacheEntry(mbyPath, mtime, snapshot, icons, hasCliIcons);

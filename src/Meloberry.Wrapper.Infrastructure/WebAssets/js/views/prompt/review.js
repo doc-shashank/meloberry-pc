@@ -156,15 +156,30 @@ export function syncReviewModeUi() {
 
   const wsPath = state.settings.activeWorkspace?.workspacePath;
   const hasMby = Boolean(state.resolvedTools?.mby || state.apps.some(a => a.kind === "mby" && a.isInstalled));
+  const isMbyIncompatible = state.mbyCompatibility?.isCompatible === false;
+  const compatMessage = state.mbyCompatibility?.bannerMessage
+    || `Update mby-cli to v${state.mbyCompatibility?.minimumVersion || "2.2.0"}+ to continue.`;
   const disabledTitle = !wsPath
     ? "Select an Active Workspace in Setup first."
-    : (!hasMby ? "Install Meloberry CLI (mby) in Setup to compile WebApps." : "Assemble modular Markdown and compile via mby batch -");
+    : (!hasMby
+      ? "Install Meloberry CLI (mby) in Setup to compile WebApps."
+      : (isMbyIncompatible ? compatMessage : "Assemble modular Markdown and compile via mby batch -"));
 
   [finalizeBtn, buildNowSecondary].forEach(btn => {
     if (!btn) return;
-    btn.disabled = !wsPath || !hasMby;
+    btn.disabled = !wsPath || !hasMby || isMbyIncompatible;
     btn.title = disabledTitle;
   });
+
+  const readyBtn = document.getElementById("btnReadyWorkspace");
+  if (readyBtn) {
+    readyBtn.disabled = !wsPath || !hasMby || isMbyIncompatible;
+    readyBtn.title = !wsPath
+      ? "Select an Active Workspace in Setup first."
+      : (!hasMby
+        ? "Install Meloberry CLI (mby) in Setup first."
+        : (isMbyIncompatible ? compatMessage : "Write targeted AGENTS.md into the workspace"));
+  }
 
   if (isDirect) {
     renderDirectReadinessPanel();

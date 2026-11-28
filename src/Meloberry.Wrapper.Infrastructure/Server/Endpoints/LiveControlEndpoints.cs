@@ -94,7 +94,8 @@ public sealed class LiveControlEndpoints(
                     ImagePath: body.ImagePath,
                     Caption: body.Caption,
                     AltText: body.AltText,
-                    Modes: body.Modes);
+                    Modes: body.Modes,
+                    TargetContainerId: body.TargetContainerId);
 
                 var res = await liveDraft.MutateAsync(body.WorkspacePath, mut, ct).ConfigureAwait(false);
                 await HttpEnvelope.WriteResultAsync(resp, res, ct).ConfigureAwait(false);

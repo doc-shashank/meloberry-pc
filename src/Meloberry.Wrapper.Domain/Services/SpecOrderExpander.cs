@@ -8,17 +8,26 @@ namespace Meloberry.Wrapper.Domain.Services;
 /// </summary>
 public static class SpecOrderExpander
 {
-    public static List<OrderedSpecInstance> Expand(PromptComponentPlan comp, bool useGlobalIndexInId = false)
+    public static List<OrderedSpecInstance> Expand(
+        PromptComponentPlan comp,
+        bool useGlobalIndexInId = false,
+        IReadOnlyList<SpecTopicItem>? specs = null)
     {
         ArgumentNullException.ThrowIfNull(comp);
 
+        var specsByTopic = specs?.ToDictionary(s => s.Topic, StringComparer.OrdinalIgnoreCase);
         var list = new List<OrderedSpecInstance>();
         var globalIdx = 1;
 
         foreach (var sel in comp.Selections.Where(s => s.Enabled))
         {
             var count = Math.Clamp(sel.DesiredCount ?? 1, 1, 50);
-            var primaryGroup = SpecCatalogDefaults.GetModeGroupsForTopic(sel.Topic).FirstOrDefault();
+            SpecModeGroup? primaryGroup = null;
+            if (specsByTopic is not null && specsByTopic.TryGetValue(sel.Topic, out var meta))
+            {
+                primaryGroup = meta.ModeGroups?.FirstOrDefault();
+            }
+
             var validPrimary = primaryGroup?.Options
                 .Select(o => o.Key)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -44,10 +53,10 @@ public static class SpecOrderExpander
                     }
                 }
             }
-            else if (validPrimary is not null && sel.Modes is { Count: > 0 })
+            else if (sel.Modes is { Count: > 0 })
             {
                 var activePrimary = sel.Modes
-                    .Where(m => !string.IsNullOrWhiteSpace(m) && validPrimary.Contains(m))
+                    .Where(m => !string.IsNullOrWhiteSpace(m) && (validPrimary is null || validPrimary.Contains(m)))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 

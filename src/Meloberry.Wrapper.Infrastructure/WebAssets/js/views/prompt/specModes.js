@@ -5,6 +5,18 @@ export function findSpecMeta(topic) {
   return state.specs.find(s => (s.topic || "").toLowerCase() === t) || null;
 }
 
+export function isImageCapableTopic(topic) {
+  return Boolean(findSpecMeta(topic)?.supportsImage);
+}
+
+export function getSpecTemplateInfo(topic) {
+  const spec = findSpecMeta(topic);
+  return {
+    hint: spec?.markdownHint || "Write content in Markdown or mby :::directive format.",
+    starter: spec?.markdownStarter || ""
+  };
+}
+
 export function getSpecModeStructure(specOrTopic) {
   const spec = typeof specOrTopic === "string" ? findSpecMeta(specOrTopic) : specOrTopic;
   const groups = spec?.modeGroups || [];

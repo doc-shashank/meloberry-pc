@@ -35,6 +35,10 @@ export async function readyWorkspace(
     toast("Meloberry CLI (mby) is not installed yet — install it in Setup to run workspace commands via mby-pc.bat.", "warn", { persistent: true, key: "missing-ws-mby" });
     alreadyWarnedMissingMby = true;
   }
+  if (state.mbyCompatibility?.isCompatible === false) {
+    toast(state.mbyCompatibility.bannerMessage || `Update mby-cli to v${state.mbyCompatibility.minimumVersion || "2.2.0"}+ before generating AGENTS.md.`, "err");
+    return;
+  }
 
   if (!overwriteConfirmed) {
     const q = targetDirectory

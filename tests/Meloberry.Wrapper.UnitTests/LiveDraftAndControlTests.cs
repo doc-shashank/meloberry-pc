@@ -474,6 +474,62 @@ public sealed class LiveDraftAndControlTests : IDisposable
         Assert.DoesNotContain("ClassicPrompt", res2.Value.Summary);
     }
 
+    [Fact]
+    public async Task LiveDraftHandler_CloneSpecAndMoveSpecTo_HandlesSameAndCrossContainerMovesAndKindMismatch()
+    {
+        var paths = new WrapperDataPaths(Path.Combine(_tempRoot, "clone_move"));
+        var ws = Path.Combine(_tempRoot, "ws_clone_move");
+        Directory.CreateDirectory(ws);
+
+        var settingsStore = new JsonSettingsStore(paths);
+        await settingsStore.SaveAsync(new WrapperSettings(ActiveWorkspace: new ActiveWorkspaceState(ws, true)));
+        var handler = new LiveDraftHandler(new WorkspaceDraftStore(), settingsStore);
+
+        var a1 = (await handler.MutateAsync(ws, new LiveDraftMutationRequest("add-comp", ComponentKind: ComponentKind.Article, Title: "Article 1"))).Value.TargetComponentId!;
+        var a2 = (await handler.MutateAsync(ws, new LiveDraftMutationRequest("add-comp", ComponentKind: ComponentKind.Article, Title: "Article 2"))).Value.TargetComponentId!;
+        var q1 = (await handler.MutateAsync(ws, new LiveDraftMutationRequest("add-comp", ComponentKind: ComponentKind.Quiz, Title: "Quiz 1"))).Value.TargetComponentId!;
+
+        var specRes = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            "add-spec",
+            TargetId: a1,
+            Topic: "callout",
+            Subtype: "clinical",
+            Count: 1));
+        Assert.True(specRes.IsSuccess);
+        var specId = specRes.Value.TargetSpecId!;
+
+        var setContent = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            "set-content",
+            TargetId: specId,
+            ContentMode: SpecContentMode.RawText,
+            RawText: "Important pearl"));
+        Assert.True(setContent.IsSuccess);
+
+        var cloneRes = await handler.MutateAsync(ws, new LiveDraftMutationRequest("clone-spec", TargetId: specId));
+        Assert.True(cloneRes.IsSuccess, cloneRes.Error?.Description);
+        var clonedId = cloneRes.Value.TargetSpecId!;
+        Assert.NotEqual(specId, clonedId);
+
+        var a1AfterClone = cloneRes.Value.Draft.Components!.Single(c => c.Id == a1);
+        Assert.Equal(2, a1AfterClone.OrderedItems!.Count);
+        Assert.Equal("Important pearl", a1AfterClone.OrderedItems[1].Content?.RawText);
+
+        var moveRes = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            "move-spec-to",
+            TargetId: clonedId,
+            TargetContainerId: a2,
+            Index: 0));
+        Assert.True(moveRes.IsSuccess, moveRes.Error?.Description);
+        Assert.Single(moveRes.Value.Draft.Components!.Single(c => c.Id == a1).OrderedItems!);
+        Assert.Equal(clonedId, Assert.Single(moveRes.Value.Draft.Components!.Single(c => c.Id == a2).OrderedItems!).Id);
+
+        var crossKind = await handler.MutateAsync(ws, new LiveDraftMutationRequest(
+            "move-spec-to",
+            TargetId: specId,
+            TargetContainerId: q1));
+        Assert.True(crossKind.IsFailure);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_tempRoot))

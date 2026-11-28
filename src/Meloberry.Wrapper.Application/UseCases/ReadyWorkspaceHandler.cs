@@ -13,8 +13,8 @@ public sealed record ReadyWorkspaceRequest(
     string? TargetDirectory = null);
 
 /// <summary>
-/// Exports a tailored <c>AGENTS.md</c> file containing the workspace playbook and live targeted CLI schemas
-/// for the user's selected shopping-list specs, warning explicitly before overwriting an existing file.
+/// Exports a tailored <c>AGENTS.md</c> file by delegating core CLI/schema rendering to
+/// <c>mby prime --format agents-md</c> and appending Wrapper-specific staged inputs &amp; live-control hints.
 /// </summary>
 public sealed class ReadyWorkspaceHandler(
     IAgentsMdFileWriter agentsMdWriter,
@@ -112,19 +112,37 @@ public sealed class ReadyWorkspaceHandler(
             return Result<AgentsMdExportResult>.Failure(WrapperErrors.AgentsMdAlreadyExists(preStatus.Value.AgentsMdPath));
         }
 
-        // Collect workspace executables and staged/copied files & folders.
+        var mbyExePath = await appsStore.ResolveToolExecutableAsync("mby", fullWs, settings.MbyExecutableOverride, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(mbyExePath))
+        {
+            return Result<AgentsMdExportResult>.Failure(WrapperErrors.CliNotFound("mby"));
+        }
+
+        var verRes = await mbyClient.GetVersionInfoAsync(mbyExePath, ct).ConfigureAwait(false);
+        if (verRes.IsFailure)
+        {
+            return Result<AgentsMdExportResult>.Failure(WrapperErrors.CliIncompatible(
+                "unknown",
+                MbyCliCompatibility.MinimumDisplayVersion,
+                verRes.Error!.Description));
+        }
+
+        if (!verRes.Value.IsCompatible)
+        {
+            return Result<AgentsMdExportResult>.Failure(WrapperErrors.CliIncompatible(
+                verRes.Value.Version,
+                MbyCliCompatibility.MinimumDisplayVersion,
+                verRes.Value.IncompatibilityReason ?? string.Empty));
+        }
+
         var apps = await appsStore.ScanAppsAsync(fullWs, ct).ConfigureAwait(false);
-        var workspaceMby = apps.FirstOrDefault(a => a.Kind == ManagedAppKind.Mby && a.IsPresentInWorkspace)?.WorkspaceFileName;
         var workspaceMelomg = apps.FirstOrDefault(a => a.Kind == ManagedAppKind.Melomg && a.IsPresentInWorkspace)?.WorkspaceFileName;
         var extraWorkspaceExes = apps
             .Where(a => a.Kind == ManagedAppKind.CustomExecutable && a.IsPresentInWorkspace)
             .Select(a => a.WorkspaceFileName ?? a.FileName)
             .ToList();
-
-        var mbyExePath = await appsStore.ResolveToolExecutableAsync("mby", fullWs, settings.MbyExecutableOverride, ct).ConfigureAwait(false);
         var melomgExePath = await appsStore.ResolveToolExecutableAsync("melomg", fullWs, settings.MelomgExecutableOverride, ct).ConfigureAwait(false);
 
-        // Compute targeted spec topics from container + format + enabled shopping list selections.
         var (liveCatalog, _, _) = await specLoader.LoadAsync(false, ct).ConfigureAwait(false);
         var catalogByTopic = SpecCatalogDefaults.BuiltInFallbackCatalog.ToDictionary(s => s.Topic, StringComparer.OrdinalIgnoreCase);
         foreach (var item in liveCatalog)
@@ -161,7 +179,6 @@ public sealed class ReadyWorkspaceHandler(
             AddUnique("markdown");
         }
 
-        var includeLink = false;
         var allSelections = request.Draft.Components is { Count: > 0 }
             ? PromptComposer.ResolveEffectiveComponents(request.Draft, catalogByTopic)
                 .SelectMany(c => c.Selections)
@@ -169,12 +186,6 @@ public sealed class ReadyWorkspaceHandler(
 
         foreach (var sel in allSelections)
         {
-            if (string.Equals(sel.Topic, SpecCatalogDefaults.VirtualLinkTopicName, StringComparison.OrdinalIgnoreCase))
-            {
-                includeLink = true;
-                continue;
-            }
-
             var category = catalogByTopic.TryGetValue(sel.Topic, out var meta)
                 ? meta.Category
                 : SpecCatalogDefaults.GetCategoryForTopic(sel.Topic);
@@ -190,21 +201,41 @@ public sealed class ReadyWorkspaceHandler(
             AddUnique("mcq");
         }
 
-        var warnings = new List<string>();
-        IReadOnlyList<AgentsMdSpecDetail> specDetails = [];
-        if (!string.IsNullOrWhiteSpace(mbyExePath))
+        var normalizedWsPrefix = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
+        var usesShim = File.Exists(Path.Combine(fullWs, "mby-pc.bat"));
+        var cliPrefix = usesShim
+            ? ".\\mby-pc.bat mby"
+            : WrapperAgentsAppendixComposer.FormatCliCommand(
+                FormatResolvedToolForAgentsMd(mbyExePath, fullWs, normalizedWsPrefix),
+                "mby");
+
+        var containerArg = request.Draft.Container switch
         {
-            var detailRes = await mbyClient.GetSpecDetailsAsync(mbyExePath, fullWs, topicSet, ct).ConfigureAwait(false);
-            if (detailRes.IsSuccess)
-            {
-                specDetails = detailRes.Value;
-            }
-            else
-            {
-                warnings.Add($"Failed to fetch live mby schemas: {detailRes.Error!.Description}");
-            }
+            ContainerKind.StandaloneArticle => "article",
+            ContainerKind.StandaloneQuiz => "quiz",
+            _ => "session"
+        };
+        var authoringFmtArg = request.Draft.AuthoringFormat switch
+        {
+            AuthoringFormat.SingleMarkdown => "singleMarkdown",
+            AuthoringFormat.Json => "json",
+            _ => "markdownDirectory"
+        };
+
+        var primeRes = await mbyClient.PrimeAgentsMdAsync(
+            mbyExePath,
+            topicSet,
+            containerArg,
+            authoringFmtArg,
+            cliPrefix,
+            fullWs,
+            ct).ConfigureAwait(false);
+        if (primeRes.IsFailure)
+        {
+            return Result<AgentsMdExportResult>.Failure(primeRes.Error!);
         }
 
+        var warnings = new List<string>();
         string? melomgText = null;
         var needsMelomg = !string.IsNullOrWhiteSpace(workspaceMelomg)
             || request.Draft.UseMelomgForPdfs
@@ -224,7 +255,6 @@ public sealed class ReadyWorkspaceHandler(
             }
         }
 
-        var normalizedWsPrefix = Path.TrimEndingDirectorySeparator(fullWs) + Path.DirectorySeparatorChar;
         var stagedFiles = new List<string>();
         if (settings.ActiveWorkspace is not null && PathNormalization.AreSameDirectory(settings.ActiveWorkspace.WorkspacePath, fullWs))
         {
@@ -286,25 +316,18 @@ public sealed class ReadyWorkspaceHandler(
         }
         stagedFolders = stagedFolders.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
-        var usesShim = File.Exists(Path.Combine(fullWs, "mby-pc.bat"));
-
-        var composeInput = new AgentsMdComposeInput(
+        var appendixInput = new WrapperAgentsAppendixInput(
             WorkspacePath: fullWs,
-            Container: request.Draft.Container,
-            AuthoringFormat: request.Draft.AuthoringFormat,
-            WorkspaceMbyFileName: FormatResolvedToolForAgentsMd(mbyExePath, fullWs, normalizedWsPrefix),
             WorkspaceMelomgFileName: FormatResolvedToolForAgentsMd(melomgExePath, fullWs, normalizedWsPrefix),
             ExtraWorkspaceExecutables: extraWorkspaceExes,
             CopiedFiles: distinctStagedFiles,
             CopiedFolders: stagedFolders,
-            SelectedSpecs: specDetails,
             MelomgSpecsText: melomgText,
-            IncludeLinkBlock: includeLink,
             ExternalAttachments: distinctExternalAttachments,
             UsesWorkspaceShim: usesShim,
             WorkflowMode: request.Draft.WorkflowMode);
 
-        var markdown = AgentsMdComposer.Compose(composeInput);
+        var markdown = WrapperAgentsAppendixComposer.CombineWithBaseAgentsMd(primeRes.Value.Markdown, appendixInput);
         var writeRes = await agentsMdWriter.WriteAsync(fullWs, validatedTargetDir, markdown, request.OverwriteConfirmed, ct).ConfigureAwait(false);
         if (writeRes.IsFailure)
         {
@@ -336,15 +359,15 @@ public sealed class ReadyWorkspaceHandler(
             }, ct).ConfigureAwait(false);
         }
 
-        var included = specDetails.Select(s => s.Topic)
-            .Concat(includeLink ? [SpecCatalogDefaults.VirtualLinkTopicName] : [])
-            .ToList();
+        var included = primeRes.Value.IncludedTopics.Count > 0
+            ? primeRes.Value.IncludedTopics.ToList()
+            : topicSet;
 
         return Result<AgentsMdExportResult>.Success(new AgentsMdExportResult(
             OutputPath: writeRes.Value.AgentsMdPath,
             OverwroteExisting: alreadyExisted,
             BytesWritten: System.Text.Encoding.UTF8.GetByteCount(markdown),
-            ApproximateTokens: AgentsMdComposer.EstimateTokens(markdown),
+            ApproximateTokens: TokenEstimator.EstimateTokens(markdown),
             IncludedTopics: included,
             MarkdownPreview: markdown,
             Warnings: warnings.Count > 0 ? warnings : null,

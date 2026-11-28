@@ -16,6 +16,14 @@ public static class WrapperErrors
         $"{toolName} exited with code {exitCode}: {detail}",
         ErrorType.ExternalProcess);
 
+    public static Error CliIncompatible(string installedVersion, string minimumVersion, string detail) => new(
+        "Cli.Incompatible",
+        string.IsNullOrWhiteSpace(detail)
+            ? $"Installed mby-cli ({installedVersion}) is older than required v{minimumVersion}+."
+            : detail,
+        ErrorType.Validation,
+        $"Update mby-cli to v{minimumVersion}+ from Setup or click 'Update mby-cli Now'.");
+
     public static Error InvalidWebAppDir(string path) => new(
         "Viewer.InvalidWebAppDir",
         $"The folder '{path}' does not contain a compiled Meloberry WebApp (missing index.html or app.js).",

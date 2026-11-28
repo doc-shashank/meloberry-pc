@@ -247,6 +247,9 @@ mk("span", "liveAgentActivityText", "", {}, livePill);
 mk("div", "agentActivityList");
 mk("div", "workspaceStrip");
 mk("div", "outdatedToolsBar", "hidden");
+const incompatBar = mk("div", "incompatibleMbyBar", "outdated-bar incompatible-bar hidden");
+mk("span", "incompatibleMbyText", "", {}, incompatBar);
+mk("button", "btnUpgradeMbyNow", "btn btn-xs btn-primary", {}, incompatBar);
 mk("div", "topChromeOverlay");
 mk("div", "viewsViewport", "views-viewport");
 mk("div", "viewSetup", "view-panel");
@@ -452,6 +455,9 @@ state.specs = [
     topic: "mcq",
     category: "question",
     displayName: "Multiple Choice",
+    supportsImage: true,
+    markdownHint: "MCQ hint: mark correct option with `- [x]` inside `:::mcq`.",
+    markdownStarter: ":::mcq\nQuestion stem?\n- [x] Correct option\n- [ ] Distractor\n:::",
     compactSignature: ":::mcq{multi=true}\nStem\n- [x] A\n:::",
     modeGroups: [{ fieldName: "variant", label: "Selection", multiSelect: false, options: [{ key: "single", label: "Single" }, { key: "multi", label: "Multi" }] }]
   },
@@ -459,6 +465,9 @@ state.specs = [
     topic: "image",
     category: "block",
     displayName: "Image Block",
+    supportsImage: true,
+    markdownHint: "Markdown image syntax `![alt](assets/file.png \"caption\")`.",
+    markdownStarter: "![Diagram caption](assets/diagram.png \"Diagram caption\")",
     compactSignature: "![Alt](assets/fig.png)",
     modeGroups: []
   },
@@ -466,6 +475,9 @@ state.specs = [
     topic: "callout",
     category: "block",
     displayName: "Callout Box",
+    supportsImage: false,
+    markdownHint: "Callout box directive `:::callout{tone=\"pearl\"}`.",
+    markdownStarter: ":::callout{tone=\"pearl\"}\nKey takeaway.\n:::",
     summary: "Highlight clinical pearls",
     modeGroups: [{ fieldName: "tone", label: "Tone", multiSelect: false, options: [{ key: "pearl", label: "Pearl" }, { key: "clinical", label: "Clinical" }, { key: "warning", label: "Warning" }] }]
   },
@@ -473,6 +485,9 @@ state.specs = [
     topic: "fill-blank",
     category: "question",
     displayName: "Fill in the Blank",
+    supportsImage: false,
+    markdownHint: "Cloze blank syntax using `{{answer}}` inside `:::fill-blank`.",
+    markdownStarter: ":::fill-blank\nThe mitral valve closes at {{S1}}.\n:::",
     summary: "Cloze recall prompt",
     modeGroups: [{ fieldName: "matching", label: "Matching", multiSelect: false, options: [{ key: "fuzzy", label: "Fuzzy" }] }]
   }
@@ -1093,22 +1108,18 @@ test("Beta-4 Phase 3/4 Bugfixes: Clear activity cancels pending idle timer; card
 });
 
 test("Beta-4 Phase 5: Streamlined Spec Editor (templates, unified write+image, subtypes, stepper, shortcuts, tile snippet & dblclick debounce)", async () => {
-  const { MARKDOWN_SPEC_TEMPLATES, getMarkdownTemplateForTopic, extractSpecPreviewSnippet } = await import(toModuleUrl("views/prompt/specTemplates.js"));
+  const { extractSpecPreviewSnippet } = await import(toModuleUrl("views/prompt/organize.js"));
+  const { getSpecTemplateInfo, isImageCapableTopic } = await import(toModuleUrl("views/prompt/specModes.js"));
 
-  // 5.1: All 19 spec topics have Markdown syntax reference & starter templates (no raw JSON signatures)
-  const all19Topics = [
-    "text", "image", "callout", "table", "diagram-explore", "reveal", "link",
-    "mcq", "flashcard", "fill-blank", "assertion-reason", "spot-error",
-    "diff", "mechanism", "relabel", "classify", "match", "numeric", "case"
-  ];
-  assert.equal(Object.keys(MARKDOWN_SPEC_TEMPLATES).length, 19);
-  for (const t of all19Topics) {
-    const tpl = getMarkdownTemplateForTopic(t);
+  // 5.1: Spec hints, starter templates, and image capability come from state.specs (CLI-driven)
+  assert.equal(isImageCapableTopic("mcq"), true);
+  assert.equal(isImageCapableTopic("image"), true);
+  assert.equal(isImageCapableTopic("callout"), false);
+  for (const t of ["mcq", "image", "callout", "fill-blank"]) {
+    const tpl = getSpecTemplateInfo(t);
     assert.ok(tpl.hint && tpl.hint.length > 5, `Expected Markdown hint for ${t}`);
     assert.equal(tpl.hint.includes("{ kind:"), false, `Hint for ${t} must not contain raw JSON signature`);
-    if (t !== "image") {
-      assert.ok(tpl.starter && tpl.starter.length > 5, `Expected non-empty starter template for ${t}`);
-    }
+    assert.ok(tpl.starter && tpl.starter.length > 5, `Expected non-empty starter template for ${t}`);
   }
   assert.equal(extractSpecPreviewSnippet({ mode: "rawText", rawText: ":::mcq\n**Which valve** closes at S1?\n- [x] Mitral\n:::" }), "Which valve closes at S1?");
   assert.equal(extractSpecPreviewSnippet({ mode: "markdownFile", markdownFilePath: "notes/cardio.md" }), "cardio.md");
@@ -1241,4 +1252,42 @@ test("Beta-4 Phase 5: Streamlined Spec Editor (templates, unified write+image, s
     globalThis.setTimeout = prevST;
     globalThis.clearTimeout = prevCT;
   }
+});
+
+test("Part 2 Compatibility Gate: incompatible mby-cli shows persistent banner and disables dependent CTAs", async () => {
+  const { renderIncompatibleMbyBanner } = await import(toModuleUrl("ui/chrome.js"));
+  const { refreshPromptOptionsAvailability } = await import(toModuleUrl("views/prompt/promptDraft.js"));
+
+  state.prompt.components = [
+    { id: "c_comp", kind: "quiz", title: "Quiz", selections: [{ topic: "mcq", enabled: true, desiredCount: 1 }], orderedItems: [] }
+  ];
+  state.mbyCompatibility = {
+    isCompatible: false,
+    installedVersion: "2.1.6",
+    minimumVersion: "2.2.0",
+    bannerMessage: "Update mby-cli to v2.2.0+ (installed v2.1.6)."
+  };
+
+  renderIncompatibleMbyBanner();
+  syncReviewModeUi();
+  refreshPromptOptionsAvailability();
+
+  assert.equal(incompatBar.classList.contains("hidden"), false);
+  assert.ok(byId.get("incompatibleMbyText").textContent.includes("2.1.6"));
+  assert.equal(byId.get("btnFinalizeWebApp").disabled, true);
+  assert.equal(byId.get("btnBuildNowSecondary").disabled, true);
+  assert.equal(byId.get("btnReadyWorkspace").disabled, true);
+  assert.equal(byId.get("optExportRawJson").disabled, true);
+  assert.equal(byId.get("optGenerateTemplate").disabled, true);
+
+  state.mbyCompatibility = { isCompatible: true, installedVersion: "2.2.0-beta-1", minimumVersion: "2.2.0", bannerMessage: "" };
+  renderIncompatibleMbyBanner();
+  syncReviewModeUi();
+  refreshPromptOptionsAvailability();
+
+  assert.equal(incompatBar.classList.contains("hidden"), true);
+  assert.equal(byId.get("btnFinalizeWebApp").disabled, false);
+  assert.equal(byId.get("btnReadyWorkspace").disabled, false);
+  assert.equal(byId.get("optExportRawJson").disabled, false);
+  assert.equal(byId.get("optGenerateTemplate").disabled, false);
 });

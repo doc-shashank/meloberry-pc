@@ -47,7 +47,7 @@ public sealed class WorkspaceActionsHandler(
                     ? Path.Combine(wsDir, safeWsFolder)
                     : Path.Combine(Path.GetTempPath(), "MeloberryBuilds", safeWsFolder);
 
-        var buildRes = await mbyClient.BuildWorkspaceAsync(mbyPath, workspaceId, baseOut, wsDir, ct).ConfigureAwait(false);
+        var buildRes = await mbyClient.BuildWorkspaceAsync(mbyPath, workspaceId, baseOut, wsDir, includeAllThemes: true, ct).ConfigureAwait(false);
         if (buildRes.IsFailure)
         {
             return Result<(string, string, WebAppLibraryEntry)>.Failure(buildRes.Error!);

@@ -35,19 +35,14 @@ public sealed record AgentsMdStatus(
     int? ApproximateTokens = null,
     int? CharacterCount = null);
 
-/// <summary>Inputs required to deterministically render a tailored workspace AGENTS.md.</summary>
-public sealed record AgentsMdComposeInput(
+/// <summary>Wrapper-specific context appended to `mby prime --format agents-md` output.</summary>
+public sealed record WrapperAgentsAppendixInput(
     string WorkspacePath,
-    ContainerKind Container,
-    AuthoringFormat AuthoringFormat,
-    string? WorkspaceMbyFileName,
     string? WorkspaceMelomgFileName,
     IReadOnlyList<string> ExtraWorkspaceExecutables,
     IReadOnlyList<string> CopiedFiles,
     IReadOnlyList<string> CopiedFolders,
-    IReadOnlyList<AgentsMdSpecDetail> SelectedSpecs,
     string? MelomgSpecsText,
-    bool IncludeLinkBlock,
     IReadOnlyList<string>? ExternalAttachments = null,
     bool UsesWorkspaceShim = false,
     WorkflowMode WorkflowMode = WorkflowMode.ClassicPrompt);

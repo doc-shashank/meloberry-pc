@@ -24,7 +24,8 @@ public sealed class AppsEndpoints(
             {
                 var apps = await managedApps.ListAppsAsync(ct).ConfigureAwait(false);
                 var resolvedTools = await managedApps.ResolveToolsAsync(ct: ct).ConfigureAwait(false);
-                await HttpEnvelope.WriteJsonAsync(resp, 200, new { appsDirectory = dataPaths.AppsDirectory, apps, resolvedTools }, ct).ConfigureAwait(false);
+                var mbyCompatibility = await managedApps.GetMbyCompatibilityAsync(ct: ct).ConfigureAwait(false);
+                await HttpEnvelope.WriteJsonAsync(resp, 200, new { appsDirectory = dataPaths.AppsDirectory, apps, resolvedTools, mbyCompatibility }, ct).ConfigureAwait(false);
                 return true;
             }
 

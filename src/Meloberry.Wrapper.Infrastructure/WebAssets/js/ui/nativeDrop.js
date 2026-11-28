@@ -4,8 +4,8 @@ import { toast } from "./chrome.js";
 import { previewPlan, renderStagedItems, selectWorkspace } from "../views/setup.js";
 import { refreshPromptPreview } from "../views/prompt/promptDraft.js";
 import { renderPromptAttachments } from "../views/prompt/format.js";
-import { IMAGE_CAPABLE_TOPICS, IMAGE_FILE_EXT_RE } from "../views/prompt/specContentModal.js";
-import { materializeOrderedItems } from "../views/prompt/specModes.js";
+import { IMAGE_FILE_EXT_RE } from "../views/prompt/specContentModal.js";
+import { isImageCapableTopic, materializeOrderedItems } from "../views/prompt/specModes.js";
 import { openWebAppPath } from "../views/viewer.js";
 
 function clearDropHighlights() {
@@ -67,7 +67,7 @@ export async function handleOrganizeNativeDrop(target, items) {
   }
 
   if (imgFile) {
-    if (!IMAGE_CAPABLE_TOPICS.has((inst.topic || "").toLowerCase())) {
+    if (!isImageCapableTopic(inst.topic)) {
       toast(`The '${inst.topic}' spec does not accept direct image attachments.`, "warn");
       return;
     }

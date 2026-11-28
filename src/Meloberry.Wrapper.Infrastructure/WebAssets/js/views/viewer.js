@@ -20,8 +20,7 @@ export function applyViewerThemeOverride() {
     {
       type: "mby-theme-override",
       override: isOverrideOn,
-      theme: targetTheme,
-      fallbackCss: state.paperThemeFallbackCss
+      theme: targetTheme
     },
     state.viewerOrigin
   );

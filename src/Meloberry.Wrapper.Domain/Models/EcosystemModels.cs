@@ -1,3 +1,5 @@
+using Meloberry.Wrapper.Domain.Common;
+
 namespace Meloberry.Wrapper.Domain.Models;
 
 /// <summary>Describes an official sibling Meloberry GitHub repository.</summary>
@@ -167,3 +169,60 @@ public sealed record ToolUpdateCheckResult(
     string? LatestVersion,
     string? AssetFileName,
     string StatusMessage);
+
+/// <summary>Parsed `mby version --json` metadata and compatibility evaluation against Wrapper's minimum CLI floor.</summary>
+public sealed record MbyCliVersionInfo(
+    string Version,
+    IReadOnlyList<string> Capabilities,
+    bool IsCompatible,
+    string? IncompatibilityReason = null);
+
+/// <summary>Minimum `mby-cli` version and capability contract required by Meloberry PC.</summary>
+public static class MbyCliCompatibility
+{
+    public const string MinimumDisplayVersion = "2.2.0";
+    public const string MinimumSemverFloor = "2.2.0-0";
+
+    public static readonly IReadOnlyList<string> RequiredCapabilities =
+    [
+        "spec.modeGroups",
+        "scaffold.cli",
+        "asset.cli",
+        "prime.agentsMd",
+        "build.allThemes"
+    ];
+
+    public static MbyCliVersionInfo Evaluate(string? version, IReadOnlyList<string>? capabilities)
+    {
+        var normalizedVersion = (version ?? string.Empty).Trim();
+        var caps = (capabilities ?? [])
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Select(c => c.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (string.IsNullOrWhiteSpace(normalizedVersion) ||
+            SemverComparer.Compare(normalizedVersion, MinimumSemverFloor) < 0)
+        {
+            var displayInstalled = string.IsNullOrWhiteSpace(normalizedVersion) ? "unknown" : $"v{normalizedVersion}";
+            return new MbyCliVersionInfo(
+                normalizedVersion,
+                caps,
+                IsCompatible: false,
+                IncompatibilityReason: $"Meloberry PC requires mby-cli v{MinimumDisplayVersion}+ (installed: {displayInstalled}).");
+        }
+
+        var capSet = caps.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var missing = RequiredCapabilities.Where(req => !capSet.Contains(req)).ToArray();
+        if (missing.Length > 0)
+        {
+            return new MbyCliVersionInfo(
+                normalizedVersion,
+                caps,
+                IsCompatible: false,
+                IncompatibilityReason: $"Installed mby-cli v{normalizedVersion} is missing required capability token(s): {string.Join(", ", missing)}. Update to mby-cli v{MinimumDisplayVersion}+.");
+        }
+
+        return new MbyCliVersionInfo(normalizedVersion, caps, IsCompatible: true, IncompatibilityReason: null);
+    }
+}

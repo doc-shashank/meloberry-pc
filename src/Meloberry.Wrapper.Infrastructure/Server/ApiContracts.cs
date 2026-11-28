@@ -81,7 +81,8 @@ internal sealed record LiveMutateApiRequest(
     string? ImagePath = null,
     string? Caption = null,
     string? AltText = null,
-    IReadOnlyList<string>? Modes = null);
+    IReadOnlyList<string>? Modes = null,
+    string? TargetContainerId = null);
 
 internal sealed record LiveFinalizeApiRequest(
     string? WorkspacePath = null,
